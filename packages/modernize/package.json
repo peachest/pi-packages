@@ -1,0 +1,29 @@
+{
+  "name": "modernize",
+  "version": "0.1.0",
+  "description": "Modernizes Go and TypeScript/JavaScript code — writes modern syntax proactively, reviews outdated patterns, and auto-fixes them.",
+  "keywords": ["pi-package", "pi", "skills", "modernize", "go", "typescript", "javascript"],
+  "license": "MIT",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hyx/pi-mypackage.git",
+    "directory": "packages/modernize"
+  },
+  "files": [
+    "pi-extension/",
+    "skills/",
+    "references/",
+    "package.json",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test ./pi-extension/test/*.test.js",
+    "check": "node --check pi-extension/index.js"
+  },
+  "pi": {
+    "extensions": ["./pi-extension/index.js"],
+    "skills": ["./skills"]
+  }
+}
