@@ -1,0 +1,11 @@
+entries:
+  - date: "2026-07-01"
+    tag: "建党节"
+    events:
+      - name: "建党节纪念活动"
+        type: seasonal
+        icon: "🇨🇳"
+        section: events
+        names:
+          zh: "建党节纪念活动"
+          en: "Party Founding Day Event"

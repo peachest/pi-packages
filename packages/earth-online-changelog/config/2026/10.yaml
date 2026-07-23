@@ -1,0 +1,39 @@
+entries:
+  - date: "2026-10-01"
+    tag: "国庆节"
+    events:
+      - name: "国庆节七日签到活动"
+        type: seasonal
+        icon: "🇨🇳"
+        section: events
+        names:
+          zh: "国庆节七日签到活动"
+          en: "National Day 7-Day Check-in Event"
+      - name: "国庆大促全面开启"
+        type: promotion
+        icon: "🎊"
+        section: promotion
+        names:
+          zh: "国庆大促全面开启"
+          en: "National Day Sale Now Live!"
+
+  - date: "2026-10-31"
+    tag: "万圣节"
+    events:
+      - name: "万圣节限定副本"
+        type: limited
+        icon: "🎃"
+        section: events
+        names:
+          zh: "万圣节限定副本"
+          en: "Halloween Limited Dungeon"
+        descriptions:
+          zh: "trick or treat！不给糖就捣蛋！"
+          en: "Trick or treat! Give us candy or we'll prank you!"
+      - name: "双 11 预售开启"
+        type: promotion
+        icon: "📦"
+        section: promotion
+        names:
+          zh: "双 11 预售开启"
+          en: "Singles' Day Pre-sale Starts"

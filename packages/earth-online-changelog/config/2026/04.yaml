@@ -1,0 +1,11 @@
+entries:
+  - date: "2026-04-01"
+    tag: "愚人节"
+    events:
+      - name: "愚人节彩蛋活动"
+        type: special
+        icon: "🎭"
+        section: events
+        names:
+          zh: "愚人节彩蛋活动"
+          en: "April Fools' Day Surprise Event"

@@ -1,0 +1,32 @@
+entries:
+  - date: "2026-06-01"
+    tag: "儿童节"
+    events:
+      - name: "儿童节活动正式开启"
+        type: seasonal
+        icon: "🎮"
+        section: events
+        names:
+          zh: "儿童节活动正式开启"
+          en: "Children's Day Event Now Live"
+        descriptions:
+          zh: "所有玩家获得童心加成 buff，登录即送限定头像框！"
+          en: "All players receive a Childlike Heart buff! Log in to claim a limited avatar frame!"
+      - name: "京东 618 活动正在预热"
+        type: promotion
+        icon: "🛒"
+        section: promotion
+        names:
+          zh: "京东 618 活动正在预热"
+          en: "JD.com 618 Sale Warming Up"
+
+  - date: "2026-06-18"
+    tag: "618"
+    events:
+      - name: "京东 618 大促正式开启"
+        type: promotion
+        icon: "🛒"
+        section: promotion
+        names:
+          zh: "京东 618 大促正式开启"
+          en: "JD.com 618 Sale Now Live!"

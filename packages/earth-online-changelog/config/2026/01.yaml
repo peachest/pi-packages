@@ -1,0 +1,46 @@
+entries:
+  - date: "2026-01-01"
+    tag: "元旦"
+    events:
+      - name: "元旦快乐"
+        type: seasonal
+        icon: "🎆"
+        section: events
+        names:
+          zh: "元旦快乐"
+          en: "New Year's Day"
+        descriptions:
+          zh: "新的一年开始了，地球 Online 祝你新年快乐！"
+          en: "A new year begins! Happy New Year from Earth Online!"
+
+  - date: "2026-01-28"
+    tag: "除夕"
+    events:
+      - name: "除夕夜限定活动"
+        type: limited
+        icon: "🧧"
+        section: events
+        names:
+          zh: "除夕夜限定活动"
+          en: "New Year's Eve Limited Event"
+        descriptions:
+          zh: "团圆饭已准备好，守岁活动中～"
+          en: "Reunion dinner is ready, staying up for the new year!"
+
+  - date: "2026-01-29"
+    tag: "春节"
+    events:
+      - name: "春节活动正式开启"
+        type: seasonal
+        icon: "🧨"
+        section: events
+        names:
+          zh: "春节活动正式开启"
+          en: "Spring Festival Event Now Live"
+      - name: "拜年红包限时发放"
+        type: limited
+        icon: "🧧"
+        section: events
+        names:
+          zh: "拜年红包限时发放"
+          en: "Limited Red Envelope Event"

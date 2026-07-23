@@ -1,0 +1,56 @@
+{
+  "name": "earth-online-changelog",
+  "version": "1.0.0",
+  "description": "🌍 Earth Online Changelog – Pi extension that turns each day into a live-service game patch note (festivals, promotions, seasonal events, real-world changelog)",
+  "author": "",
+  "license": "MIT",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hyx/pi-mypackage.git",
+    "directory": "packages/earth-online-changelog"
+  },
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-coding-agent",
+    "extension",
+    "changelog",
+    "calendar",
+    "festival",
+    "live-service",
+    "daily"
+  ],
+  "scripts": {
+    "test": "node --experimental-strip-types --test index.test.ts",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix"
+  },
+  "files": [
+    "src/",
+    "config/",
+    "README.md",
+    "index.ts"
+  ],
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    }
+  },
+  "dependencies": {
+    "js-yaml": "^4.2.0",
+    "lunar-typescript": "^1.8.6",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/js-yaml": "^4.0.9"
+  }
+}

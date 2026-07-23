@@ -1,0 +1,56 @@
+# 世界编年史 — 历史上的今天
+# 格式：date (MM-DD) → events 列表
+entries:
+  - date: "06-01"
+    events:
+      - title: "新服务器「艾泽拉斯」正式上线运营"
+        description:
+          zh: "全球首批 100 万玩家涌入"
+          en: "First 1 million players flood in"
+        epoch: 2004
+        tags: ["game", "milestone"]
+      - title: "世界事件「辐射 4」在 E3 展会上公开"
+        description:
+          zh: "核战后世界终于浮出水面"
+          en: "Post-nuclear world finally surfaces"
+        epoch: 2015
+        tags: ["game", "e3"]
+
+  - date: "07-20"
+    events:
+      - title: "阿波罗 11 号成功登陆月球"
+        description:
+          zh: "人类首次踏上月球表面"
+          en: "First humans walk on the Moon"
+        epoch: 1969
+        tags: ["science", "space"]
+      - title: "SpaceX 首次实现火箭回收"
+        description:
+          zh: "猎鹰 9 号第一级成功着陆"
+          en: "Falcon 9 first stage lands successfully"
+        epoch: 2016
+        tags: ["tech", "space"]
+      - title: "全球互联网用户突破 10 亿"
+        description:
+          zh: "数字世界迎来新纪元"
+          en: "The digital world enters a new era"
+        epoch: 2005
+        tags: ["internet", "milestone"]
+
+  - date: "11-09"
+    events:
+      - title: "柏林墙倒塌"
+        description:
+          zh: "冷战走向终结的标志性事件"
+          en: "A defining moment marking the end of the Cold War"
+        epoch: 1989
+        tags: ["culture", "history"]
+
+  - date: "12-01"
+    events:
+      - title: "iPhone 正式发布"
+        description:
+          zh: "重新定义手机"
+          en: "Reinvents the phone"
+        epoch: 2007
+        tags: ["tech", "milestone"]

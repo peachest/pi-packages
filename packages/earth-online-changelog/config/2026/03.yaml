@@ -1,0 +1,22 @@
+entries:
+  - date: "2026-03-08"
+    tag: "妇女节"
+    events:
+      - name: "妇女节特别活动"
+        type: seasonal
+        icon: "🌷"
+        section: events
+        names:
+          zh: "妇女节特别活动"
+          en: "Women's Day Special Event"
+
+  - date: "2026-03-12"
+    tag: "植树节"
+    events:
+      - name: "植树节活动"
+        type: seasonal
+        icon: "🌳"
+        section: events
+        names:
+          zh: "植树节活动"
+          en: "Arbor Day Event"

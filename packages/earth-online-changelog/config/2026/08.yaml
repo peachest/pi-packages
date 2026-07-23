@@ -1,0 +1,22 @@
+entries:
+  - date: "2026-08-01"
+    tag: "建军节"
+    events:
+      - name: "建军节特别活动"
+        type: seasonal
+        icon: "🎖️"
+        section: events
+        names:
+          zh: "建军节特别活动"
+          en: "Army Day Special Event"
+
+  - date: "2026-08-10"
+    tag: "七夕"
+    events:
+      - name: "七夕节限定活动"
+        type: limited
+        icon: "💑"
+        section: events
+        names:
+          zh: "七夕节限定活动"
+          en: "Qixi Festival Limited Event"

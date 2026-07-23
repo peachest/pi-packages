@@ -1,0 +1,36 @@
+entries:
+  - date: "2026-12-12"
+    tag: "双12"
+    events:
+      - name: "双 12 年终盛典"
+        type: promotion
+        icon: "🎁"
+        section: promotion
+        names:
+          zh: "双 12 年终盛典"
+          en: "12.12 Year-end Sale"
+
+  - date: "2026-12-24"
+    tag: "平安夜"
+    events:
+      - name: "平安夜礼物派送"
+        type: seasonal
+        icon: "🎄"
+        section: events
+        names:
+          zh: "平安夜礼物派送"
+          en: "Christmas Eve Gift Delivery"
+        descriptions:
+          zh: "圣诞老人正在赶来，袜子准备好了吗？"
+          en: "Santa is on his way! Have your stockings ready?"
+
+  - date: "2026-12-25"
+    tag: "圣诞节"
+    events:
+      - name: "圣诞节限定活动"
+        type: limited
+        icon: "🎅"
+        section: events
+        names:
+          zh: "圣诞节限定活动"
+          en: "Christmas Limited Event"

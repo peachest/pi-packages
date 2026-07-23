@@ -1,0 +1,29 @@
+entries:
+  - date: "2026-05-01"
+    tag: "劳动节"
+    events:
+      - name: "劳动节登录奖励"
+        type: seasonal
+        icon: "🔧"
+        section: events
+        names:
+          zh: "劳动节登录奖励"
+          en: "Labor Day Login Rewards"
+      - name: "五一出游季促销"
+        type: promotion
+        icon: "✈️"
+        section: promotion
+        names:
+          zh: "五一出游季促销"
+          en: "May Day Travel Season Sale"
+
+  - date: "2026-05-04"
+    tag: "青年节"
+    events:
+      - name: "青年节特别活动"
+        type: seasonal
+        icon: "🌟"
+        section: events
+        names:
+          zh: "青年节特别活动"
+          en: "Youth Day Special Event"

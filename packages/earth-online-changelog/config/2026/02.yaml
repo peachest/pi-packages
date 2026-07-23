@@ -1,0 +1,11 @@
+entries:
+  - date: "2026-02-14"
+    tag: "情人节"
+    events:
+      - name: "情人节限定活动"
+        type: limited
+        icon: "💕"
+        section: events
+        names:
+          zh: "情人节限定活动"
+          en: "Valentine's Day Limited Event"

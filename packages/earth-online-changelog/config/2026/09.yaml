@@ -1,0 +1,29 @@
+entries:
+  - date: "2026-09-10"
+    tag: "教师节"
+    events:
+      - name: "教师节感恩活动"
+        type: seasonal
+        icon: "📚"
+        section: events
+        names:
+          zh: "教师节感恩活动"
+          en: "Teacher's Day Appreciation Event"
+
+  - date: "2026-09-15"
+    tag: "中秋"
+    events:
+      - name: "中秋节限定活动"
+        type: limited
+        icon: "🌕"
+        section: events
+        names:
+          zh: "中秋节限定活动"
+          en: "Mid-Autumn Festival Limited Event"
+      - name: "月饼礼盒限时上架"
+        type: promotion
+        icon: "🥮"
+        section: promotion
+        names:
+          zh: "月饼礼盒限时上架"
+          en: "Mooncake Gift Box Limited Sale"

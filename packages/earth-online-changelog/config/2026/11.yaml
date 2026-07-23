@@ -1,0 +1,18 @@
+entries:
+  - date: "2026-11-11"
+    tag: "双11"
+    events:
+      - name: "双 11 全球狂欢节"
+        type: promotion
+        icon: "🎉"
+        section: promotion
+        names:
+          zh: "双 11 全球狂欢节"
+          en: "Singles' Day Global Shopping Festival"
+      - name: "限时秒杀活动"
+        type: promotion
+        icon: "⚡"
+        section: promotion
+        names:
+          zh: "限时秒杀活动"
+          en: "Flash Sale Event"
