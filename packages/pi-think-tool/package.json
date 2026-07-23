@@ -1,0 +1,44 @@
+{
+  "name": "pi-think-tool",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Pi extension bundle: think, env, consequence — three tools for safer, more auditable AI agent operations",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "think",
+    "env",
+    "consequence",
+    "safety"
+  ],
+  "license": "MIT",
+  "author": "",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hyx/pi-mypackage.git",
+    "directory": "packages/pi-think-tool"
+  },
+  "exports": {
+    "./think": "./think.ts",
+    "./env": "./env.ts",
+    "./consequence": "./consequence.ts"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-ai": "*",
+    "typebox": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-ai": "*",
+    "typebox": "*"
+  },
+  "pi": {
+    "extensions": [
+      "./think.ts",
+      "./env.ts",
+      "./consequence.ts"
+    ]
+  }
+}
