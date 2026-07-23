@@ -1,0 +1,32 @@
+{
+  "name": "pi-thefuck",
+  "version": "0.1.0",
+  "license": "MIT",
+  "private": true,
+  "description": "Undo the last failed tool call in pi agent, like thefuck",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hyx/pi-mypackage.git",
+    "directory": "packages/pi-thefuck"
+  },
+  "keywords": ["pi-package"],
+  "type": "module",
+  "pi": {
+    "extensions": ["./index.ts"]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    }
+  },
+  "devDependencies": {},
+  "files": [
+    "index.ts",
+    "README.md",
+    "LICENSE",
+    "DESIGN.md"
+  ]
+}
