@@ -1,0 +1,26 @@
+{
+  "_meta.notes": "Chinese (中文) — original authoring language.",
+
+  "footer.off": "○ 代理已关闭",
+  "footer.on": "● 代理 ({url})",
+
+  "editor.title": "编辑代理环境变量 — 每行一个 KEY=VALUE（Shift+Enter 换行，Enter 提交）",
+
+  "notify.config_parse_fail": "未检测到有效的 KEY=VALUE，配置未更改",
+  "notify.config_state_on": "代理保持开启",
+  "notify.config_state_off": "代理已关闭，使用 /proxy 开启",
+  "notify.config_saved": "已保存 {count} 个代理变量",
+
+  "notify.proxy_no_config": "配置文件不存在: {path}\n请先使用 /proxy-config 创建",
+  "notify.proxy_empty": "{path} 中未配置任何变量\n请使用 /proxy-config 编辑",
+  "notify.proxy_on": "代理已开启 ({count} 个变量)",
+  "notify.proxy_off": "代理已关闭",
+
+  "notify.status_on": "已开启",
+  "notify.status_off": "已关闭",
+  "notify.status_title": "代理状态: {status}",
+  "notify.status_config_file": "配置文件: {path}",
+  "notify.status_missing": "(不存在)",
+  "notify.status_env_header": "环境变量:",
+  "notify.status_no_vars": "未配置任何变量"
+}

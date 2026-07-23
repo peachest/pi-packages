@@ -1,0 +1,26 @@
+{
+  "_meta.notes": "Russian (Русский) — machine-assisted, review welcome.",
+
+  "footer.off": "○ Прокси выключен",
+  "footer.on": "● Прокси ({url})",
+
+  "editor.title": "Редактировать переменные окружения прокси — один KEY=VALUE на строку (Shift+Enter новая строка, Enter для отправки)",
+
+  "notify.config_parse_fail": "Допустимые KEY=VALUE не найдены. Конфигурация не изменена",
+  "notify.config_state_on": "Прокси остаётся включённым",
+  "notify.config_state_off": "Прокси выключен. Используйте /proxy для включения",
+  "notify.config_saved": "Сохранено {count} переменных прокси",
+
+  "notify.proxy_no_config": "Файл конфигурации не найден: {path}\nСоздайте его с помощью /proxy-config",
+  "notify.proxy_empty": "Переменные не настроены в {path}\nНастройте с помощью /proxy-config",
+  "notify.proxy_on": "Прокси включён ({count} переменных)",
+  "notify.proxy_off": "Прокси выключен",
+
+  "notify.status_on": "Включён",
+  "notify.status_off": "Выключен",
+  "notify.status_title": "Статус прокси: {status}",
+  "notify.status_config_file": "Файл конфигурации: {path}",
+  "notify.status_missing": "(не найден)",
+  "notify.status_env_header": "Переменные окружения:",
+  "notify.status_no_vars": "Переменные не настроены"
+}

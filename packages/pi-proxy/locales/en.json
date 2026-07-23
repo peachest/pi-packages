@@ -1,0 +1,26 @@
+{
+  "_meta.notes": "English baseline. Missing keys in other locales fall back to these.",
+
+  "footer.off": "○ Proxy off",
+  "footer.on": "● Proxy ({url})",
+
+  "editor.title": "Edit proxy environment variables — one KEY=VALUE per line (Shift+Enter newline, Enter to submit)",
+
+  "notify.config_parse_fail": "No valid KEY=VALUE found. Config unchanged",
+  "notify.config_state_on": "Proxy stays enabled",
+  "notify.config_state_off": "Proxy disabled. Use /proxy to enable",
+  "notify.config_saved": "Saved {count} proxy variables",
+
+  "notify.proxy_no_config": "Config file not found: {path}\nCreate one with /proxy-config first",
+  "notify.proxy_empty": "No variables configured in {path}\nEdit with /proxy-config",
+  "notify.proxy_on": "Proxy enabled ({count} variables)",
+  "notify.proxy_off": "Proxy disabled",
+
+  "notify.status_on": "Enabled",
+  "notify.status_off": "Disabled",
+  "notify.status_title": "Proxy status: {status}",
+  "notify.status_config_file": "Config file: {path}",
+  "notify.status_missing": "(not found)",
+  "notify.status_env_header": "Environment variables:",
+  "notify.status_no_vars": "No variables configured"
+}

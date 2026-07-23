@@ -1,0 +1,26 @@
+{
+  "_meta.notes": "German (Deutsch) — machine-assisted, review welcome.",
+
+  "footer.off": "○ Proxy aus",
+  "footer.on": "● Proxy ({url})",
+
+  "editor.title": "Proxy-Umgebungsvariablen bearbeiten — ein KEY=VALUE pro Zeile (Shift+Enter Zeilenumbruch, Enter zum Senden)",
+
+  "notify.config_parse_fail": "Keine gültigen KEY=VALUE gefunden. Konfiguration unverändert",
+  "notify.config_state_on": "Proxy bleibt aktiviert",
+  "notify.config_state_off": "Proxy deaktiviert. Mit /proxy aktivieren",
+  "notify.config_saved": "{count} Proxy-Variablen gespeichert",
+
+  "notify.proxy_no_config": "Konfigurationsdatei nicht gefunden: {path}\nMit /proxy-config erstellen",
+  "notify.proxy_empty": "Keine Variablen in {path} konfiguriert\nMit /proxy-config bearbeiten",
+  "notify.proxy_on": "Proxy aktiviert ({count} Variablen)",
+  "notify.proxy_off": "Proxy deaktiviert",
+
+  "notify.status_on": "Aktiviert",
+  "notify.status_off": "Deaktiviert",
+  "notify.status_title": "Proxy-Status: {status}",
+  "notify.status_config_file": "Konfigurationsdatei: {path}",
+  "notify.status_missing": "(nicht gefunden)",
+  "notify.status_env_header": "Umgebungsvariablen:",
+  "notify.status_no_vars": "Keine Variablen konfiguriert"
+}

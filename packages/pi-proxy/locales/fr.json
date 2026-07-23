@@ -1,0 +1,26 @@
+{
+  "_meta.notes": "French (Français) — machine-assisted, review welcome.",
+
+  "footer.off": "○ Proxy désactivé",
+  "footer.on": "● Proxy ({url})",
+
+  "editor.title": "Modifier les variables d'environnement du proxy — un KEY=VALUE par ligne (Shift+Enter nouvelle ligne, Enter pour valider)",
+
+  "notify.config_parse_fail": "Aucun KEY=VALUE valide trouvé. Configuration inchangée",
+  "notify.config_state_on": "Proxy reste activé",
+  "notify.config_state_off": "Proxy désactivé. Utilisez /proxy pour activer",
+  "notify.config_saved": "{count} variables proxy enregistrées",
+
+  "notify.proxy_no_config": "Fichier de configuration introuvable : {path}\nCréez-en un avec /proxy-config",
+  "notify.proxy_empty": "Aucune variable configurée dans {path}\nModifiez avec /proxy-config",
+  "notify.proxy_on": "Proxy activé ({count} variables)",
+  "notify.proxy_off": "Proxy désactivé",
+
+  "notify.status_on": "Activé",
+  "notify.status_off": "Désactivé",
+  "notify.status_title": "Statut du proxy : {status}",
+  "notify.status_config_file": "Fichier de configuration : {path}",
+  "notify.status_missing": "(introuvable)",
+  "notify.status_env_header": "Variables d'environnement :",
+  "notify.status_no_vars": "Aucune variable configurée"
+}

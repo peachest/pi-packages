@@ -1,0 +1,26 @@
+{
+  "_meta.notes": "Ukrainian (Українська) — machine-assisted, review welcome.",
+
+  "footer.off": "○ Проксі вимкнено",
+  "footer.on": "● Проксі ({url})",
+
+  "editor.title": "Редагувати змінні середовища проксі — один KEY=VALUE на рядок (Shift+Enter новий рядок, Enter для надсилання)",
+
+  "notify.config_parse_fail": "Допустимі KEY=VALUE не знайдено. Конфігурацію не змінено",
+  "notify.config_state_on": "Проксі залишається увімкненим",
+  "notify.config_state_off": "Проксі вимкнено. Використовуйте /proxy для ввімкнення",
+  "notify.config_saved": "Збережено {count} змінних проксі",
+
+  "notify.proxy_no_config": "Файл конфігурації не знайдено: {path}\nСтворіть його за допомогою /proxy-config",
+  "notify.proxy_empty": "Змінні не налаштовано в {path}\nНалаштуйте за допомогою /proxy-config",
+  "notify.proxy_on": "Проксі увімкнено ({count} змінних)",
+  "notify.proxy_off": "Проксі вимкнено",
+
+  "notify.status_on": "Увімкнено",
+  "notify.status_off": "Вимкнено",
+  "notify.status_title": "Статус проксі: {status}",
+  "notify.status_config_file": "Файл конфігурації: {path}",
+  "notify.status_missing": "(не знайдено)",
+  "notify.status_env_header": "Змінні середовища:",
+  "notify.status_no_vars": "Змінні не налаштовано"
+}
