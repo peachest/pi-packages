@@ -1,0 +1,35 @@
+node_modules/
+
+# Build output
+dist/
+packages/*/dist/
+*.tsbuildinfo
+
+# IDE / local state
+.piproject
+.pi
+.codegraph
+.scratch/
+.pi-subagents
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Package archives
+*.tgz
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+*.swp
+*.swo
+*~
+
+# Node / build
+*.js.map
+*.d.ts.map
+*.log
