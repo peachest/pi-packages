@@ -1,0 +1,14 @@
+{
+  "name": "pi-i18n-utils",
+  "private": true,
+  "type": "module",
+  "main": "./i18n-bridge.ts",
+  "peerDependencies": {
+    "@juicesharp/rpiv-i18n": "*"
+  },
+  "peerDependenciesMeta": {
+    "@juicesharp/rpiv-i18n": {
+      "optional": true
+    }
+  }
+}
