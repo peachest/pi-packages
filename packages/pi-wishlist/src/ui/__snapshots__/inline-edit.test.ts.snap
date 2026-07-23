@@ -1,0 +1,11 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`renderInlineEditValue — snapshot > matches snapshot: CJK characters 1`] = `"需要等待█ v2"`;
+
+exports[`renderInlineEditValue — snapshot > matches snapshot: cursor at beginning 1`] = `"█hello"`;
+
+exports[`renderInlineEditValue — snapshot > matches snapshot: cursor at end 1`] = `"hello█"`;
+
+exports[`renderInlineEditValue — snapshot > matches snapshot: cursor in middle 1`] = `"he█llo"`;
+
+exports[`renderInlineEditValue — snapshot > matches snapshot: empty buffer 1`] = `"█"`;

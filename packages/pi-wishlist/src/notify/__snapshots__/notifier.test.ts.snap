@@ -1,0 +1,42 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`buildNotificationPanel — snapshot > matches snapshot: multiple events on same package 1`] = `
+[
+  "┌────────── 📋 wishlist update ──────────┐",
+  "│   1 packages have changes            │",
+  "│                                      │",
+  "│   Updates:                           │",
+  "│   - pi-core   1.0.0 → 2.0.0  🆕      │",
+  "│   - pi-core   ⭐ 50 → 80              │",
+  "│                                      │",
+  "│   → /wish to open wishlist           │",
+  "└───────────────────────────────────────┘",
+]
+`;
+
+exports[`buildNotificationPanel — snapshot > matches snapshot: single version update 1`] = `
+[
+  "┌─────────── 📋 wishlist update ───────────┐",
+  "│   1 packages have changes              │",
+  "│                                        │",
+  "│   Updates:                             │",
+  "│   - pi-marketplace   0.7.0 → 0.8.0  🆕 │",
+  "│                                        │",
+  "│   → /wish to open wishlist             │",
+  "└─────────────────────────────────────────┘",
+]
+`;
+
+exports[`buildNotificationPanel — snapshot > matches snapshot: two different packages with different event types 1`] = `
+[
+  "┌─────────── 📋 wishlist update ───────────┐",
+  "│   2 packages have changes              │",
+  "│                                        │",
+  "│   Updates:                             │",
+  "│   - pi-marketplace   0.7.0 → 0.8.0  🆕 │",
+  "│   - pi-subagents   ⭐ 200 → 250         │",
+  "│                                        │",
+  "│   → /wish to open wishlist             │",
+  "└─────────────────────────────────────────┘",
+]
+`;

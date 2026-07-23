@@ -1,0 +1,83 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`createWishlistComponent — render snapshots > matches snapshot: detail panel (Enter toggle) 1`] = `
+"┌ Pi Wishlist ─────────────────────────────────────────────┐
+│                                                          │
+│  Pi Wishlist (1 packages)                                │
+│                                                          │
+│  ❯ pi-marketplace               1.0.0      ⭐ 100  📥5.[0m  │
+│                                                          │
+│  ──────────────────────────────────────────────────────[0m  │
+│    ── pi-marketplace ──────────────────────              │
+│    npm:    1.0.0 · 5.0k/wk                               │
+│    git:    github.com/test/pi-marketplace · 100 stars ·[0m  │
+│    added:  2026-01-01                                    │
+│    event:  new_version 1d ago                            │
+│                                                          │
+│  a add  d remove  e edit note  / search  ↑↓ Enter detai[0m  │
+│                                                          │
+└──────────────────────────────────────────────────────────┘"
+`;
+
+exports[`createWishlistComponent — render snapshots > matches snapshot: empty list 1`] = `
+"┌ Pi Wishlist ─────────────────────────────────────────────┐
+│                                                          │
+│  Pi Wishlist (0 packages)                                │
+│                                                          │
+│                                                          │
+│  wishlist is empty                                       │
+│                                                          │
+│  no packages tracked yet.                                │
+│  press a to search and add                               │
+│  or run /wish add npm:<package-name>                     │
+│                                                          │
+│  track packages you're interested in but not ready to i[0m  │
+│  and get notified when there are new versions or activi[0m  │
+│                                                          │
+│                                                          │
+│  a add  d remove  e edit note  / search  ↑↓ Enter detai[0m  │
+│                                                          │
+└──────────────────────────────────────────────────────────┘"
+`;
+
+exports[`createWishlistComponent — render snapshots > matches snapshot: list with packages 1`] = `
+"┌ Pi Wishlist ─────────────────────────────────────────────┐
+│                                                          │
+│  Pi Wishlist (2 packages)                                │
+│                                                          │
+│  ❯ pi-marketplace               1.0.0      ⭐ 100  📥5.[0m  │
+│    pi-subagents                 1.0.0      ⭐ 100  📥5.[0m  │
+│                                                          │
+│  a add  d remove  e edit note  / search  ↑↓ Enter detai[0m  │
+│                                                          │
+└──────────────────────────────────────────────────────────┘"
+`;
+
+exports[`createWishlistComponent — render snapshots > matches snapshot: remove-confirm mode 1`] = `
+"┌ Pi Wishlist ─────────────────────────────────────────────┐
+│                                                          │
+│  Pi Wishlist (1 packages)                                │
+│                                                          │
+│                                                          │
+│    confirm remove pi-marketplace？(y/N)                  │
+│                                                          │
+│  ──────────────────────────────────────────────────────[0m  │
+│  y/Enter confirm  other key cancel                       │
+│                                                          │
+└──────────────────────────────────────────────────────────┘"
+`;
+
+exports[`createWishlistComponent — render snapshots > matches snapshot: search mode 1`] = `
+"┌ Pi Wishlist ─────────────────────────────────────────────┐
+│                                                          │
+│  Pi Wishlist (2/3)                                       │
+│                                                          │
+│  > pi-s█                                               [0m  │
+│  ──────────────────────────────────────────────────────[0m  │
+│  ❯ **pi-s**ubagents             1.0.0      ⭐ 100  📥5.[0m  │
+│    **pi-s**earch                1.0.0      ⭐ 100  📥5.[0m  │
+│                                                          │
+│  Esc/Enter confirm  Backspace delete                     │
+│                                                          │
+└──────────────────────────────────────────────────────────┘"
+`;

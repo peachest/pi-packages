@@ -1,0 +1,52 @@
+{
+  "name": "pi-wishlist",
+  "version": "0.1.0",
+  "description": "Pi package wishlist — track packages you want to install later, with automatic update notifications",
+  "keywords": [
+    "pi-package"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hyx/pi-mypackage.git",
+    "directory": "packages/pi-wishlist"
+  },
+  "type": "module",
+  "main": "./index.ts",
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "files": [
+    "index.ts",
+    "src/",
+    "locales/",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    },
+    "@juicesharp/rpiv-i18n": {
+      "optional": true
+    },
+    "@earendil-works/pi-tui": {
+      "optional": "true"
+    }
+  },
+  "devDependencies": {
+    "@juicesharp/rpiv-i18n": "^1.20.0"
+  },
+  "license": "MIT",
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.79.4",
+    "@earendil-works/pi-tui": "*",
+    "@juicesharp/rpiv-i18n": "^1.20.0",
+    "pi-i18n-utils": "*"
+  }
+}

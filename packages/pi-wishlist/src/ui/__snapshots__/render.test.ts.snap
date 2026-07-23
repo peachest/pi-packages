@@ -1,0 +1,21 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`frame — snapshot > matches snapshot for a typical frame with title 1`] = `
+"┌ Pi Wishlist ───────────────────────────────────┐
+│                                                │
+│  Header line                                   │
+│  Content line A                                │
+│  Content line B                                │
+│                                                │
+└────────────────────────────────────────────────┘"
+`;
+
+exports[`frame — snapshot > matches snapshot with truncated overflow 1`] = `
+"┌ Truncated ─────────────────────────────────────┐
+│                                                │
+│  line 1                                        │
+│  line 2                                        │
+│  ↓ 3 more line(s)                              │
+│                                                │
+└────────────────────────────────────────────────┘"
+`;

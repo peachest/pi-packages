@@ -1,0 +1,30 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`formatDetail — snapshot > matches snapshot: full entry with npm + github + notes + recent event 1`] = `
+[
+  "── pi-subagents ──────────────────────",
+  "npm:    1.2.0 · 1.2M/wk",
+  "git:    github.com/test/pi-subagents · 250 stars · 45 · 3 issues",
+  "notes:  需要等待 v2 正式版",
+  "added:  2026-01-01",
+  "event:  new_version 2d ago",
+]
+`;
+
+exports[`formatDetail — snapshot > matches snapshot: npm-only entry 1`] = `
+[
+  "── pi-marketplace ──────────────────────",
+  "npm:    0.8.0 · 15.0k/wk",
+  "added:  2026-03-15",
+]
+`;
+
+exports[`formatDetail — snapshot > matches snapshot: stale GitHub with old event 1`] = `
+[
+  "── old-repo ──────────────────────",
+  "npm:    0.1.0 · 500/wk",
+  "git:    github.com/stale/old-repo · 10 stars · 2 · 0 issues",
+  "added:  2025-06-01",
+  "event:  stars_changed 204d ago",
+]
+`;
