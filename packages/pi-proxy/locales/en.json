@@ -3,9 +3,11 @@
 
   "footer.off": "○ Proxy off",
   "footer.on": "● Proxy ({url})",
+  "footer.on_short": "● Proxy on",
 
-  "editor.title": "Edit proxy environment variables — one KEY=VALUE per line (Shift+Enter newline, Enter to submit)",
+  "editor.title": "Proxy env vars KEY=VALUE — Enter save · Ctrl+- undo · Ctrl+Y yank · Ctrl+K cut to EOL · Ctrl+U cut to BOL · Ctrl+A/E line start/end · Ctrl+R reset",
 
+  "notify.config_reset": "Reset to template. Proxy disabled",
   "notify.config_parse_fail": "No valid KEY=VALUE found. Config unchanged",
   "notify.config_state_on": "Proxy stays enabled",
   "notify.config_state_off": "Proxy disabled. Use /proxy to enable",

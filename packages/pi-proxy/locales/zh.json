@@ -3,9 +3,11 @@
 
   "footer.off": "○ 代理已关闭",
   "footer.on": "● 代理 ({url})",
+  "footer.on_short": "● 代理已开启",
 
-  "editor.title": "编辑代理环境变量 — 每行一个 KEY=VALUE（Shift+Enter 换行，Enter 提交）",
+  "editor.title": "代理环境变量 KEY=VALUE — Enter 保存 · Ctrl+- 撤销 · Ctrl+Y 粘贴 · Ctrl+K 剪切至行尾 · Ctrl+U 剪切至行首 · Ctrl+A/E 行首/尾 · Ctrl+R 重置",
 
+  "notify.config_reset": "已重置为模板，代理已关闭",
   "notify.config_parse_fail": "未检测到有效的 KEY=VALUE，配置未更改",
   "notify.config_state_on": "代理保持开启",
   "notify.config_state_off": "代理已关闭，使用 /proxy 开启",

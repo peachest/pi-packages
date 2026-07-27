@@ -3,9 +3,11 @@
 
   "footer.off": "○ Проксі вимкнено",
   "footer.on": "● Проксі ({url})",
+  "footer.on_short": "● Проксі увімкнено",
 
-  "editor.title": "Редагувати змінні середовища проксі — один KEY=VALUE на рядок (Shift+Enter новий рядок, Enter для надсилання)",
+  "editor.title": "Змінні проксі KEY=VALUE — Enter зберегти · Ctrl+- скасувати · Ctrl+Y вставити · Ctrl+K вирізати до кінця · Ctrl+U вирізати до початку · Ctrl+A/E початок/кінець · Ctrl+R скинути",
 
+  "notify.config_reset": "Скинуто до шаблону. Проксі вимкнено",
   "notify.config_parse_fail": "Допустимі KEY=VALUE не знайдено. Конфігурацію не змінено",
   "notify.config_state_on": "Проксі залишається увімкненим",
   "notify.config_state_off": "Проксі вимкнено. Використовуйте /proxy для ввімкнення",

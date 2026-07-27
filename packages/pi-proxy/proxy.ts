@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { createBashTool, createLocalBashOperations } from "@earendil-works/pi-coding-agent";
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
@@ -27,10 +27,14 @@ const CONFIG_FILE = join(CONFIG_DIR, "proxy-config.json");
 const DEFAULT_ENV_FILE = join(CONFIG_DIR, "proxy.env");
 const STATUS_KEY = "proxy";
 
-const ENV_TEMPLATE = `# http_proxy=http://127.0.0.1:7890
-# https_proxy=http://127.0.0.1:7890
-# all_proxy=socks5://127.0.0.1:7891
-# no_proxy=localhost,127.0.0.1,.local
+const ENV_TEMPLATE = `# http_proxy=
+# https_proxy=
+# HTTP_PROXY=
+# HTTPS_PROXY=
+# all_proxy=
+# ALL_PROXY=
+# no_proxy=
+# NO_PROXY=
 `;
 
 // --- Config ---
@@ -85,9 +89,15 @@ function writeEnvFile(filePath: string, env: Record<string, string>): void {
   writeFileSync(filePath, lines.join("\n"), "utf-8");
 }
 
+function resetEnvFile(filePath: string): void {
+  if (!existsSync(CONFIG_DIR)) mkdirSync(CONFIG_DIR, { recursive: true });
+  writeFileSync(filePath, ENV_TEMPLATE, "utf-8");
+}
+
 // --- Module state ---
 let proxyEnv: Record<string, string> = {};
 let enabled = false;
+let footerUrlTimer: ReturnType<typeof setTimeout> | null = null;
 
 // --- Footer ---
 function refreshFooter(ctx: {
@@ -97,10 +107,24 @@ function refreshFooter(ctx: {
   if (!ctx.hasUI) return;
   if (!enabled) {
     ctx.ui.setStatus(STATUS_KEY, t("footer.off", "○ Proxy off"));
-  } else {
+  } else if (footerUrlTimer !== null) {
     const firstUrl = Object.values(proxyEnv)[0] ?? "";
     ctx.ui.setStatus(STATUS_KEY, t("footer.on", "● Proxy ({url})").replace("{url}", firstUrl));
+  } else {
+    ctx.ui.setStatus(STATUS_KEY, t("footer.on_short", "● Proxy on"));
   }
+}
+
+function showFooterUrlBriefly(ctx: {
+  hasUI: boolean;
+  ui: { setStatus: (key: string, text: string | undefined) => void };
+}): void {
+  if (footerUrlTimer !== null) clearTimeout(footerUrlTimer);
+  refreshFooter(ctx);
+  footerUrlTimer = setTimeout(() => {
+    footerUrlTimer = null;
+    refreshFooter(ctx);
+  }, 10000);
 }
 
 // --- Entry point ---
@@ -155,50 +179,99 @@ export default function (pi: ExtensionAPI) {
     refreshFooter(ctx);
   });
 
+  // Ctrl+R detection: legacy (\x12), Kitty (CSI 114;5u), modifyOtherKeys (CSI 27;5;114~)
+  function isCtrlR(data: string): boolean {
+    return data === "\x12" || data === "\x1b[114;5u" || data === "\x1b[27;5;114~";
+  }
+
   // 4. /proxy-config — edit .env in pi's built-in editor
-  pi.registerCommand("proxy-config", {
-    description: "编辑代理环境变量（Shift+Enter 换行，Ctrl+G 外部编辑器）",
-    handler: async (_args, ctx) => {
-      const envFile = config.envFile;
+  //     Ctrl+R inside the editor resets content to template.
+  async function handleProxyConfig(args: string, ctx: ExtensionCommandContext): Promise<void> {
+    const envFile = config.envFile;
 
-      // Ensure .env exists with template
-      if (!existsSync(CONFIG_DIR)) mkdirSync(CONFIG_DIR, { recursive: true });
-      if (!existsSync(envFile)) {
-        writeFileSync(envFile, ENV_TEMPLATE, "utf-8");
-      }
+    // Ensure .env exists with template
+    if (!existsSync(CONFIG_DIR)) mkdirSync(CONFIG_DIR, { recursive: true });
+    if (!existsSync(envFile)) {
+      writeFileSync(envFile, ENV_TEMPLATE, "utf-8");
+    }
 
-      const current = readFileSync(envFile, "utf-8");
-
-      const edited = await ctx.ui.editor(
-        t("editor.title", "编辑代理环境变量 — 每行一个 KEY=VALUE（Shift+Enter 换行，Enter 提交）"),
-        current,
-      );
-
-      if (edited === undefined) return; // user cancelled
-
-      // Parse and validate
-      const pairs = readEnvLines(edited);
-      if (Object.keys(pairs).length === 0) {
-        ctx.ui.notify(t("notify.config_parse_fail", "未检测到有效的 KEY=VALUE，配置未更改"), "warning");
-        return;
-      }
-
-      // Save — 保持当前 enabled 状态不变
-      writeEnvFile(envFile, pairs);
-      proxyEnv = enabled ? { ...pairs } : {};
-      config.enabled = enabled;
+    // /proxy-config reset — quick reset to template
+    const normalizedArgs = String(args || "").trim().toLowerCase();
+    if (normalizedArgs === "reset" || normalizedArgs === "r") {
+      resetEnvFile(envFile);
+      proxyEnv = {};
+      config.enabled = false;
       saveConfig(config);
+      enabled = false;
       refreshFooter(ctx);
-
-      const stateLabel = enabled
-        ? t("notify.config_state_on", "代理保持开启")
-        : t("notify.config_state_off", "代理已关闭，使用 /proxy 开启");
-      const count = Object.keys(pairs).length;
       ctx.ui.notify(
-        t("notify.config_saved", "已保存 {count} 个代理变量").replace("{count}", String(count)) + "\n" + stateLabel,
+        t("notify.config_reset", "已重置为模板，代理已关闭"),
         "info",
       );
-    },
+      return;
+    }
+
+    // Edit loop: Ctrl+R cancels & reopens with template
+    let content = readFileSync(envFile, "utf-8");
+    let edited: string | undefined;
+
+    while (true) {
+      let resetRequested = false;
+
+      // Intercept Ctrl+R while the editor is open: inject Escape to cancel,
+      // then loop reopens with the template.
+      const unsub = ctx.ui.onTerminalInput((data) => {
+        if (isCtrlR(data)) {
+          resetRequested = true;
+          return { data: "\x1b" }; // Escape → editor cancels, resolves undefined
+        }
+        return undefined;
+      });
+
+      edited = await ctx.ui.editor(
+        t("editor.title", "代理环境变量 KEY=VALUE — Enter 保存 · Ctrl+- 撤销 · Ctrl+Y 粘贴 · Ctrl+K 剪切至行尾 · Ctrl+U 剪切至行首 · Ctrl+A/E 行首/尾 · Ctrl+R 重置"),
+        content,
+      );
+
+      unsub();
+
+      if (resetRequested) {
+        content = ENV_TEMPLATE;
+        continue; // reopen with template
+      }
+
+      break; // user submitted or cancelled normally
+    }
+
+    if (edited === undefined) return; // user cancelled
+
+    // Parse and validate
+    const pairs = readEnvLines(edited);
+    if (Object.keys(pairs).length === 0) {
+      ctx.ui.notify(t("notify.config_parse_fail", "未检测到有效的 KEY=VALUE，配置未更改"), "warning");
+      return;
+    }
+
+    // Save — 保持当前 enabled 状态不变
+    writeEnvFile(envFile, pairs);
+    proxyEnv = enabled ? { ...pairs } : {};
+    config.enabled = enabled;
+    saveConfig(config);
+    refreshFooter(ctx);
+
+    const stateLabel = enabled
+      ? t("notify.config_state_on", "代理保持开启")
+      : t("notify.config_state_off", "代理已关闭，使用 /proxy 开启");
+    const count = Object.keys(pairs).length;
+    ctx.ui.notify(
+      t("notify.config_saved", "已保存 {count} 个代理变量").replace("{count}", String(count)) + "\n" + stateLabel,
+      "info",
+    );
+  }
+
+  pi.registerCommand("proxy-config", {
+    description: "编辑代理环境变量（Ctrl+G 外部编辑器，Ctrl+R 重置为模板）— 参数 reset 可快速重置",
+    handler: handleProxyConfig,
   });
 
   // 5. /proxy — enable
@@ -228,7 +301,7 @@ export default function (pi: ExtensionAPI) {
       config.enabled = true;
       saveConfig(config);
 
-      refreshFooter(ctx);
+      showFooterUrlBriefly(ctx);
       ctx.ui.notify(
         t("notify.proxy_on", "代理已开启 ({count} 个变量)").replace("{count}", String(Object.keys(pairs).length)),
         "info",

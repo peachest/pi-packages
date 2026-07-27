@@ -51,6 +51,19 @@ no_proxy=localhost,127.0.0.1,.local
 NO_PROXY=localhost,127.0.0.1,.local
 ```
 
+初始模板（首次创建时）只保留 `#KEY=` 不含值，方便用户直接粘贴而不需要先删除占位值：
+
+```
+# http_proxy=
+# https_proxy=
+# HTTP_PROXY=
+# HTTPS_PROXY=
+# all_proxy=
+# ALL_PROXY=
+# no_proxy=
+# NO_PROXY=
+```
+
 ## 架构
 
 ```
@@ -136,9 +149,11 @@ pi 启动
   ▼
 运行时：
   /proxy-config → 确保 .env 存在（首次生成模板）
-                  → spawn $EDITOR proxy.env → 等待退出
-                  → 写 proxy-config.json（enabled=false）
-                  → footer "○ Proxy off"
+                  → 设置 belowEditor widget 显示 Ctrl+R 提示
+                  → 打开内置编辑器
+                  → onTerminalInput 拦截 Ctrl+R：注入 Escape 取消 → 以模板重新打开
+                  → Enter 提交 → 解析保存 → 通知 → 清除 widget
+                  → Escape/Ctrl+C 取消 → 不更改 → 清除 widget
   /proxy        → 读 proxy-config.json → 读 .env → 解析 → proxyEnv
                   → enabled=true → 写 config → footer "● Proxy (...)"
   /proxy-unset  → proxyEnv={} → enabled=false → 写 config → footer "○ Proxy off"
@@ -150,7 +165,9 @@ pi 启动
 
 | 命令 | 行为 |
 |------|------|
-| `/proxy-config` | 外部编辑器打开 `proxy.env`。编辑保存关闭后，通知已更新，代理关闭。 |
+| `/proxy-config` | 打开内置编辑器编辑 `proxy.env`。编辑器内 `Ctrl+R` 重置为模板。 |
+| `/proxy-config reset` | 直接重置 .env 为初始模板，关闭代理。 |
+| `Ctrl+R`（编辑器内） | 在 /proxy-config 编辑器中按下时，将内容重置为初始模板。通过 `onTerminalInput` 拦截按键，注入 Escape 取消当前编辑器，然后以模板重新打开。 |
 | `/proxy` | 从 .env 读取环境变量，开启注入。 |
 | `/proxy-unset` | 关闭注入。 |
 | `/proxy-status` | 显示 config 状态 + .env 中的所有变量。 |

@@ -3,9 +3,11 @@
 
   "footer.off": "○ Proxy desactivado",
   "footer.on": "● Proxy ({url})",
+  "footer.on_short": "● Proxy activado",
 
-  "editor.title": "Editar variables de entorno del proxy — un KEY=VALUE por línea (Shift+Enter nueva línea, Enter para enviar)",
+  "editor.title": "Variables proxy KEY=VALUE — Enter guardar · Ctrl+- deshacer · Ctrl+Y pegar · Ctrl+K cortar al final · Ctrl+U cortar al inicio · Ctrl+A/E inicio/fin · Ctrl+R restablecer",
 
+  "notify.config_reset": "Restablecido a plantilla. Proxy desactivado",
   "notify.config_parse_fail": "No se encontraron KEY=VALUE válidos. Configuración sin cambios",
   "notify.config_state_on": "Proxy permanece activado",
   "notify.config_state_off": "Proxy desactivado. Use /proxy para activar",
