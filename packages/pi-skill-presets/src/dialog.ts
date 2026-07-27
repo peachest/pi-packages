@@ -78,7 +78,7 @@ class PresetDialog extends Container {
     this.addChild(this.listContainer);
     this.addChild(new Spacer(1));
     this.addChild(new Text(
-      theme.fg("dim", "↑↓ navigate  Enter toggle  Esc quit"),
+      theme.fg("dim", "↑↓ navigate  Space toggle  Esc quit"),
       1, 0,
     ));
     this.addChild(new Spacer(1));
@@ -156,7 +156,7 @@ class PresetDialog extends Container {
       return;
     }
 
-    if (kb.matches(data, "tui.select.confirm") || matchesKey(data, Key.enter)) {
+    if (kb.matches(data, "tui.select.confirm") || matchesKey(data, Key.space) || matchesKey(data, Key.enter)) {
       const name = this.presetNames[this.selectedIndex];
       if (name) this.togglePreset(name);
       return;
