@@ -11,7 +11,8 @@
 import type { ExtensionCommandContext, ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { PresetState } from "./preset-state.ts";
 import type { PresetOpEntry } from "./types.ts";
-import { readPresetsConfig, getPresetSkills, getGlobalSettingsPath } from "./config.ts";
+import { readPresetsConfig, getPresetSkills } from "./config.ts";
+import { showPresetDialog } from "./dialog.ts";
 
 /** The custom type for preset operation entries. */
 export const PRESET_OP_CUSTOM_TYPE = "preset-op";
@@ -35,42 +36,7 @@ export function createCommands(
     const cwd = getCwd();
     const config = readPresetsConfig(cwd);
     const defaultPreset = getDefaultPreset();
-    const presetNames = Object.keys(config.definitions);
-
-    if (presetNames.length === 0) {
-      const action = await ctx.ui.confirm(
-        "No presets defined",
-        "No presets found in settings.json. Would you like to open settings.json to add preset definitions?",
-      );
-      if (action) {
-        const { exec } = await import("node:child_process");
-        exec(`$EDITOR "${getGlobalSettingsPath()}"`, { cwd });
-      }
-      return;
-    }
-
-    // Build display options
-    const options = presetNames.map((name) => {
-      const loaded = state.has(name);
-      const isDefault = name === defaultPreset;
-      const marker = isDefault ? " ★default" : "";
-      const status = loaded ? `[loaded]${marker}` : `[─]${marker}`;
-      return `${name}  ${status}`;
-    });
-
-    const selected = await ctx.ui.select("Presets (Enter to toggle)", options);
-    if (selected === undefined) return;
-
-    // Extract preset name from the selected option
-    const presetName = selected.split("  ")[0];
-    if (!presetName || !config.definitions[presetName]) return;
-
-    // Toggle
-    if (state.has(presetName)) {
-      doOffload(pi, ctx, state, presetName);
-    } else {
-      doLoad(pi, ctx, state, presetName);
-    }
+    await showPresetDialog(ctx, state, config, defaultPreset);
   }
 
   /** /preset-load <name> */
