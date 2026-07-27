@@ -8,7 +8,7 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { homedir } from "node:os";
-import type { PresetsConfig, PresetDefinition } from "./types.js";
+import type { PresetsConfig, PresetDefinition } from "./types.ts";
 
 /** Get the pi agent directory (~/.pi/agent or PI_CODING_AGENT_DIR). */
 export function getAgentDir(): string {

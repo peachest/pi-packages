@@ -7,7 +7,7 @@
  */
 
 import { SettingsManager, loadSkills } from "@earendil-works/pi-coding-agent";
-import { getAgentDir, readPresetsConfig, getPresetSkills } from "./config.js";
+import { getAgentDir, readPresetsConfig, getPresetSkills } from "./config.ts";
 
 /**
  * Write default preset skills to settings.skills.

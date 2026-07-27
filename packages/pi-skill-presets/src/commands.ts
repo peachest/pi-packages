@@ -9,9 +9,9 @@
  */
 
 import type { ExtensionCommandContext, ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import type { PresetState } from "./preset-state.js";
-import type { PresetOpEntry } from "./types.js";
-import { readPresetsConfig, getPresetSkills } from "./config.js";
+import type { PresetState } from "./preset-state.ts";
+import type { PresetOpEntry } from "./types.ts";
+import { readPresetsConfig, getPresetSkills, getGlobalSettingsPath } from "./config.ts";
 
 /** The custom type for preset operation entries. */
 export const PRESET_OP_CUSTOM_TYPE = "preset-op";
@@ -38,7 +38,14 @@ export function createCommands(
     const presetNames = Object.keys(config.definitions);
 
     if (presetNames.length === 0) {
-      ctx.ui.notify("No presets defined. Add presets to settings.json.", "warning");
+      const action = await ctx.ui.confirm(
+        "No presets defined",
+        "No presets found in settings.json. Would you like to open settings.json to add preset definitions?",
+      );
+      if (action) {
+        const { exec } = await import("node:child_process");
+        exec(`$EDITOR "${getGlobalSettingsPath()}"`, { cwd });
+      }
       return;
     }
 

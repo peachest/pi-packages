@@ -19,12 +19,12 @@
  */
 
 import type { ExtensionAPI, CustomEntry } from "@earendil-works/pi-coding-agent";
-import { PresetState } from "./src/preset-state.js";
-import { createCommands, PRESET_OP_CUSTOM_TYPE } from "./src/commands.js";
-import { createInjector } from "./src/injector.js";
-import { applyDefaultPreset } from "./src/default-preset.js";
-import { readPresetsConfig } from "./src/config.js";
-import type { PresetOpEntry } from "./src/types.js";
+import { PresetState } from "./src/preset-state.ts";
+import { createCommands, PRESET_OP_CUSTOM_TYPE } from "./src/commands.ts";
+import { createInjector } from "./src/injector.ts";
+import { applyDefaultPreset } from "./src/default-preset.ts";
+import { readPresetsConfig } from "./src/config.ts";
+import type { PresetOpEntry } from "./src/types.ts";
 
 export default function skillPresetsExtension(pi: ExtensionAPI) {
   // Shared state

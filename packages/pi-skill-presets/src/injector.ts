@@ -7,10 +7,10 @@
  */
 
 import type { ContextEvent } from "@earendil-works/pi-coding-agent";
-import type { PresetState } from "./preset-state.js";
-import type { PresetsConfig } from "./types.js";
-import { resolveSkills, formatSkills, getSystemPromptSkillNames } from "./skill-resolver.js";
-import { getPresetSkills } from "./config.js";
+import type { PresetState } from "./preset-state.ts";
+import type { PresetsConfig } from "./types.ts";
+import { resolveSkills, formatSkills, getSystemPromptSkillNames } from "./skill-resolver.ts";
+import { getPresetSkills } from "./config.ts";
 
 /** Custom type for the injected skill content message. */
 export const SKILL_INJECTION_CUSTOM_TYPE = "preset-context";

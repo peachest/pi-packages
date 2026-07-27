@@ -10,7 +10,7 @@
 import { loadSkills, formatSkillsForPrompt } from "@earendil-works/pi-coding-agent";
 import type { Skill } from "@earendil-works/pi-coding-agent";
 import { SettingsManager } from "@earendil-works/pi-coding-agent";
-import { getAgentDir } from "./config.js";
+import { getAgentDir } from "./config.ts";
 
 /**
  * Resolve skill names to Skill objects using pi's skill loading system.

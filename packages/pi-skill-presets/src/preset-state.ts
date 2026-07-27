@@ -5,8 +5,8 @@
  * Skills are resolved dynamically from preset names each turn.
  */
 
-import type { PresetOpEntry, ResolvedActiveSet, PresetsConfig } from "./types.js";
-import { getPresetSkills } from "./config.js";
+import type { PresetOpEntry, ResolvedActiveSet, PresetsConfig } from "./types.ts";
+import { getPresetSkills } from "./config.ts";
 
 /** In-memory active set: names of loaded presets. */
 export class PresetState {
