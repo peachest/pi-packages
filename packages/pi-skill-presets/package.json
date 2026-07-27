@@ -1,5 +1,5 @@
 {
-  "name": "skill-presets",
+  "name": "pi-skill-presets",
   "version": "0.1.0",
   "description": "Prefix-cache-aware dynamic skill loading via named presets for pi",
   "keywords": [
@@ -14,7 +14,7 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/hyx/pi-mypackage.git",
-    "directory": "packages/skill-presets"
+    "directory": "packages/pi-skill-presets"
   },
   "files": [
     "index.ts",

@@ -90,7 +90,7 @@ These are examples — adjust to match your installed skills.
 ## Install
 
 ```sh
-pi install ./skill-presets  # from ~/projects/pi-mypackage
+pi install ./pi-skill-presets  # from ~/projects/pi-mypackage
 ```
 
 ## Development
