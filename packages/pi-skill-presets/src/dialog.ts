@@ -14,7 +14,7 @@ import { getPresetSkills } from "./config.ts";
 
 // Import pi-tui primitives — resolved from pi-coding-agent's nested dependency
 import { Container, Key, matchesKey, Spacer, Text } from "@earendil-works/pi-tui";
-import type { Focusable, TUI } from "@earendil-works/pi-tui";
+import type { Focusable, TUI, Component } from "@earendil-works/pi-tui";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 
 export async function showPresetDialog(
@@ -23,15 +23,21 @@ export async function showPresetDialog(
   config: PresetsConfig,
   defaultPreset?: string,
 ): Promise<void> {
+  if (!ctx.hasUI) {
+    ctx.ui.notify("/preset requires interactive mode", "warning");
+    return;
+  }
+
   await ctx.ui.custom<void>((tui, theme, _kb, done) => {
     const dialog = new PresetDialog(ctx, state, config, theme, tui, done, defaultPreset);
-    return {
+    const component: Component & Focusable = {
       get focused() { return dialog.focused; },
       set focused(value: boolean) { dialog.focused = value; },
       render(width: number) { return dialog.render(width); },
       invalidate() { /* no-op */ },
       handleInput(data: string) { dialog.handleInput(data); tui.requestRender(); },
     };
+    return component;
   }, {
     overlay: true,
     overlayOptions: {
@@ -125,7 +131,7 @@ class PresetDialog implements Focusable {
     const hints = this.theme.fg("dim", [
       "↑↓ navigate",
       "Enter toggle",
-      "q quit",
+      "Esc quit",
     ].join("  "));
     root.addChild(new Text(hints, 1, 0));
 
@@ -155,6 +161,7 @@ class PresetDialog implements Focusable {
       this.selectedIndex = this.selectedIndex === 0
         ? Math.max(0, presetNames.length - 1)
         : this.selectedIndex - 1;
+      this.requestRender();
       return;
     }
 
@@ -162,6 +169,7 @@ class PresetDialog implements Focusable {
       this.selectedIndex = presetNames.length === 0
         ? 0
         : (this.selectedIndex + 1) % presetNames.length;
+      this.requestRender();
       return;
     }
 
@@ -172,7 +180,7 @@ class PresetDialog implements Focusable {
       return;
     }
 
-    if (matchesKey(data, Key.escape) || matchesKey(data, "q")) {
+    if (matchesKey(data, Key.escape)) {
       this.done();
       return;
     }
