@@ -1,0 +1,44 @@
+{
+  "name": "skill-presets",
+  "version": "0.1.0",
+  "description": "Prefix-cache-aware dynamic skill loading via named presets for pi",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "skills",
+    "presets",
+    "prefix-cache"
+  ],
+  "license": "MIT",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hyx/pi-mypackage.git",
+    "directory": "packages/skill-presets"
+  },
+  "files": [
+    "index.ts",
+    "src/",
+    "README.md"
+  ],
+  "scripts": {
+    "check": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  }
+}
