@@ -14,13 +14,15 @@ import {
   Text,
 } from "@earendil-works/pi-tui";
 import type { TUI } from "@earendil-works/pi-tui";
-import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
+import type { ExtensionContext, ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
 import type { PresetState } from "./preset-state.ts";
-import type { PresetsConfig } from "./types.ts";
+import type { PresetsConfig, PresetOpEntry } from "./types.ts";
 import { getPresetSkills } from "./config.ts";
+import { PRESET_OP_CUSTOM_TYPE } from "./commands.ts";
 
 export async function showPresetDialog(
   ctx: ExtensionContext,
+  pi: ExtensionAPI,
   state: PresetState,
   config: PresetsConfig,
   defaultPreset?: string,
@@ -31,7 +33,7 @@ export async function showPresetDialog(
   }
 
   await ctx.ui.custom<void>((tui, theme, _kb, done) => {
-    return new PresetDialog(ctx, state, config, theme, tui, done, defaultPreset);
+    return new PresetDialog(ctx, pi, state, config, theme, tui, done, defaultPreset);
   }, {
     overlay: true,
     overlayOptions: {
@@ -44,6 +46,7 @@ export async function showPresetDialog(
 
 class PresetDialog extends Container {
   private readonly ctx: ExtensionContext;
+  private readonly pi: ExtensionAPI;
   private readonly theme: Theme;
   private readonly tui: TUI;
   private readonly done: (result: void) => void;
@@ -55,6 +58,7 @@ class PresetDialog extends Container {
 
   constructor(
     ctx: ExtensionContext,
+    pi: ExtensionAPI,
     state: PresetState,
     config: PresetsConfig,
     theme: Theme,
@@ -64,6 +68,7 @@ class PresetDialog extends Container {
   ) {
     super();
     this.ctx = ctx;
+    this.pi = pi;
     this.state = state;
     this.config = config;
     this.theme = theme;
@@ -171,9 +176,19 @@ class PresetDialog extends Container {
   private togglePreset(name: string): void {
     if (this.state.has(name)) {
       this.state.offload(name);
+      this.pi.appendEntry<PresetOpEntry>(PRESET_OP_CUSTOM_TYPE, {
+        action: "offload",
+        preset: name,
+        timestamp: Date.now(),
+      });
       this.ctx.ui.notify(`Offloaded preset "${name}".`, "info");
     } else {
       this.state.load(name);
+      this.pi.appendEntry<PresetOpEntry>(PRESET_OP_CUSTOM_TYPE, {
+        action: "load",
+        preset: name,
+        timestamp: Date.now(),
+      });
       this.ctx.ui.notify(`Loaded preset "${name}".`, "info");
     }
     this.updateList();

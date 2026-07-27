@@ -31,4 +31,6 @@ export interface ResolvedActiveSet {
   missing: string[];
   /** Skills excluded because they're disabled by skill-manager toggle. */
   disabled: string[];
+  /** Skills appearing in multiple loaded presets (deduplicated, informational). */
+  duplicates: string[];
 }

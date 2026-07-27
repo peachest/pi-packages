@@ -59,9 +59,9 @@ export default function skillPresetsExtension(pi: ExtensionAPI) {
   });
 
   // --- context event: transient injection ---
-  pi.on("context", (event, _ctx) => {
+  pi.on("context", (event, ctx) => {
     const config = readPresetsConfig(cwd);
-    const injector = createInjector(state, config, cwd, defaultPresetName);
+    const injector = createInjector(state, config, cwd, ctx, defaultPresetName);
     return injector(event.messages);
   });
 

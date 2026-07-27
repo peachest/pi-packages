@@ -97,16 +97,12 @@ export class PresetState {
     const duplicates = [...skillCount.entries()]
       .filter(([, count]) => count > 1)
       .map(([name]) => name);
-    if (duplicates.length > 0) {
-      console.warn(
-        `[skill-presets] Skills in multiple loaded presets (deduplicated): ${duplicates.join(", ")}`,
-      );
-    }
 
     return {
       skillNames: [...skillSet],
       missing,
       disabled: [],
+      duplicates,
     };
   }
 }

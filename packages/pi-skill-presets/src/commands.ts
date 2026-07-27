@@ -36,7 +36,7 @@ export function createCommands(
     const cwd = getCwd();
     const config = readPresetsConfig(cwd);
     const defaultPreset = getDefaultPreset();
-    await showPresetDialog(ctx, state, config, defaultPreset);
+    await showPresetDialog(ctx, pi, state, config, defaultPreset);
   }
 
   /** /preset-load <name> */
