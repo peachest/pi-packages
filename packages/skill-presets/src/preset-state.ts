@@ -65,6 +65,7 @@ export class PresetState {
     defaultPreset?: string,
   ): ResolvedActiveSet {
     const skillSet = new Set<string>();
+    const skillCount = new Map<string, number>();
     const missing: string[] = [];
     const allDefinedSkills = new Set<string>();
 
@@ -88,7 +89,18 @@ export class PresetState {
 
       for (const skill of skills) {
         skillSet.add(skill);
+        skillCount.set(skill, (skillCount.get(skill) ?? 0) + 1);
       }
+    }
+
+    // Warn about skills appearing in multiple loaded presets
+    const duplicates = [...skillCount.entries()]
+      .filter(([, count]) => count > 1)
+      .map(([name]) => name);
+    if (duplicates.length > 0) {
+      console.warn(
+        `[skill-presets] Skills in multiple loaded presets (deduplicated): ${duplicates.join(", ")}`,
+      );
     }
 
     return {

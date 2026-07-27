@@ -23,13 +23,6 @@ export interface PresetOpEntry {
   timestamp: number;
 }
 
-/** Result of resolving a preset's skills. */
-export interface ResolvedPreset {
-  name: string;
-  skills: string[];
-  missing: string[];
-}
-
 /** Result of resolving the full active set. */
 export interface ResolvedActiveSet {
   /** All skill names from active presets (deduplicated). */

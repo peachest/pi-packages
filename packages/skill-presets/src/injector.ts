@@ -83,6 +83,7 @@ export function createInjector(
       customType: SKILL_INJECTION_CUSTOM_TYPE,
       content: skillsBlock,
       display: false,
+      details: { presets: state.getLoaded() },
       timestamp: Date.now(),
     } as Message;
 

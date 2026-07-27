@@ -18,7 +18,7 @@
  *   Test:  pi -e ./index.ts
  */
 
-import type { ExtensionAPI, ExtensionContext, CustomEntry } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, CustomEntry } from "@earendil-works/pi-coding-agent";
 import { PresetState } from "./src/preset-state.js";
 import { createCommands, PRESET_OP_CUSTOM_TYPE } from "./src/commands.js";
 import { createInjector } from "./src/injector.js";
@@ -33,11 +33,11 @@ export default function skillPresetsExtension(pi: ExtensionAPI) {
   let defaultPresetName: string | undefined;
 
   // --- session_start: apply default preset + rebuild active set ---
-  pi.on("session_start", (_event, ctx) => {
+  pi.on("session_start", async (_event, ctx) => {
     cwd = ctx.cwd;
 
     // Apply default preset: write skills to settings.skills
-    const result = applyDefaultPreset(cwd);
+    const result = await applyDefaultPreset(cwd);
     defaultPresetName = result?.name;
 
     // Rebuild active set from persistent entries
