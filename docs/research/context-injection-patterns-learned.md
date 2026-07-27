@@ -314,46 +314,47 @@ interface CustomMessage<T = unknown> {
 2. **`appendEntry` for preset load/offload state** — Exactly like pi-ide-bridge's approval mode pattern:
    ```typescript
    // On preset load
-   pi.appendEntry('preset-load', { preset: 'ddd', action: 'load', skills: [...], timestamp: Date.now() });
+   pi.appendEntry('preset-op', { preset: 'ddd', action: 'load', timestamp: Date.now() });
    // On preset offload
-   pi.appendEntry('preset-load', { preset: 'ddd', action: 'offload', skills: [...], timestamp: Date.now() });
+   pi.appendEntry('preset-op', { preset: 'ddd', action: 'offload', timestamp: Date.now() });
    // On session_start, read back to determine final state
    ```
 
 3. **Dedup pattern** — pi-session-search's `sessionManager.getEntries()` scan is the right pattern for checking if a primer or state has already been applied on resume.
 
-4. **`customType` namespacing** — Use `preset-load`, `preset-offload`, `preset-context` as customTypes.
+4. **`customType` namespacing** — Use `preset-op` as the single customType for all load/offload operations (distinguished by `action` field), and `preset-context` for the transient injection CustomMessage.
 
 ### What we must do differently
 
 1. **Transient injection, not persisted.** Both existing extensions either persist messages (pi-session-search, which gets compacted) or inject transiently via `before_agent_start` (pi-ide-bridge, but at a fixed position). Our approach: **transient `context` event injection** — best of both worlds. No persistence bloat, no compaction issues, full array control.
 
-2. **Multiple skill content blocks per turn.** pi-ide-bridge injects one message per turn. We may need to inject multiple presets' worth of skill content. Solution: concatenate all active preset skills into a single `CustomMessage` at the end of the array.
+2. **Multiple skill content blocks per turn.** pi-ide-bridge injects one message per turn. We may need to inject multiple presets' worth of skill content. Solution: resolve all active preset skills into a single array (deduplicated), call `formatSkillsForPrompt` once, and inject as a single `CustomMessage` at the end of the array.
 
-3. **Re-injection after compaction.** Neither extension explicitly handles compaction recovery (pi-ide-bridge re-injects every turn via `before_agent_start`, pi-session-search's primer gets lost). We should listen to `session_compact` and set a re-injection flag, then re-inject on the next `context` firing.
+3. **No settle logic needed.** The original design included a settle mechanism for cache-cold restarts. This was **explicitly abandoned** in ticket #5: since transient injection doesn't persist skill content to the message list, there's nothing to settle. On restart, the active set is simply rebuilt from persistent entries and transient injection resumes.
 
 ### The complete injection architecture (informed by both examples)
 
 ```
 session_start
-  ├─ Read appendEntry history → compute final preset state
-  ├─ If short interval: keep state as-is (prefix cache warm)
-  └─ If long interval: settle state (move to system prompt or clear)
+  ├─ Read appendEntry history → replay load/offload → rebuild active set
+  ├─ Auto-write default preset skills to settings.skills (respect existing '-' patterns)
+  └─ Active set = set of preset names (not skills)
 
 context event (every turn)
-  ├─ Check if compaction happened (session_compact flag)
-  ├─ Read current active presets from in-memory state
-  ├─ For each active preset: format skill content
-  └─ return { messages: [...messages, combinedSkillContent] }  ← append at end
+  ├─ Resolve active set preset names → skills list (deduplicated)
+  ├─ Exclude skills already in system prompt (default preset skills)
+  ├─ Filter out skill-manager-disabled skills
+  ├─ formatSkillsForPrompt(activeSkills) → single XML block
+  └─ return { messages: [...messages, customMsg] }  ← append at end
 
-preset:load command
-  ├─ Update in-memory active presets
-  └─ appendEntry('preset-load', { preset, action: 'load', ... })  ← persistent audit
+preset-load command
+  ├─ activeSet.add(presetName)
+  └─ appendEntry('preset-op', { preset, action: 'load', timestamp })
 
-preset:off command
-  ├─ Update in-memory active presets (remove preset)
-  └─ appendEntry('preset-load', { preset, action: 'offload', ... })  ← persistent audit
+preset-off command
+  ├─ activeSet.delete(presetName)
+  └─ appendEntry('preset-op', { preset, action: 'offload', timestamp })
 
-session_compact event
-  └─ Set re-inject flag → next context event re-injects all active preset skills
+No settle logic. No session_compact handling needed.
+  (appendEntry immune to compaction; transient injection re-applies every turn)
 ```
