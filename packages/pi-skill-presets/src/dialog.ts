@@ -37,6 +37,7 @@ type DialogMode = "browse" | "preset-edit" | "skill-list" | "new-preset" | "conf
 interface ConfirmAction {
   message: string;
   onConfirm: () => void;
+  returnMode: DialogMode;
 }
 
 // Frame glyphs (unicode)
@@ -288,7 +289,7 @@ class PresetDialog extends Container {
     }
 
     lines.push("");
-    lines.push(this.theme.fg("dim", "↑↓ navigate  Space toggle  e edit  n new  Esc quit"));
+    lines.push(this.theme.fg("dim", "↑↓ navigate  Space toggle  e edit  n new  d delete  Esc quit"));
   }
 
   private buildPresetEditLines(lines: string[], innerWidth: number): void {
@@ -466,6 +467,20 @@ class PresetDialog extends Container {
       return;
     }
 
+    // 'd' — delete selected preset (with confirmation)
+    if (data === "d") {
+      const name = this.presetNames[this.browseIndex];
+      if (name) {
+        const presetName = name;
+        this.requestConfirm(
+          `Delete preset "${name}"? This cannot be undone.`,
+          () => this.deletePreset(presetName),
+          "browse",
+        );
+      }
+      return;
+    }
+
     if (kb.matches(data, "tui.select.cancel") || matchesKey(data, Key.escape)) {
       this.done();
       return;
@@ -559,15 +574,16 @@ class PresetDialog extends Container {
     }
 
     if (matchesKey(data, Key.escape)) {
+      const returnMode = action.returnMode;
       this.pendingConfirm = null;
-      this.mode = "preset-edit";
+      this.mode = returnMode;
       return;
     }
   }
 
-  /** Show a confirmation dialog. Returns to preset-edit mode on cancel. */
-  private requestConfirm(message: string, onConfirm: () => void): void {
-    this.pendingConfirm = { message, onConfirm };
+  /** Show a confirmation dialog. Returns to returnMode on cancel. */
+  private requestConfirm(message: string, onConfirm: () => void, returnMode: DialogMode = "preset-edit"): void {
+    this.pendingConfirm = { message, onConfirm, returnMode };
     this.mode = "confirm";
   }
 
