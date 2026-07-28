@@ -82,6 +82,19 @@ export function createCommands(
     doOffload(pi, ctx, state, name);
   }
 
+  /** /preset-prompt — Dump system prompt to file */
+  async function presetPromptCommand(_args: string, ctx: ExtensionCommandContext): Promise<void> {
+    const prompt = ctx.getSystemPrompt();
+    if (!prompt) {
+      ctx.ui.notify("System prompt is empty.", "warning");
+      return;
+    }
+    const outPath = `${getCwd()}/system-prompt-dump.txt`;
+    const { writeFileSync } = await import("node:fs");
+    writeFileSync(outPath, prompt, "utf-8");
+    ctx.ui.notify(`System prompt (${prompt.length} chars) written to ${outPath}`, "info");
+  }
+
   /** /preset-status */
   async function presetStatusCommand(_args: string, ctx: ExtensionCommandContext): Promise<void> {
     const cwd = getCwd();
@@ -119,6 +132,7 @@ export function createCommands(
     presetLoadCommand,
     presetOffCommand,
     presetStatusCommand,
+    presetPromptCommand,
   };
 }
 

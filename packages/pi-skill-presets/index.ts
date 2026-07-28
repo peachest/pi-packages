@@ -92,4 +92,9 @@ export default function skillPresetsExtension(pi: ExtensionAPI) {
     description: "Show current preset active set",
     handler: commands.presetStatusCommand,
   });
+
+  pi.registerCommand("preset-prompt", {
+    description: "Dump system prompt to file",
+    handler: commands.presetPromptCommand,
+  });
 }
