@@ -31,7 +31,13 @@ import type { PresetsConfig, PresetOpEntry } from "./types.ts";
 import { getPresetSkills, writePresetsConfig, getAgentDir } from "./config.ts";
 import { PRESET_OP_CUSTOM_TYPE } from "./commands.ts";
 
-type DialogMode = "browse" | "preset-edit" | "skill-list" | "new-preset";
+type DialogMode = "browse" | "preset-edit" | "skill-list" | "new-preset" | "confirm";
+
+/** Pending confirmation action. */
+interface ConfirmAction {
+  message: string;
+  onConfirm: () => void;
+}
 
 // Frame glyphs (unicode)
 const FRAME = {
@@ -152,6 +158,7 @@ class PresetDialog extends Container {
   private allSkills: Skill[] = [];
   private skillListLoaded = false;
   private readonly nameInput = new Input();
+  private pendingConfirm: ConfirmAction | null = null;
 
   constructor(
     ctx: ExtensionContext,
@@ -235,6 +242,9 @@ class PresetDialog extends Container {
       case "new-preset":
         this.buildNewPresetLines(lines, innerWidth);
         return renderFrame(this.theme, width, lines, "New Preset");
+      case "confirm":
+        this.buildConfirmLines(lines, innerWidth);
+        return renderFrame(this.theme, width, lines, "Confirm");
     }
   }
 
@@ -377,6 +387,26 @@ class PresetDialog extends Container {
     lines.push(this.theme.fg("dim", "Enter create  Esc cancel"));
   }
 
+  private buildConfirmLines(lines: string[], innerWidth: number): void {
+    const action = this.pendingConfirm;
+    if (!action) return;
+    lines.push("");
+    // Wrap message to innerWidth
+    const words = action.message.split(" ");
+    let current = "";
+    for (const word of words) {
+      if (current.length + word.length + 1 > innerWidth) {
+        lines.push(current);
+        current = word;
+      } else {
+        current = current ? `${current} ${word}` : word;
+      }
+    }
+    if (current) lines.push(current);
+    lines.push("");
+    lines.push(this.theme.fg("warning", "Enter confirm  Esc cancel"));
+  }
+
   // --- Input handling ---
 
   handleInput(data: string): void {
@@ -392,6 +422,9 @@ class PresetDialog extends Container {
         break;
       case "new-preset":
         this.handleNewPresetInput(data);
+        break;
+      case "confirm":
+        this.handleConfirmInput(data);
         break;
     }
     this.tui.requestRender();
@@ -464,7 +497,11 @@ class PresetDialog extends Container {
     }
 
     if (matchesKey(data, Key.backspace) && len > 0) {
-      this.removeSkillFromPreset(name, this.editSkillIndex);
+      const skillName = skills[this.editSkillIndex]!;
+      this.requestConfirm(
+        `Remove "${skillName}" from preset "${name}"?`,
+        () => this.removeSkillFromPreset(name, this.editSkillIndex),
+      );
       return;
     }
 
@@ -509,6 +546,29 @@ class PresetDialog extends Container {
       return;
     }
     this.nameInput.handleInput(data);
+  }
+
+  private handleConfirmInput(data: string): void {
+    const action = this.pendingConfirm;
+    if (!action) return;
+
+    if (matchesKey(data, Key.enter)) {
+      this.pendingConfirm = null;
+      action.onConfirm();
+      return;
+    }
+
+    if (matchesKey(data, Key.escape)) {
+      this.pendingConfirm = null;
+      this.mode = "preset-edit";
+      return;
+    }
+  }
+
+  /** Show a confirmation dialog. Returns to preset-edit mode on cancel. */
+  private requestConfirm(message: string, onConfirm: () => void): void {
+    this.pendingConfirm = { message, onConfirm };
+    this.mode = "confirm";
   }
 
   // --- Actions ---
