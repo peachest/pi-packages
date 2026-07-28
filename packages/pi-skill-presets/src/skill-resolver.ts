@@ -13,6 +13,67 @@ import { SettingsManager } from "@earendil-works/pi-coding-agent";
 import { getAgentDir } from "./config.ts";
 
 /**
+ * Pure filtering function: given available skills and requested names,
+ * filter out excluded, disabled, and missing skills.
+ *
+ * @param availableSkills - All skills that exist in the system
+ * @param requestedNames - Skill names requested by the active set
+ * @param excludedSkills - Skill names to exclude (already in system prompt)
+ * @param disabledPatterns - Raw patterns from settings.skills starting with "-"
+ * @returns Filtered skills, missing names, and disabled names
+ */
+export function filterSkills(
+  availableSkills: Skill[],
+  requestedNames: string[],
+  excludedSkills: Set<string>,
+  disabledPatterns: string[],
+): {
+  skills: Skill[];
+  missing: string[];
+  disabled: string[];
+} {
+  const skillMap = new Map<string, Skill>();
+  for (const skill of availableSkills) {
+    skillMap.set(skill.name, skill);
+  }
+
+  const isDisabled = (skillName: string): boolean => {
+    for (const pattern of disabledPatterns) {
+      const stripped = pattern.slice(1); // remove "-"
+      if (stripped === skillName || stripped.endsWith(`/${skillName}`)) {
+        return true;
+      }
+    }
+    return false;
+  };
+
+  const skills: Skill[] = [];
+  const missing: string[] = [];
+  const disabled: string[] = [];
+
+  for (const name of requestedNames) {
+    // Skip skills already in system prompt
+    if (excludedSkills.has(name)) continue;
+
+    // Skip disabled skills
+    if (isDisabled(name)) {
+      disabled.push(name);
+      continue;
+    }
+
+    const skill = skillMap.get(name);
+    if (!skill) {
+      missing.push(name);
+      continue;
+    }
+
+    skills.push(skill);
+  }
+
+  return { skills, missing, disabled };
+}
+
+/**
  * Resolve skill names to Skill objects using pi's skill loading system.
  *
  * @param cwd - Current working directory
@@ -48,53 +109,13 @@ export function resolveSkills(
     includeDefaults: true,
   });
 
-  // Build a name → Skill map
-  const skillMap = new Map<string, Skill>();
-  for (const skill of loadResult.skills) {
-    skillMap.set(skill.name, skill);
-  }
-
-  // Also check disabled skills via +/- patterns in settings.skills
+  // Build disabled patterns from settings
   const disabledPatterns = [
     ...(settings.skills ?? []),
     ...(projectSettings.skills ?? []),
   ].filter((p) => p.startsWith("-"));
 
-  const isDisabled = (skillName: string): boolean => {
-    for (const pattern of disabledPatterns) {
-      const stripped = pattern.slice(1); // remove "-"
-      // Match by name or path containing the skill name
-      if (stripped === skillName || stripped.endsWith(`/${skillName}`)) {
-        return true;
-      }
-    }
-    return false;
-  };
-
-  const skills: Skill[] = [];
-  const missing: string[] = [];
-  const disabled: string[] = [];
-
-  for (const name of skillNames) {
-    // Skip skills already in system prompt
-    if (excludedSkills.has(name)) continue;
-
-    // Skip disabled skills
-    if (isDisabled(name)) {
-      disabled.push(name);
-      continue;
-    }
-
-    const skill = skillMap.get(name);
-    if (!skill) {
-      missing.push(name);
-      continue;
-    }
-
-    skills.push(skill);
-  }
-
-  return { skills, missing, disabled };
+  return filterSkills(loadResult.skills, skillNames, excludedSkills, disabledPatterns);
 }
 
 /**
