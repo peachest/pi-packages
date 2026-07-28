@@ -53,36 +53,36 @@ export class PresetState {
   }
 
   /**
+   * Get all skill names from all presets in the active set.
+   * Used by before_agent_start to filter available_skills.
+   */
+  getActiveSkillNames(config: PresetsConfig): Set<string> {
+    const names = new Set<string>();
+    for (const presetName of this.activePresets) {
+      const skills = getPresetSkills(config, presetName);
+      if (skills) {
+        for (const s of skills) names.add(s);
+      }
+    }
+    return names;
+  }
+
+  /**
    * Resolve the active set to a deduplicated list of skill names.
-   * Excludes the default preset's skills (those are in the system prompt).
+   * In v2, default preset is in active set, so no exclusion is needed.
+   * Used by transient injection to determine which skills to inject.
    *
    * @param config - Presets configuration
-   * @param defaultPreset - Name of the default preset (its skills are excluded)
    * @returns Resolved active set with skill names, missing skills, and warnings
    */
-  resolveSkills(
-    config: PresetsConfig,
-    defaultPreset?: string,
-  ): ResolvedActiveSet {
+  resolveSkills(config: PresetsConfig): ResolvedActiveSet {
     const skillSet = new Set<string>();
     const skillCount = new Map<string, number>();
     const missing: string[] = [];
-    const allDefinedSkills = new Set<string>();
-
-    // Collect all defined skill names for missing-check
-    for (const def of Object.values(config.definitions)) {
-      for (const s of def.skills) {
-        allDefinedSkills.add(s);
-      }
-    }
 
     for (const presetName of this.activePresets) {
-      // Skip default preset — its skills are in system prompt
-      if (presetName === defaultPreset) continue;
-
       const skills = getPresetSkills(config, presetName);
       if (!skills) {
-        // Preset not found in config — skip with warning
         missing.push(`preset:${presetName}`);
         continue;
       }
@@ -93,7 +93,6 @@ export class PresetState {
       }
     }
 
-    // Warn about skills appearing in multiple loaded presets
     const duplicates = [...skillCount.entries()]
       .filter(([, count]) => count > 1)
       .map(([name]) => name);

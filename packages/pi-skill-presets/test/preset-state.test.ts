@@ -79,7 +79,7 @@ describe("PresetState.resolveSkills", () => {
     state.load("ddd");
     state.load("go");
 
-    const result = state.resolveSkills(config, "engineer");
+    const result = state.resolveSkills(config);
     // domain-modeling appears in both ddd and go, should be deduplicated
     expect(result.skillNames.sort()).toEqual([
       "domain-modeling",
@@ -89,22 +89,21 @@ describe("PresetState.resolveSkills", () => {
     ]);
   });
 
-  it("excludes default preset skills", () => {
+  it("includes all active set skills (default preset is not excluded in v2)", () => {
     const state = new PresetState();
-    state.load("engineer"); // default preset loaded as non-default (edge case)
+    state.load("engineer"); // default preset, now included in v2
     state.load("ddd");
 
-    const result = state.resolveSkills(config, "engineer");
-    // engineer is the default, so its skills should be excluded
-    expect(result.skillNames).not.toContain("wayfinder");
-    expect(result.skillNames).not.toContain("tdd");
-    expect(result.skillNames).not.toContain("implement");
+    const result = state.resolveSkills(config);
+    // In v2, default preset is in active set, so its skills ARE included
+    expect(result.skillNames).toContain("wayfinder");
+    expect(result.skillNames).toContain("tdd");
     expect(result.skillNames).toContain("domain-modeling");
   });
 
   it("returns empty when no presets loaded", () => {
     const state = new PresetState();
-    const result = state.resolveSkills(config, "engineer");
+    const result = state.resolveSkills(config);
     expect(result.skillNames).toEqual([]);
   });
 
@@ -112,7 +111,7 @@ describe("PresetState.resolveSkills", () => {
     const state = new PresetState();
     state.load("nonexistent");
 
-    const result = state.resolveSkills(config, "engineer");
+    const result = state.resolveSkills(config);
     expect(result.missing).toContain("preset:nonexistent");
     expect(result.skillNames).toEqual([]);
   });

@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
-import { resolveSkills, getSystemPromptSkillNames } from "../src/skill-resolver.ts";
+import { resolveSkills } from "../src/skill-resolver.ts";
 
 const TMP_DIR = path.join(os.tmpdir(), `skill-presets-resolve-test-${Date.now()}`);
 const AGENT_DIR = path.join(TMP_DIR, "agent");
@@ -87,20 +87,5 @@ describe("resolveSkills (integration)", () => {
       path.join(AGENT_DIR, "settings.json"),
       JSON.stringify({ skills: [`+${SKILLS_DIR}`] }),
     );
-  });
-});
-
-describe("getSystemPromptSkillNames", () => {
-  it("returns a set of default preset skill names", () => {
-    const result = getSystemPromptSkillNames("/tmp", ["wayfinder", "tdd"]);
-    expect(result).toBeInstanceOf(Set);
-    expect(result.has("wayfinder")).toBe(true);
-    expect(result.has("tdd")).toBe(true);
-    expect(result.has("go")).toBe(false);
-  });
-
-  it("returns empty set for empty input", () => {
-    const result = getSystemPromptSkillNames("/tmp", []);
-    expect(result.size).toBe(0);
   });
 });

@@ -125,17 +125,3 @@ export function formatSkills(skills: Skill[]): string {
   if (skills.length === 0) return "";
   return formatSkillsForPrompt(skills);
 }
-
-/**
- * Get the skill names from the default preset that are in the system prompt.
- * These should be excluded from transient injection.
- */
-export function getSystemPromptSkillNames(
-  cwd: string,
-  defaultPresetSkills: string[],
-): Set<string> {
-  // The default preset's skills are written to settings.skills,
-  // so they're loaded into the system prompt by pi native.
-  // We exclude all of them from transient injection.
-  return new Set(defaultPresetSkills);
-}

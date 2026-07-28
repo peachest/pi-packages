@@ -25,23 +25,26 @@ describe("createInjector message transformation", () => {
   it("returns messages unchanged when no presets are loaded", () => {
     const state = new PresetState();
     const ctx = makeFakeCtx();
-    const injector = createInjector(state, config, "/tmp", ctx, "engineer");
+    // Empty system prompt skills — nothing to exclude
+    const injector = createInjector(state, config, "/tmp", ctx, new Set());
 
     const inputMessages = [{ role: "user", content: "hello" }] as never[];
     const result = injector(inputMessages);
     expect(result.messages).toBe(inputMessages);
   });
 
-  it("appends a CustomMessage when a non-default preset is loaded", () => {
+  it("appends a CustomMessage when a preset is loaded and its skills are not in system prompt", () => {
     const state = new PresetState();
     state.load("ddd");
     const ctx = makeFakeCtx();
-    const injector = createInjector(state, config, "/tmp", ctx, "engineer");
+    // System prompt has engineer skills, ddd skills are not in it
+    const systemPromptSkills = new Set(["wayfinder", "tdd"]);
+    const injector = createInjector(state, config, "/tmp", ctx, systemPromptSkills);
 
     const inputMessages = [{ role: "user", content: "hello" }] as never[];
     const result = injector(inputMessages);
 
-    // Should have original + 1 injected message
+    // Should have original + 1 injected message (ddd skills injected)
     expect(result.messages.length).toBe(2);
     const injected = result.messages[1] as unknown as Record<string, unknown>;
     expect(injected.role).toBe("custom");
@@ -49,15 +52,17 @@ describe("createInjector message transformation", () => {
     expect(injected.display).toBe(false);
   });
 
-  it("does not inject when only the default preset is in active set", () => {
+  it("does not inject when all active set skills are already in system prompt", () => {
     const state = new PresetState();
-    state.load("engineer"); // default preset
+    state.load("engineer"); // default preset, skills in system prompt
     const ctx = makeFakeCtx();
-    const injector = createInjector(state, config, "/tmp", ctx, "engineer");
+    // System prompt has engineer skills
+    const systemPromptSkills = new Set(["wayfinder", "tdd"]);
+    const injector = createInjector(state, config, "/tmp", ctx, systemPromptSkills);
 
     const inputMessages = [{ role: "user", content: "hello" }] as never[];
     const result = injector(inputMessages);
-    // Default preset skills are excluded, so nothing to inject
+    // All engineer skills are in system prompt → nothing to inject
     expect(result.messages.length).toBe(1);
   });
 
@@ -65,7 +70,8 @@ describe("createInjector message transformation", () => {
     const state = new PresetState();
     state.load("ddd");
     const ctx = makeFakeCtx();
-    const injector = createInjector(state, config, "/tmp", ctx, "engineer");
+    const systemPromptSkills = new Set(["wayfinder", "tdd"]);
+    const injector = createInjector(state, config, "/tmp", ctx, systemPromptSkills);
 
     const inputMessages = [] as never[];
     const result = injector(inputMessages);
