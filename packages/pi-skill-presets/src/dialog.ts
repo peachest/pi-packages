@@ -325,7 +325,7 @@ class PresetDialog extends Container {
     }
 
     lines.push("");
-    lines.push(this.theme.fg("dim", "↑↓ navigate  a add  ⌫ remove  d delete preset  Esc back"));
+    lines.push(this.theme.fg("dim", "↑↓ navigate  a add  Backspace remove  Esc back"));
   }
 
   private buildSkillListLines(lines: string[], innerWidth: number): void {
@@ -465,11 +465,6 @@ class PresetDialog extends Container {
 
     if (matchesKey(data, Key.backspace) && len > 0) {
       this.removeSkillFromPreset(name, this.editSkillIndex);
-      return;
-    }
-
-    if (data === "d") {
-      this.deletePreset(name);
       return;
     }
 
