@@ -1,8 +1,9 @@
 /**
  * Preset manager TUI dialog.
  *
- * Follows the ExtensionSelectorComponent pattern from pi core:
- * Extends Container directly, uses keybindings for input handling.
+ * Follows the ExtensionSelectorComponent pattern from pi core,
+ * with frame rendering and scrollable lists inspired by
+ * @vanillagreen/pi-skills-manager.
  *
  * Modes:
  * - browse: preset list (toggle load, 'e' edit, 'n' new)
@@ -20,6 +21,7 @@ import {
   Spacer,
   Text,
   truncateToWidth,
+  visibleWidth,
 } from "@earendil-works/pi-tui";
 import type { TUI } from "@earendil-works/pi-tui";
 import type { ExtensionContext, ExtensionAPI, Theme, Skill } from "@earendil-works/pi-coding-agent";
@@ -30,6 +32,19 @@ import { getPresetSkills, writePresetsConfig, getAgentDir } from "./config.ts";
 import { PRESET_OP_CUSTOM_TYPE } from "./commands.ts";
 
 type DialogMode = "browse" | "preset-edit" | "skill-list" | "new-preset";
+
+// Frame glyphs (unicode)
+const FRAME = {
+  tl: "┏",
+  tr: "┓",
+  bl: "┗",
+  br: "┛",
+  h: "━",
+  v: "┃",
+};
+
+/** Non-list overhead: top border + bottom border + title + spacer + footer + spacer */
+const FRAME_OVERHEAD = 6;
 
 export async function showPresetDialog(
   ctx: ExtensionContext,
@@ -55,6 +70,68 @@ export async function showPresetDialog(
   });
 }
 
+/**
+ * Calculate the scroll window for a list.
+ * Returns startIndex and endIndex (exclusive) so only visible items are rendered.
+ */
+function scrollWindow(itemCount: number, selectedIndex: number, visibleRows: number): {
+  startIndex: number;
+  endIndex: number;
+} {
+  if (itemCount === 0) return { startIndex: 0, endIndex: 0 };
+  const rows = Math.min(visibleRows, itemCount);
+  const maxStart = Math.max(0, itemCount - rows);
+  // Center the selected item in the window
+  const startIndex = Math.max(0, Math.min(maxStart, selectedIndex - Math.floor(rows / 2)));
+  return { startIndex, endIndex: startIndex + rows };
+}
+
+/** Pad a line to fill the frame width, with ANSI awareness. */
+function padLine(text: string, width: number): string {
+  const w = visibleWidth(text);
+  if (w >= width) return truncateToWidth(text, width, "");
+  return text + " ".repeat(width - w);
+}
+
+/** Render content lines inside a frame border. */
+function renderFrame(
+  theme: Theme,
+  width: number,
+  lines: string[],
+  title?: string,
+): string[] {
+  const innerWidth = Math.max(1, width - 4); // 2 border chars + 2 spaces
+  const result: string[] = [];
+
+  // Top border with optional title
+  if (title) {
+    const titleText = ` ${title} `;
+    const remaining = innerWidth + 2 - visibleWidth(titleText);
+    result.push(
+      theme.fg("borderAccent", FRAME.tl + titleText + FRAME.h.repeat(Math.max(0, remaining)) + FRAME.tr),
+    );
+  } else {
+    result.push(
+      theme.fg("borderAccent", FRAME.tl + FRAME.h.repeat(innerWidth + 2) + FRAME.tr),
+    );
+  }
+
+  // Body lines
+  for (const line of lines) {
+    const clipped = truncateToWidth(line, innerWidth, theme.fg("dim", "…"));
+    result.push(
+      theme.fg("borderAccent", FRAME.v + " ") + padLine(clipped, innerWidth) + theme.fg("borderAccent", " " + FRAME.v),
+    );
+  }
+
+  // Bottom border
+  result.push(
+    theme.fg("borderAccent", FRAME.bl + FRAME.h.repeat(innerWidth + 2) + FRAME.br),
+  );
+
+  return result;
+}
+
 class PresetDialog extends Container {
   private readonly ctx: ExtensionContext;
   private readonly pi: ExtensionAPI;
@@ -75,7 +152,6 @@ class PresetDialog extends Container {
   private allSkills: Skill[] = [];
   private skillListLoaded = false;
   private readonly nameInput = new Input();
-  private listContainer: Container;
 
   constructor(
     ctx: ExtensionContext,
@@ -101,16 +177,8 @@ class PresetDialog extends Container {
     this.nameInput.onSubmit = () => this.confirmNewPreset();
     this.nameInput.onEscape = () => {
       this.mode = "browse";
-      this.renderMode();
       this.tui.requestRender();
     };
-
-    this.listContainer = new Container();
-    this.addChild(new Spacer(1));
-    this.addChild(this.listContainer);
-    this.addChild(new Spacer(1));
-
-    this.renderMode();
   }
 
   // --- Helpers ---
@@ -136,147 +204,146 @@ class PresetDialog extends Container {
     this.skillListLoaded = true;
   }
 
-  private truncate(text: string, max: number): string {
-    return truncateToWidth(text, max, "…");
+  private getSkillDescription(skillName: string): string | undefined {
+    this.loadAllSkills();
+    const skill = this.allSkills.find((s) => s.name === skillName);
+    return skill?.description;
+  }
+
+  /** Available rows for list content based on terminal height. */
+  private get visibleListRows(): number {
+    const overlayRows = Math.floor(this.tui.terminal.rows * 0.7);
+    return Math.max(3, overlayRows - FRAME_OVERHEAD);
   }
 
   // --- Rendering ---
 
-  private renderMode(): void {
-    this.listContainer.clear();
+  render(width: number): string[] {
+    const innerWidth = Math.max(1, width - 4);
+    const lines: string[] = [];
 
     switch (this.mode) {
       case "browse":
-        this.renderBrowse();
-        break;
+        this.buildBrowseLines(lines, innerWidth);
+        return renderFrame(this.theme, width, lines, "Presets");
       case "preset-edit":
-        this.renderPresetEdit();
-        break;
+        this.buildPresetEditLines(lines, innerWidth);
+        return renderFrame(this.theme, width, lines, `Edit: ${this.editPresetName}`);
       case "skill-list":
-        this.renderSkillList();
-        break;
+        this.buildSkillListLines(lines, innerWidth);
+        return renderFrame(this.theme, width, lines, `Add skill → ${this.editPresetName}`);
       case "new-preset":
-        this.renderNewPreset();
-        break;
+        this.buildNewPresetLines(lines, innerWidth);
+        return renderFrame(this.theme, width, lines, "New Preset");
     }
   }
 
-  private renderBrowse(): void {
-    this.listContainer.addChild(new Text(
-      this.theme.fg("accent", this.theme.bold("Presets")),
-      1, 0,
-    ));
-    this.listContainer.addChild(new Spacer(1));
-
+  private buildBrowseLines(lines: string[], innerWidth: number): void {
     const names = this.presetNames;
+    const maxRows = this.visibleListRows;
+
     if (names.length === 0) {
-      this.listContainer.addChild(new Text(
-        this.theme.fg("dim", "No presets defined. Press 'n' to create one."),
-        1, 0,
-      ));
+      lines.push("");
+      lines.push(this.theme.fg("dim", "No presets defined. Press 'n' to create one."));
+      lines.push("");
     } else {
-      for (let i = 0; i < names.length; i++) {
+      const { startIndex, endIndex } = scrollWindow(names.length, this.browseIndex, maxRows);
+
+      if (startIndex > 0) {
+        lines.push(this.theme.fg("dim", "  ↑ more..."));
+      }
+
+      for (let i = startIndex; i < endIndex; i++) {
         const name = names[i]!;
         const isSelected = i === this.browseIndex;
         const loaded = this.state.has(name);
         const isDefault = name === this.defaultPreset;
 
-        const parts: string[] = [];
-        parts.push(isSelected ? this.theme.fg("accent", "→ ") : "  ");
-        parts.push(name);
-        parts.push(loaded
+        const prefix = isSelected ? this.theme.fg("accent", "→ ") : "  ";
+        const namePart = name;
+        const status = loaded
           ? " " + this.theme.fg("success", "[loaded]")
-          : " " + this.theme.fg("dim", "[─]"));
-        if (isDefault) parts.push(" " + this.theme.fg("accent", "★"));
-
+          : " " + this.theme.fg("dim", "[─]");
+        const star = isDefault ? " " + this.theme.fg("accent", "★") : "";
         const skills = getPresetSkills(this.config, name) ?? [];
-        parts.push(this.theme.fg("dim", ` (${skills.length})`));
+        const count = this.theme.fg("dim", ` (${skills.length})`);
 
-        this.listContainer.addChild(new Text(parts.join(""), 1, 0));
+        const line = `${prefix}${namePart}${status}${star}${count}`;
+        lines.push(isSelected ? this.theme.bg("selectedBg", padLine(line, innerWidth)) : line);
+      }
+
+      if (endIndex < names.length) {
+        lines.push(this.theme.fg("dim", "  ↓ more..."));
       }
     }
 
-    this.listContainer.addChild(new Spacer(1));
-    this.listContainer.addChild(new Text(
-      this.theme.fg("dim", "↑↓ navigate  Space toggle  e edit  n new  Esc quit"),
-      1, 0,
-    ));
+    lines.push("");
+    lines.push(this.theme.fg("dim", "↑↓ navigate  Space toggle  e edit  n new  Esc quit"));
   }
 
-  private renderPresetEdit(): void {
+  private buildPresetEditLines(lines: string[], innerWidth: number): void {
     const name = this.editPresetName;
     if (!name) return;
 
-    this.listContainer.addChild(new Text(
-      this.theme.fg("accent", this.theme.bold(`Edit: ${name}`)),
-      1, 0,
-    ));
-
     const isDefault = name === this.defaultPreset;
     if (isDefault) {
-      this.listContainer.addChild(new Text(
-        this.theme.fg("accent", "★ default preset"),
-        1, 0,
-      ));
+      lines.push(this.theme.fg("accent", "★ default preset"));
     }
-    this.listContainer.addChild(new Spacer(1));
 
     const skills = getPresetSkills(this.config, name) ?? [];
-    if (skills.length === 0) {
-      this.listContainer.addChild(new Text(
-        this.theme.fg("dim", "No skills in this preset. Press 'a' to add."),
-        1, 0,
-      ));
-    } else {
-      this.listContainer.addChild(new Text(
-        this.theme.fg("muted", this.theme.bold(`Skills (${skills.length}):`)),
-        1, 0,
-      ));
-      this.listContainer.addChild(new Spacer(1));
+    const maxRows = this.visibleListRows - 2; // account for header + footer
 
-      for (let i = 0; i < skills.length; i++) {
+    lines.push(this.theme.fg("muted", this.theme.bold(`Skills (${skills.length}):`)));
+    lines.push("");
+
+    if (skills.length === 0) {
+      lines.push(this.theme.fg("dim", "No skills. Press 'a' to add."));
+    } else {
+      const { startIndex, endIndex } = scrollWindow(skills.length, this.editSkillIndex, maxRows);
+
+      if (startIndex > 0) {
+        lines.push(this.theme.fg("dim", "  ↑ more..."));
+      }
+
+      for (let i = startIndex; i < endIndex; i++) {
         const skillName = skills[i]!;
         const isSelected = i === this.editSkillIndex;
         const prefix = isSelected ? this.theme.fg("accent", "→ ") : "  ";
 
-        // Find skill description if available
         const desc = this.getSkillDescription(skillName);
         const descText = desc
-          ? this.theme.fg("dim", ` — ${this.truncate(desc, 50)}`)
+          ? this.theme.fg("dim", ` — ${truncateToWidth(desc, 50, "…")}`)
           : this.theme.fg("warning", " (not found)");
 
-        this.listContainer.addChild(new Text(
-          `${prefix}${skillName}${descText}`,
-          1, 0,
-        ));
+        const line = `${prefix}${skillName}${descText}`;
+        lines.push(isSelected ? this.theme.bg("selectedBg", padLine(line, innerWidth)) : line);
+      }
+
+      if (endIndex < skills.length) {
+        lines.push(this.theme.fg("dim", "  ↓ more..."));
       }
     }
 
-    this.listContainer.addChild(new Spacer(1));
-    this.listContainer.addChild(new Text(
-      this.theme.fg("dim", "↑↓ navigate  a add skill  ⌫ remove  d delete preset  Esc back"),
-      1, 0,
-    ));
+    lines.push("");
+    lines.push(this.theme.fg("dim", "↑↓ navigate  a add  ⌫ remove  d delete preset  Esc back"));
   }
 
-  private renderSkillList(): void {
+  private buildSkillListLines(lines: string[], innerWidth: number): void {
     this.loadAllSkills();
 
-    this.listContainer.addChild(new Text(
-      this.theme.fg("accent", this.theme.bold(`Add skill to: ${this.editPresetName}`)),
-      1, 0,
-    ));
-    this.listContainer.addChild(new Spacer(1));
-
     const currentSkills = new Set(getPresetSkills(this.config, this.editPresetName!) ?? []);
+    const maxRows = this.visibleListRows - 2;
 
     if (this.allSkills.length === 0) {
-      this.listContainer.addChild(new Text(
-        this.theme.fg("dim", "No skills available."),
-        1, 0,
-      ));
+      lines.push(this.theme.fg("dim", "No skills available."));
     } else {
-      for (let i = 0; i < this.allSkills.length; i++) {
+      const { startIndex, endIndex } = scrollWindow(this.allSkills.length, this.skillListIndex, maxRows);
+
+      if (startIndex > 0) {
+        lines.push(this.theme.fg("dim", "  ↑ more..."));
+      }
+
+      for (let i = startIndex; i < endIndex; i++) {
         const skill = this.allSkills[i]!;
         const isSelected = i === this.skillListIndex;
         const alreadyAdded = currentSkills.has(skill.name);
@@ -285,46 +352,29 @@ class PresetDialog extends Container {
         const name = alreadyAdded
           ? this.theme.fg("success", `${skill.name} ✓`)
           : skill.name;
-        const desc = this.theme.fg("dim", ` — ${this.truncate(skill.description, 45)}`);
+        const desc = this.theme.fg("dim", ` — ${truncateToWidth(skill.description, 45, "…")}`);
 
-        this.listContainer.addChild(new Text(
-          `${prefix}${name}${desc}`,
-          1, 0,
-        ));
+        const line = `${prefix}${name}${desc}`;
+        lines.push(isSelected ? this.theme.bg("selectedBg", padLine(line, innerWidth)) : line);
+      }
+
+      if (endIndex < this.allSkills.length) {
+        lines.push(this.theme.fg("dim", "  ↓ more..."));
       }
     }
 
-    this.listContainer.addChild(new Spacer(1));
-    this.listContainer.addChild(new Text(
-      this.theme.fg("dim", "↑↓ navigate  Enter add  Esc back"),
-      1, 0,
-    ));
+    lines.push("");
+    lines.push(this.theme.fg("dim", "↑↓ navigate  Enter add  Esc back"));
   }
 
-  private renderNewPreset(): void {
-    this.listContainer.addChild(new Text(
-      this.theme.fg("accent", this.theme.bold("New Preset")),
-      1, 0,
-    ));
-    this.listContainer.addChild(new Spacer(1));
-    this.listContainer.addChild(new Text(
-      this.theme.fg("dim", "Enter preset name (lowercase letters, numbers, hyphens):"),
-      1, 0,
-    ));
-    this.listContainer.addChild(new Spacer(1));
+  private buildNewPresetLines(lines: string[], innerWidth: number): void {
+    lines.push(this.theme.fg("dim", "Enter preset name (lowercase, numbers, hyphens):"));
+    lines.push("");
     // Input renders itself
-    this.listContainer.addChild(this.nameInput);
-    this.listContainer.addChild(new Spacer(1));
-    this.listContainer.addChild(new Text(
-      this.theme.fg("dim", "Enter create  Esc cancel"),
-      1, 0,
-    ));
-  }
-
-  private getSkillDescription(skillName: string): string | undefined {
-    this.loadAllSkills();
-    const skill = this.allSkills.find((s) => s.name === skillName);
-    return skill?.description;
+    const inputLines = this.nameInput.render(Math.max(1, innerWidth - 2));
+    lines.push(...inputLines);
+    lines.push("");
+    lines.push(this.theme.fg("dim", "Enter create  Esc cancel"));
   }
 
   // --- Input handling ---
@@ -344,6 +394,7 @@ class PresetDialog extends Container {
         this.handleNewPresetInput(data);
         break;
     }
+    this.tui.requestRender();
   }
 
   private handleBrowseInput(data: string): void {
@@ -352,15 +403,11 @@ class PresetDialog extends Container {
 
     if (kb.matches(data, "tui.select.up")) {
       this.browseIndex = this.browseIndex === 0 ? Math.max(0, len - 1) : this.browseIndex - 1;
-      this.renderMode();
-      this.tui.requestRender();
       return;
     }
 
     if (kb.matches(data, "tui.select.down")) {
       this.browseIndex = len === 0 ? 0 : (this.browseIndex + 1) % len;
-      this.renderMode();
-      this.tui.requestRender();
       return;
     }
 
@@ -370,25 +417,19 @@ class PresetDialog extends Container {
       return;
     }
 
-    // 'e' — edit preset
     if (data === "e") {
       const name = this.presetNames[this.browseIndex];
       if (name) {
         this.editPresetName = name;
         this.editSkillIndex = 0;
         this.mode = "preset-edit";
-        this.renderMode();
-        this.tui.requestRender();
       }
       return;
     }
 
-    // 'n' — new preset
     if (data === "n") {
       this.nameInput.setValue("");
       this.mode = "new-preset";
-      this.renderMode();
-      this.tui.requestRender();
       return;
     }
 
@@ -408,34 +449,25 @@ class PresetDialog extends Container {
 
     if (kb.matches(data, "tui.select.up")) {
       this.editSkillIndex = this.editSkillIndex === 0 ? Math.max(0, len - 1) : this.editSkillIndex - 1;
-      this.renderMode();
-      this.tui.requestRender();
       return;
     }
 
     if (kb.matches(data, "tui.select.down")) {
       this.editSkillIndex = len === 0 ? 0 : (this.editSkillIndex + 1) % len;
-      this.renderMode();
-      this.tui.requestRender();
       return;
     }
 
-    // 'a' — add skill
     if (data === "a") {
       this.skillListIndex = 0;
       this.mode = "skill-list";
-      this.renderMode();
-      this.tui.requestRender();
       return;
     }
 
-    // Backspace — remove selected skill
     if (matchesKey(data, Key.backspace) && len > 0) {
       this.removeSkillFromPreset(name, this.editSkillIndex);
       return;
     }
 
-    // 'd' — delete preset
     if (data === "d") {
       this.deletePreset(name);
       return;
@@ -443,8 +475,6 @@ class PresetDialog extends Container {
 
     if (kb.matches(data, "tui.select.cancel") || matchesKey(data, Key.escape)) {
       this.mode = "browse";
-      this.renderMode();
-      this.tui.requestRender();
       return;
     }
   }
@@ -456,15 +486,11 @@ class PresetDialog extends Container {
 
     if (kb.matches(data, "tui.select.up")) {
       this.skillListIndex = this.skillListIndex === 0 ? Math.max(0, len - 1) : this.skillListIndex - 1;
-      this.renderMode();
-      this.tui.requestRender();
       return;
     }
 
     if (kb.matches(data, "tui.select.down")) {
       this.skillListIndex = len === 0 ? 0 : (this.skillListIndex + 1) % len;
-      this.renderMode();
-      this.tui.requestRender();
       return;
     }
 
@@ -478,8 +504,6 @@ class PresetDialog extends Container {
 
     if (kb.matches(data, "tui.select.cancel") || matchesKey(data, Key.escape)) {
       this.mode = "preset-edit";
-      this.renderMode();
-      this.tui.requestRender();
       return;
     }
   }
@@ -487,14 +511,9 @@ class PresetDialog extends Container {
   private handleNewPresetInput(data: string): void {
     if (matchesKey(data, Key.escape)) {
       this.mode = "browse";
-      this.renderMode();
-      this.tui.requestRender();
       return;
     }
-    // Let Input handle the keystroke
     this.nameInput.handleInput(data);
-    // Input.onSubmit triggers confirmNewPreset
-    this.tui.requestRender();
   }
 
   // --- Actions ---
@@ -517,8 +536,6 @@ class PresetDialog extends Container {
       });
       this.ctx.ui.notify(`Loaded preset "${name}".`, "info");
     }
-    this.renderMode();
-    this.tui.requestRender();
   }
 
   private addSkillToPreset(presetName: string, skillName: string): void {
@@ -533,10 +550,6 @@ class PresetDialog extends Container {
     def.skills.push(skillName);
     this.saveConfig();
     this.ctx.ui.notify(`Added "${skillName}" to preset "${presetName}".`, "info");
-
-    // Stay in skill-list for more additions, but update view
-    this.renderMode();
-    this.tui.requestRender();
   }
 
   private removeSkillFromPreset(presetName: string, skillIndex: number): void {
@@ -547,25 +560,19 @@ class PresetDialog extends Container {
     this.saveConfig();
     this.ctx.ui.notify(`Removed "${removed}" from preset "${presetName}".`, "info");
 
-    // Adjust index
     const len = def.skills.length;
     if (this.editSkillIndex >= len && len > 0) {
       this.editSkillIndex = len - 1;
     }
-
-    this.renderMode();
-    this.tui.requestRender();
   }
 
   private deletePreset(presetName: string): void {
     delete this.config.definitions[presetName];
 
-    // If it was the default, clear default
     if (this.config.default === presetName) {
       this.config.default = undefined;
     }
 
-    // Offload if loaded
     if (this.state.has(presetName)) {
       this.state.offload(presetName);
       this.pi.appendEntry<PresetOpEntry>(PRESET_OP_CUSTOM_TYPE, {
@@ -578,11 +585,8 @@ class PresetDialog extends Container {
     this.saveConfig();
     this.ctx.ui.notify(`Deleted preset "${presetName}".`, "info");
 
-    // Go back to browse
     this.mode = "browse";
     this.browseIndex = Math.min(this.browseIndex, Math.max(0, this.presetNames.length - 1));
-    this.renderMode();
-    this.tui.requestRender();
   }
 
   private confirmNewPreset(): void {
@@ -597,7 +601,6 @@ class PresetDialog extends Container {
       return;
     }
 
-    // Validate name (lowercase, numbers, hyphens)
     if (!/^[a-z0-9-]+$/.test(name)) {
       this.ctx.ui.notify("Name must contain only lowercase letters, numbers, and hyphens.", "error");
       return;
@@ -607,11 +610,8 @@ class PresetDialog extends Container {
     this.saveConfig();
     this.ctx.ui.notify(`Created preset "${name}".`, "info");
 
-    // Go to preset-edit mode for the new preset
     this.editPresetName = name;
     this.editSkillIndex = 0;
     this.mode = "preset-edit";
-    this.renderMode();
-    this.tui.requestRender();
   }
 }
