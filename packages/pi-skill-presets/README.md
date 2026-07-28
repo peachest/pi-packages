@@ -82,10 +82,40 @@ These are examples — adjust to match your installed skills.
 
 | Command | Description |
 |---|---|
-| `/preset` | Open TUI dialog to browse and toggle presets |
+| `/preset` | Open TUI dialog to browse, toggle, and edit presets |
 | `/preset-load <name>` | Load a preset by name |
 | `/preset-off <name>` | Offload a preset by name |
 | `/preset-status` | Show current active set status |
+
+## TUI Dialog (`/preset`)
+
+The dialog has four modes:
+
+### Browse mode (default)
+- `↑↓` — navigate presets
+- `Space` — toggle load/offload
+- `e` — edit selected preset (add/remove skills, delete preset)
+- `n` — create a new preset
+- `Esc` — quit
+
+### Preset-edit mode
+- `↑↓` — navigate skills in the preset
+- `a` — add a skill (opens skill-list mode)
+- `⌫ Backspace` — remove selected skill from preset
+- `d` — delete the entire preset
+- `Esc` — back to browse
+
+### Skill-list mode
+- `↑↓` — navigate all available skills (with truncated descriptions)
+- `Enter` — add selected skill to the preset
+- `Esc` — back to preset-edit
+
+### New-preset mode
+- Type a name (lowercase letters, numbers, hyphens)
+- `Enter` — create and enter edit mode
+- `Esc` — cancel
+
+Changes are written to `settings.json` immediately.
 
 ## Install
 
