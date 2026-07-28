@@ -30,9 +30,13 @@ export default function skillPresetsExtension(pi: ExtensionAPI) {
   let cwd = process.cwd();
   let defaultPresetName: string | undefined;
 
-  // v2: needsFilter flag — controls when before_agent_start filters the system prompt.
-  // Set to true by session_start, consumed by first before_agent_start.
+  // v2: needsFilter flag — controls when before_agent_start re-filters the system prompt.
+  // Set to true by session_start, consumed by next before_agent_start.
   let needsFilter = true;
+
+  // Cached filtered system prompt. Returned every turn to prevent pi from
+  // resetting to the unfiltered _baseSystemPrompt. Same string → KV cache hit.
+  let cachedSystemPrompt: string | undefined;
 
   // v2: tracks which skill names are in the system prompt after filtering.
   // Used by the injector to exclude them from transient injection.
@@ -76,34 +80,37 @@ export default function skillPresetsExtension(pi: ExtensionAPI) {
       }
     }
 
-    // Signal before_agent_start to filter on next call
+    // Signal before_agent_start to re-filter on next call
     needsFilter = true;
+    cachedSystemPrompt = undefined;
   });
 
   // --- before_agent_start: filter system prompt available_skills ---
   pi.on("before_agent_start", (event, _ctx) => {
-    if (!needsFilter) {
-      // Mid-session: return undefined to preserve KV cache
-      return undefined;
+    if (needsFilter) {
+      // Session start / reload: recompute filtered prompt
+      needsFilter = false;
+      const config = readPresetsConfig(cwd);
+      const activeSkillNames = state.getActiveSkillNames(config);
+
+      const result = filterSystemPrompt(
+        event.systemPrompt,
+        event.systemPromptOptions.skills ?? [],
+        activeSkillNames,
+        cwd,
+      );
+
+      // Track which skills are now in the system prompt (for injector exclusion)
+      systemPromptSkillNames = result.filteredSkillNames;
+
+      // Cache the filtered prompt (or the base if no filtering needed)
+      cachedSystemPrompt = result.systemPrompt ?? event.systemPrompt;
     }
 
-    // Session start / reload: filter available_skills
-    needsFilter = false;
-    const config = readPresetsConfig(cwd);
-    const activeSkillNames = state.getActiveSkillNames(config);
-
-    const result = filterSystemPrompt(
-      event.systemPrompt,
-      event.systemPromptOptions.skills ?? [],
-      activeSkillNames,
-      cwd,
-    );
-
-    // Track which skills are now in the system prompt (for injector exclusion)
-    systemPromptSkillNames = result.filteredSkillNames;
-
-    if (result.systemPrompt) {
-      return { systemPrompt: result.systemPrompt };
+    // Return cached prompt every turn.
+    // Same string → KV cache hit. Without this, pi resets to _baseSystemPrompt (unfiltered).
+    if (cachedSystemPrompt !== undefined) {
+      return { systemPrompt: cachedSystemPrompt };
     }
     return undefined;
   });
