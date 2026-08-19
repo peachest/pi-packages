@@ -192,13 +192,61 @@ function cleanProcessEnv(): void {
 
 /**
  * Rebuild the undici global dispatcher by calling pi's configureHttpDispatcher.
- * Uses createRequire to bypass the package's exports map.
  * Must be called when proxy URL changes — NO_PROXY changes are auto-detected.
+ *
+ * Resolution strategy (the package's exports field only has "import", not
+ * "require", so CJS require.resolve fails):
+ * 1. Search Module._cache for already-loaded http-dispatcher.js (pi loads
+ *    it at startup, so it should be in the cache when running inside pi).
+ * 2. Search Module._cache for pi-coding-agent's dist/index.js, derive path.
+ * 3. Fall back to scanning node_modules directories (local then global).
  */
 async function rebuildDispatcher(): Promise<void> {
   const req = createRequire(import.meta.url);
-  const mainPath = req.resolve("@earendil-works/pi-coding-agent");
-  const dispatcherPath = join(dirname(mainPath), "core", "http-dispatcher.js");
+  const cache = (require("node:module") as typeof import("node:module"))._cache;
+
+  // Strategy 1: find http-dispatcher.js in require cache
+  let dispatcherPath: string | null = null;
+  for (const key of Object.keys(cache)) {
+    if (key.endsWith(join("core", "http-dispatcher.js")) && key.includes("pi-coding-agent")) {
+      dispatcherPath = key;
+      break;
+    }
+  }
+
+  // Strategy 2: find pi-coding-agent's dist/index.js in cache, derive path
+  if (!dispatcherPath) {
+    for (const key of Object.keys(cache)) {
+      if (key.includes("pi-coding-agent") && key.endsWith(join("dist", "index.js"))) {
+        dispatcherPath = join(dirname(key), "core", "http-dispatcher.js");
+        break;
+      }
+    }
+  }
+
+  // Strategy 3: scan node_modules directories
+  if (!dispatcherPath) {
+    const candidates = [
+      join("node_modules", "@earendil-works", "pi-coding-agent"),
+      join(".nvm", "versions", "node", process.version.slice(1), "lib", "node_modules", "@earendil-works", "pi-coding-agent"),
+    ];
+    for (const rel of candidates) {
+      for (const base of [process.cwd(), homedir()]) {
+        const dir = join(base, rel);
+        const candidate = join(dir, "dist", "core", "http-dispatcher.js");
+        if (existsSync(candidate)) {
+          dispatcherPath = candidate;
+          break;
+        }
+      }
+      if (dispatcherPath) break;
+    }
+  }
+
+  if (!dispatcherPath) {
+    throw new Error("Could not locate pi-coding-agent's http-dispatcher.js");
+  }
+
   const { configureHttpDispatcher } = req(dispatcherPath);
   configureHttpDispatcher();
 }
