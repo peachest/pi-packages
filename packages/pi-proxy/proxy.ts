@@ -206,18 +206,22 @@ async function rebuildDispatcher(): Promise<void> {
   const cache = (require("node:module") as typeof import("node:module"))._cache;
 
   // Strategy 1: find http-dispatcher.js in require cache
+  const dispatcherSuffix = join("core", "http-dispatcher.js");
   let dispatcherPath: string | null = null;
   for (const key of Object.keys(cache)) {
-    if (key.endsWith(join("core", "http-dispatcher.js")) && key.includes("pi-coding-agent")) {
+    if (key.endsWith(dispatcherSuffix) && key.includes(join("pi-coding-agent", "dist"))) {
       dispatcherPath = key;
       break;
     }
   }
 
   // Strategy 2: find pi-coding-agent's dist/index.js in cache, derive path
+  // Match exactly .../@earendil-works/pi-coding-agent/dist/index.js
+  // (not nested deps like .../pi-coding-agent/node_modules/partial-json/dist/index.js)
   if (!dispatcherPath) {
+    const indexSuffix = join("pi-coding-agent", "dist", "index.js");
     for (const key of Object.keys(cache)) {
-      if (key.includes("pi-coding-agent") && key.endsWith(join("dist", "index.js"))) {
+      if (key.endsWith(indexSuffix)) {
         dispatcherPath = join(dirname(key), "core", "http-dispatcher.js");
         break;
       }
