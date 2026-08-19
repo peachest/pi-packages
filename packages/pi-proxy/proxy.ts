@@ -194,61 +194,25 @@ function cleanProcessEnv(): void {
  * Rebuild the undici global dispatcher by calling pi's configureHttpDispatcher.
  * Must be called when proxy URL changes — NO_PROXY changes are auto-detected.
  *
- * Resolution strategy (the package's exports field only has "import", not
- * "require", so CJS require.resolve fails):
- * 1. Search Module._cache for already-loaded http-dispatcher.js (pi loads
- *    it at startup, so it should be in the cache when running inside pi).
- * 2. Search Module._cache for pi-coding-agent's dist/index.js, derive path.
- * 3. Fall back to scanning node_modules directories (local then global).
+ * The package's exports field only has "import" (no "require"), so CJS
+ * require.resolve fails. jiti also uses its own module cache (not
+ * Module._cache). Instead, derive the path from process.execPath:
+ *   /.../v24.15.0/bin/node → /.../v24.15.0/lib/node_modules/@earendil-works/pi-coding-agent/dist/core/http-dispatcher.js
  */
 async function rebuildDispatcher(): Promise<void> {
   const req = createRequire(import.meta.url);
-  const cache = (require("node:module") as typeof import("node:module"))._cache;
 
-  // Strategy 1: find http-dispatcher.js in require cache
-  const dispatcherSuffix = join("core", "http-dispatcher.js");
-  let dispatcherPath: string | null = null;
-  for (const key of Object.keys(cache)) {
-    if (key.endsWith(dispatcherSuffix) && key.includes(join("pi-coding-agent", "dist"))) {
-      dispatcherPath = key;
-      break;
-    }
-  }
+  // Derive global node_modules from process.execPath
+  // /prefix/bin/node → /prefix/lib/node_modules
+  const globalModules = join(dirname(dirname(process.execPath)), "lib", "node_modules");
+  const dispatcherPath = join(
+    globalModules,
+    "@earendil-works", "pi-coding-agent",
+    "dist", "core", "http-dispatcher.js",
+  );
 
-  // Strategy 2: find pi-coding-agent's dist/index.js in cache, derive path
-  // Match exactly .../@earendil-works/pi-coding-agent/dist/index.js
-  // (not nested deps like .../pi-coding-agent/node_modules/partial-json/dist/index.js)
-  if (!dispatcherPath) {
-    const indexSuffix = join("pi-coding-agent", "dist", "index.js");
-    for (const key of Object.keys(cache)) {
-      if (key.endsWith(indexSuffix)) {
-        dispatcherPath = join(dirname(key), "core", "http-dispatcher.js");
-        break;
-      }
-    }
-  }
-
-  // Strategy 3: scan node_modules directories
-  if (!dispatcherPath) {
-    const candidates = [
-      join("node_modules", "@earendil-works", "pi-coding-agent"),
-      join(".nvm", "versions", "node", process.version.slice(1), "lib", "node_modules", "@earendil-works", "pi-coding-agent"),
-    ];
-    for (const rel of candidates) {
-      for (const base of [process.cwd(), homedir()]) {
-        const dir = join(base, rel);
-        const candidate = join(dir, "dist", "core", "http-dispatcher.js");
-        if (existsSync(candidate)) {
-          dispatcherPath = candidate;
-          break;
-        }
-      }
-      if (dispatcherPath) break;
-    }
-  }
-
-  if (!dispatcherPath) {
-    throw new Error("Could not locate pi-coding-agent's http-dispatcher.js");
+  if (!existsSync(dispatcherPath)) {
+    throw new Error(`Could not locate pi-coding-agent's http-dispatcher.js at ${dispatcherPath}`);
   }
 
   const { configureHttpDispatcher } = req(dispatcherPath);
