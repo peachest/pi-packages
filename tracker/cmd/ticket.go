@@ -28,6 +28,7 @@ func NewRootCmd() *cobra.Command {
 	}
 
 	root.AddCommand(newTicketCmd())
+	root.AddCommand(newQueryCmd())
 
 	return root
 }

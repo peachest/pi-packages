@@ -3,13 +3,13 @@ id: "03"
 title: query frontier
 map: issue-tracker-tool
 type: task
-status: open
+status: resolved
 triage: null
 blocked_by: ["02"]
 created_at: 2026-08-19T12:00:00Z
-reviewed_at: null
-claimed_at: null
-resolved_at: null
+reviewed_at: 2026-08-21T09:57:38Z
+claimed_at: 2026-08-21T09:57:38Z
+resolved_at: 2026-08-21T10:00:00Z
 ---
 
 # query frontier
