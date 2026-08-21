@@ -29,6 +29,7 @@ func NewRootCmd() *cobra.Command {
 
 	root.AddCommand(newTicketCmd())
 	root.AddCommand(newQueryCmd())
+	root.AddCommand(newMapCmd())
 
 	return root
 }

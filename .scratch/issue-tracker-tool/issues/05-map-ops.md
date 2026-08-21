@@ -3,13 +3,13 @@ id: "05"
 title: map state + map progress + map list
 map: issue-tracker-tool
 type: task
-status: open
+status: resolved
 triage: null
 blocked_by: ["01"]
 created_at: 2026-08-19T12:00:00Z
-reviewed_at: null
-claimed_at: null
-resolved_at: null
+reviewed_at: 2026-08-21T10:05:20Z
+claimed_at: 2026-08-21T10:05:20Z
+resolved_at: 2026-08-21T10:15:00Z
 ---
 
 # map state + map progress + map list
