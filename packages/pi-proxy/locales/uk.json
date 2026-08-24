@@ -24,5 +24,8 @@
   "notify.status_config_file": "Файл конфігурації: {path}",
   "notify.status_missing": "(не знайдено)",
   "notify.status_env_header": "Змінні середовища:",
-  "notify.status_no_vars": "Змінні не налаштовано"
+  "notify.status_no_vars": "Змінні не налаштовано",
+
+  "notify.tool_set_empty": "Немає змінних проксі для ввімкнення",
+  "notify.tool_noproxy": "no_proxy оновлено ({action})"
 }

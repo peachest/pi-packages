@@ -24,5 +24,8 @@
   "notify.status_config_file": "Файл конфигурации: {path}",
   "notify.status_missing": "(не найден)",
   "notify.status_env_header": "Переменные окружения:",
-  "notify.status_no_vars": "Переменные не настроены"
+  "notify.status_no_vars": "Переменные не настроены",
+
+  "notify.tool_set_empty": "Нет переменных прокси для включения",
+  "notify.tool_noproxy": "no_proxy обновлён ({action})"
 }

@@ -2,7 +2,7 @@
 
 ## 概述
 
-一个 pi extension，注册 `/proxy`、`/proxy-unset`、`/proxy-config`、`/proxy-status` 四个命令，并在 footer 中展示代理状态。用于在 pi session 中动态开关代理环境变量，无需退出重启。
+一个 pi extension，注册 `/proxy`、`/proxy-unset`、`/proxy-config`、`/proxy-status` 四个命令，以及 `proxy_set`、`proxy_unset`、`proxy_status`、`proxy_noproxy` 四个 agent 可调用工具，并在 footer 中展示代理状态。用于在 pi session 中动态开关代理环境变量，无需退出重启。
 
 ## 需求
 
@@ -15,6 +15,11 @@
 7. agent bash 和 user_bash（`!` 命令）均注入代理环境变量
 8. 命令文本不被污染，代理注入对用户和 agent 完全透明
 9. Footer 实时展示代理开关状态
+10. `proxy_set` 工具 — agent 直接设置代理 URL 和 no_proxy，立即保存并生效
+11. `proxy_unset` 工具 — agent 直接关闭代理注入
+12. `proxy_status` 工具 — agent 查询当前代理状态
+13. `proxy_noproxy` 工具 — agent 管理 no_proxy 列表（增删改查）
+14. 工具与命令共享同一份模块状态，工具修改后立即对后续 bash 命令生效
 
 ## 数据模型
 
@@ -73,11 +78,19 @@ NO_PROXY=localhost,127.0.0.1,.local
 └──────┬───────┘              └──────────────────────┘        ┌────────▼────────┐
        │                                                      │   proxy.env     │
        │ spawnHook / custom ops injects env                   │  (KEY=VALUE)    │
-       ▼                                                      └─────────────────┘
+       │ tools update proxyEnv + persist                      └─────────────────┘
+       ▼
 ┌──────────────┐
 │  bash tool   │ ──► spawn("cmd", { env: {...parentEnv, ...proxyEnv} })
 │  (overridden)│
 │  user_bash   │ ──► createLocalBashOperations + exec({ env: {...env, ...proxyEnv} })
+└──────────────┘
+
+┌──────────────┐
+│  proxy_set   │ ──► merge params into env → persistEnv → applyProxyState → next spawn uses new env
+│  proxy_unset │ ──► applyProxyState(enable=false) → next spawn has no proxy env
+│  proxy_status│ ──► readCurrentEnv → return as tool result
+│  proxy_noproxy│──► read/modify no_proxy list → persistEnv → update proxyEnv if enabled
 └──────────────┘
 ```
 
@@ -122,6 +135,7 @@ pi.on("user_bash", () => {
 
 - 命令文本不被污染，env 在 spawn 时静默合并
 - 闭包动态读取 `proxyEnv`，/proxy 和 /proxy-unset 修改后即时生效
+- 工具与命令共享同一份 `proxyEnv` / `enabled` / `config` 状态，工具修改后下一次 bash spawn 立即使用新 env
 - 外部编辑器功能完整，用户无需学新工具
 
 ### 状态管理
@@ -129,6 +143,25 @@ pi.on("user_bash", () => {
 ```typescript
 let proxyEnv: Record<string, string> = {};  // 当前注入的环境变量（从 .env 解析）
 let enabled: boolean = false;                // 开关状态
+```
+
+### 工具与命令的状态共享
+
+工具和命令操作同一组模块级变量（`proxyEnv`、`enabled`）和闭包变量（`config`）。工具内部使用共享 helper 函数：
+
+- `readCurrentEnv()` — 从 `config.envFile` 读取当前 env
+- `persistEnv(env)` — 将 env 写入 `proxy.env`
+- `applyProxyState(env, enable, ctx)` — 更新 `proxyEnv`/`enabled`/`config`，持久化，刷新 footer
+- `formatEnvText(env)` — 格式化 env 为可读文本
+
+`PROXY_KEY_GROUPS` 常量将工具参数映射到 env var key 组：
+
+```typescript
+const PROXY_KEY_GROUPS = {
+  proxyUrl: ["http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"],
+  allProxy: ["all_proxy", "ALL_PROXY"],
+  noProxy:  ["no_proxy", "NO_PROXY"],
+} as const;
 ```
 
 ### 生命周期
@@ -145,6 +178,7 @@ pi 启动
   ├─► 注册 bash tool override
   ├─► 注册 user_bash 拦截
   ├─► 注册 /proxy-config, /proxy, /proxy-unset, /proxy-status
+  ├─► 注册 proxy_set, proxy_unset, proxy_status, proxy_noproxy 工具
   │
   ▼
 运行时：
@@ -159,6 +193,10 @@ pi 启动
   /proxy-unset  → proxyEnv={} → enabled=false → 写 config → footer "○ Proxy off"
   bash/!command → 合并 proxyEnv（如果 enabled）
   /proxy-status → 读取并显示 config + .env 内容
+  proxy_set     → 合并参数到 env → persistEnv → applyProxyState(enable) → 下一次 bash 生效
+  proxy_unset   → applyProxyState(enable=false) → 下一次 bash 无代理 env
+  proxy_status  → readCurrentEnv → 返回 tool result
+  proxy_noproxy → 读/改 no_proxy 列表 → persistEnv → 如已开启则更新 proxyEnv
 ```
 
 ### 命令设计
@@ -171,6 +209,23 @@ pi 启动
 | `/proxy` | 从 .env 读取环境变量，开启注入。 |
 | `/proxy-unset` | 关闭注入。 |
 | `/proxy-status` | 显示 config 状态 + .env 中的所有变量。 |
+
+### 工具设计
+
+| 工具 | 行为 |
+|------|------|
+| `proxy_set` | 合并参数到 env（省略保留、`""`清除），persistEnv，applyProxyState(enable)。返回变更摘要 + 当前 env。 |
+| `proxy_unset` | applyProxyState(enable=false)。磁盘配置保留。 |
+| `proxy_status` | readCurrentEnv → 返回 enabled 状态 + env 文件路径 + 所有变量。 |
+| `proxy_noproxy` | 读/改 no_proxy 列表（add/remove/set/clear），persistEnv，如已开启则更新 proxyEnv。 |
+
+**proxy_set 参数映射**:
+
+| 参数 | 写入的 env vars |
+|------|----------------|
+| `proxyUrl` | `http_proxy`, `https_proxy`, `HTTP_PROXY`, `HTTPS_PROXY` |
+| `allProxy` | `all_proxy`, `ALL_PROXY` |
+| `noProxy` | `no_proxy`, `NO_PROXY` |
 
 ### Footer 状态展示
 
@@ -200,17 +255,21 @@ pi-proxy/
 
 | 情况 | 处理 |
 |------|------|
-| 首次使用，proxy.env 不存在 | `/proxy-config` 自动生成带注释模板 |
-| envFile 指向的文件被删除 | `/proxy` 时 notify 文件不存在 |
+| 首次使用，proxy.env 不存在 | `/proxy-config` 自动生成带注释模板；`proxy_set` 直接创建文件 |
+| envFile 指向的文件被删除 | `/proxy` 时 notify 文件不存在；`proxy_set` 重新创建 |
 | 未配置直接 `/proxy` | notify "未配置代理" |
 | $EDITOR 未设 | fallback "vim"，notify 提示 |
 | .env 解析后为空 | notify 提示，不开启 |
 | pi 非交互模式（-p） | 功能正常，notify/footer 为 no-op |
+| `proxy_set` 无参数且 env 为空 | 返回错误提示，不操作 |
+| `proxy_set` 清空所有变量 | 保存空 env，禁用注入，warning notify |
+| `proxy_noproxy` add/remove/set 未提供 hosts | 返回错误提示 |
+| `proxy_noproxy` 操作时代理已关闭 | 保存到磁盘，但不更新 proxyEnv（下次开启生效） |
 
 ## 兼容性
 
 - pi >= 0.80.2
-- 依赖：`@earendil-works/pi-coding-agent`（内置）
+- 依赖：`@earendil-works/pi-coding-agent`（内置）、`typebox`
 - 可选依赖：`@juicesharp/rpiv-i18n`（未安装时 UI 显示中文 fallback）
 
 ## 测试方案
@@ -219,6 +278,11 @@ pi-proxy/
 2. `/proxy` → `!curl -s https://httpbin.org/ip` 验证
 3. agent bash → 在 prompt 中让 agent 执行 `echo $http_proxy` 验证
 4. 持久化 → `/proxy` → 退出 pi → 重启 → `/proxy-status`
+5. `proxy_set({ proxyUrl: "http://127.0.0.1:7890" })` → agent bash `curl -s https://httpbin.org/ip` 验证
+6. `proxy_noproxy({ action: "add", hosts: ["10.0.0.5"] })` → `proxy_status` 确认 no_proxy 已更新
+7. `proxy_set({ proxyUrl: "" })` → `proxy_status` 确认 http_proxy 已清除
+8. `proxy_unset` → agent bash `echo $http_proxy` 确认为空
+9. 持久化 → `proxy_set` → 退出 pi → 重启 → `proxy_status` 确认状态恢复
 
 ## 不做什么
 

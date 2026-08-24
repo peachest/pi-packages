@@ -24,5 +24,8 @@
   "notify.status_config_file": "Archivo de configuración: {path}",
   "notify.status_missing": "(no encontrado)",
   "notify.status_env_header": "Variables de entorno:",
-  "notify.status_no_vars": "No hay variables configuradas"
+  "notify.status_no_vars": "No hay variables configuradas",
+
+  "notify.tool_set_empty": "No hay variables de proxy para activar",
+  "notify.tool_noproxy": "no_proxy actualizado ({action})"
 }
