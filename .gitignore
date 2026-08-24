@@ -33,3 +33,6 @@ Thumbs.db
 *.js.map
 *.d.ts.map
 *.log
+# Debug dumps & build output
+system-prompt-dump*.txt
+reports/
