@@ -8,6 +8,7 @@ import {
   serializeProxyEnv,
   computeProxyEnvPath,
   diffProxyUrl,
+  dispatcherPathFromMain,
 } from "./proxy";
 
 // ═══ mergeNoProxyLists ═══
@@ -129,6 +130,23 @@ describe("computeProxyEnvPath", () => {
   it("defaults to ~/.config when XDG_CONFIG_HOME not set", () => {
     delete process.env.XDG_CONFIG_HOME;
     expect(computeProxyEnvPath()).toBe(join(homedir(), ".config", "proxy.env"));
+  });
+});
+
+// ═══ dispatcherPathFromMain ═══
+
+describe("dispatcherPathFromMain", () => {
+  it("derives dist/core/http-dispatcher.js from the package main entry", () => {
+    const main = "/x/lib/node_modules/@earendil-works/pi-coding-agent/dist/index.js";
+    expect(dispatcherPathFromMain(main)).toBe(
+      "/x/lib/node_modules/@earendil-works/pi-coding-agent/dist/core/http-dispatcher.js",
+    );
+  });
+
+  it("works with a trailing Windows-style main on a posix join", () => {
+    // Only asserts the derivation math; real cross-platform handling is not required.
+    const main = "/p/dist/index.js";
+    expect(dispatcherPathFromMain(main)).toBe("/p/dist/core/http-dispatcher.js");
   });
 });
 

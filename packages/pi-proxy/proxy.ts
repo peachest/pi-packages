@@ -5,6 +5,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
 import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
 import { t, I18N_NAMESPACE } from "./state/i18n-bridge.js";
 
 // --- i18n registration ---
@@ -191,28 +192,58 @@ function cleanProcessEnv(): void {
 }
 
 /**
+ * Given pi-coding-agent's resolved main entry path (dist/index.js), derive the
+ * path to dist/core/http-dispatcher.js. Pure, for unit testing.
+ *
+ * dist/index.js → dirname=dist → dirname=pkgRoot → pkgRoot/dist/core/http-dispatcher.js
+ */
+export function dispatcherPathFromMain(mainPath: string): string {
+  const pkgRoot = dirname(dirname(mainPath));
+  return join(pkgRoot, "dist", "core", "http-dispatcher.js");
+}
+
+/**
  * Rebuild the undici global dispatcher by calling pi's configureHttpDispatcher.
  * Must be called when proxy URL changes — NO_PROXY changes are auto-detected.
  *
  * The package's exports field only has "import" (no "require"), so CJS
- * require.resolve fails. jiti also uses its own module cache (not
- * Module._cache). Instead, derive the path from process.execPath:
- *   /.../v24.15.0/bin/node → /.../v24.15.0/lib/node_modules/@earendil-works/pi-coding-agent/dist/core/http-dispatcher.js
+ * require.resolve fails. Resolution strategy:
+ *
+ * 1. import.meta.resolve — jiti's importMetaResolvePlugin rewrites this to its
+ *    alias-aware resolver, which maps "@earendil-works/pi-coding-agent" to the
+ *    actual install location (the loader's own __dirname), regardless of where
+ *    the node binary lives. This is the robust path.
+ *
+ * 2. Fallback: derive from process.execPath
+ *    (/prefix/bin/node → /prefix/lib/node_modules/...). Breaks when node is a
+ *    symlink into a read-only store (e.g. nix), where execPath resolves away
+ *    from the tree that holds the global packages — which is exactly why
+ *    strategy 1 is preferred.
  */
 async function rebuildDispatcher(): Promise<void> {
   const req = createRequire(import.meta.url);
+  const candidates: string[] = [];
 
-  // Derive global node_modules from process.execPath
-  // /prefix/bin/node → /prefix/lib/node_modules
+  // Strategy 1: import.meta.resolve (jiti-shimmed, alias-aware).
+  try {
+    const resolved = import.meta.resolve("@earendil-works/pi-coding-agent");
+    candidates.push(dispatcherPathFromMain(fileURLToPath(resolved)));
+  } catch {
+    // import.meta.resolve unavailable or specifier unresolvable — fall through.
+  }
+
+  // Strategy 2 (fallback): process.execPath heuristic.
   const globalModules = join(dirname(dirname(process.execPath)), "lib", "node_modules");
-  const dispatcherPath = join(
-    globalModules,
-    "@earendil-works", "pi-coding-agent",
-    "dist", "core", "http-dispatcher.js",
+  candidates.push(
+    join(globalModules, "@earendil-works", "pi-coding-agent", "dist", "core", "http-dispatcher.js"),
   );
 
-  if (!existsSync(dispatcherPath)) {
-    throw new Error(`Could not locate pi-coding-agent's http-dispatcher.js at ${dispatcherPath}`);
+  const dispatcherPath = candidates.find(existsSync);
+  if (!dispatcherPath) {
+    throw new Error(
+      "Could not locate pi-coding-agent's http-dispatcher.js. Tried:\n" +
+        candidates.map((p) => `  - ${p}`).join("\n"),
+    );
   }
 
   const { configureHttpDispatcher } = req(dispatcherPath);
