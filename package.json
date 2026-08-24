@@ -7,7 +7,8 @@
   ],
   "scripts": {
     "check": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "postinstall": "node scripts/link-pi-tui.mjs"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
