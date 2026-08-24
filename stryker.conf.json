@@ -1,0 +1,14 @@
+{
+  "$schema": "./node_modules/@stryker-mutator/core/schema/stryker-schema.json",
+  "packageManager": "npm",
+  "testRunner": "vitest",
+  "coverageAnalysis": "perTest",
+  "mutate": [
+    "packages/pi-wishlist/src/data/**/*.ts",
+    "!packages/pi-wishlist/src/data/**/*.test.ts",
+    "!packages/pi-wishlist/src/data/**/*.spec.ts"
+  ],
+  "thresholds": { "high": 80, "low": 60, "break": 0 },
+  "concurrency": 4,
+  "reporters": ["clear-text", "html"]
+}
