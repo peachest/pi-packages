@@ -3,9 +3,7 @@ package cmd
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"os"
 	"strings"
 	"time"
 
@@ -30,6 +28,7 @@ func NewRootCmd() *cobra.Command {
 	root.AddCommand(newTicketCmd())
 	root.AddCommand(newQueryCmd())
 	root.AddCommand(newMapCmd())
+	root.AddCommand(newMilestoneCmd())
 
 	return root
 }
@@ -316,10 +315,9 @@ func newTicketBlockingCmd() *cobra.Command {
 			}
 
 			return outputJSON(cmd, map[string]any{
-				"id":            fm.ID,
-				"map":           mapSlug,
-				"blocked_by":    fm.BlockedBy,
-				"cycle_detected": false,
+				"id":         fm.ID,
+				"map":        mapSlug,
+				"blocked_by": fm.BlockedBy,
 			})
 		},
 	}
@@ -343,17 +341,3 @@ func outputJSON(cmd *cobra.Command, v any) error {
 	return err
 }
 
-// printError writes an error to stderr with the standard format.
-func printError(err error) {
-	var exitCode int
-	switch {
-	case errors.Is(err, tracker.ErrNotFound):
-		exitCode = 2
-	case errors.Is(err, tracker.ErrAlreadyResolved), errors.Is(err, tracker.ErrCycleDetected):
-		exitCode = 3
-	default:
-		exitCode = 1
-	}
-	fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-	os.Exit(exitCode)
-}

@@ -1,6 +1,7 @@
 package tracker
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -228,5 +229,5 @@ func TestListTicketsFilterTriageNull(t *testing.T) {
 }
 
 func isErr(err, target error) bool {
-	return err != nil && (err == target || errorsIs(err, target))
+	return err != nil && (err == target || errors.Is(err, target))
 }

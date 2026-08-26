@@ -3,10 +3,8 @@ package cmd
 import (
 	"bytes"
 	"encoding/json"
-	"strings"
 	"testing"
 
-	"github.com/peachest/pi-packages/tracker/tracker"
 	"github.com/spf13/afero"
 )
 
@@ -185,6 +183,3 @@ func TestTicketReviewCommand(t *testing.T) {
 	}
 }
 
-// Ensure tracker package compiles (import check)
-var _ = tracker.ErrNotFound
-var _ = strings.TrimSpace

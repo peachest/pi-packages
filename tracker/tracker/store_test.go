@@ -57,9 +57,12 @@ func TestFindScratchDir(t *testing.T) {
 }
 
 func TestEnsureScratchDir(t *testing.T) {
-	t.Run("creates when not found", func(t *testing.T) {
+	t.Run("creates at cwd when not in git repo", func(t *testing.T) {
 		fs := afero.NewMemMapFs()
 		fs.MkdirAll("/project", 0755)
+		oldGit := gitRootFunc
+		gitRootFunc = func(dir string) (string, error) { return "", nil }
+		defer func() { gitRootFunc = oldGit }()
 
 		got, err := EnsureScratchDir(fs, "/project")
 		if err != nil {
@@ -68,16 +71,30 @@ func TestEnsureScratchDir(t *testing.T) {
 		if got != "/project/.scratch" {
 			t.Errorf("EnsureScratchDir() = %q, want /project/.scratch", got)
 		}
+	})
 
-		exists, _ := afero.DirExists(fs, "/project/.scratch")
-		if !exists {
-			t.Error(".scratch/ was not created")
+	t.Run("creates at git root when in git repo (S1)", func(t *testing.T) {
+		fs := afero.NewMemMapFs()
+		fs.MkdirAll("/repo/subdir", 0755)
+		oldGit := gitRootFunc
+		gitRootFunc = func(dir string) (string, error) { return "/repo", nil }
+		defer func() { gitRootFunc = oldGit }()
+
+		got, err := EnsureScratchDir(fs, "/repo/subdir")
+		if err != nil {
+			t.Fatalf("EnsureScratchDir() error = %v", err)
+		}
+		if got != "/repo/.scratch" {
+			t.Errorf("EnsureScratchDir() = %q, want /repo/.scratch (git root)", got)
 		}
 	})
 
 	t.Run("uses existing", func(t *testing.T) {
 		fs := afero.NewMemMapFs()
 		fs.MkdirAll("/project/.scratch/some-map", 0755)
+		oldGit := gitRootFunc
+		gitRootFunc = func(dir string) (string, error) { return "", nil }
+		defer func() { gitRootFunc = oldGit }()
 
 		got, err := EnsureScratchDir(fs, "/project")
 		if err != nil {

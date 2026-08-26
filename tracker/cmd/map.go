@@ -38,9 +38,16 @@ func newMapStateCmd() *cobra.Command {
 				return err
 			}
 
+			mfm, err := tracker.ReadMap(fs, scratchDir, slug)
+			if err != nil {
+				return err
+			}
+
 			return outputJSON(cmd, map[string]any{
-				"slug": slug,
-				"state": newState,
+				"slug":    slug,
+				"title":   mfm.Title,
+				"state":   mfm.State,
+				"closed_at": mfm.ClosedAt,
 			})
 		},
 	}
@@ -76,8 +83,16 @@ func newMapProgressCmd() *cobra.Command {
 				return err
 			}
 
+			mfm, err := tracker.ReadMap(fs, scratchDir, slug)
+			if err != nil {
+				return err
+			}
+
 			return outputJSON(cmd, map[string]any{
 				"slug":          slug,
+				"title":         mfm.Title,
+				"state":         mfm.State,
+				"milestone":     mfm.Milestone,
 				"progress":      progress,
 				"frontier_size": frontierSize,
 			})

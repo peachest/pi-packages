@@ -1,7 +1,6 @@
 package tracker
 
 import (
-	"errors"
 	"fmt"
 	"path/filepath"
 	"slices"
@@ -25,12 +24,15 @@ type TicketOpts struct {
 
 // TicketSummary is a compact view of a ticket for listing.
 type TicketSummary struct {
-	ID        string   `json:"id"`
-	Title     string   `json:"title"`
-	Type      string   `json:"type"`
-	Status    string   `json:"status"`
-	Triage    *string  `json:"triage"`
-	BlockedBy []string `json:"blocked_by"`
+	ID        string     `json:"id"`
+	Title     string     `json:"title"`
+	Map       string     `json:"map"`
+	Type      string     `json:"type"`
+	Status    string     `json:"status"`
+	Triage    *string    `json:"triage"`
+	BlockedBy []string   `json:"blocked_by"`
+	Path      string     `json:"path"`
+	CreatedAt time.Time  `json:"created_at"`
 }
 
 // ListFilter holds optional filters for listing tickets.
@@ -126,10 +128,13 @@ func CreateTicket(fs afero.Fs, scratchDir string, opts TicketOpts, now time.Time
 	return TicketSummary{
 		ID:        nextID,
 		Title:     opts.Title,
+		Map:       opts.MapSlug,
 		Type:      opts.Type,
 		Status:    "open",
 		Triage:    opts.Triage,
 		BlockedBy: blockedBy,
+		Path:      path,
+		CreatedAt: now,
 	}, nil
 }
 
@@ -168,10 +173,13 @@ func ListTickets(fs afero.Fs, scratchDir, mapSlug string, filter ListFilter) ([]
 		ticket := TicketSummary{
 			ID:        fm.ID,
 			Title:     fm.Title,
+			Map:       mapSlug,
 			Type:      fm.Type,
 			Status:    fm.Status,
 			Triage:    fm.Triage,
 			BlockedBy: fm.BlockedBy,
+			Path:      path,
+			CreatedAt: fm.CreatedAt,
 		}
 
 		if !matchesFilter(ticket, filter) {
@@ -207,7 +215,8 @@ func matchesFilter(t TicketSummary, f ListFilter) bool {
 	return true
 }
 
-// nextTicketID scans the issues directory for existing IDs and returns the next one.
+// nextTicketID scans the issues directory for the maximum ID and returns the next one.
+// The front matter `id` is the source of truth (Q16), not the filename.
 func nextTicketID(fs afero.Fs, issuesDir string) (string, error) {
 	entries, err := afero.ReadDir(fs, issuesDir)
 	if err != nil {
@@ -219,17 +228,16 @@ func nextTicketID(fs afero.Fs, issuesDir string) (string, error) {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") {
 			continue
 		}
-		name := entry.Name()
-		// Extract leading number before first "-"
-		dashIdx := strings.Index(name, "-")
-		var idStr string
-		if dashIdx > 0 {
-			idStr = name[:dashIdx]
-		} else {
-			idStr = strings.TrimSuffix(name, ".md")
+		data, err := afero.ReadFile(fs, filepath.Join(issuesDir, entry.Name()))
+		if err != nil {
+			continue // skip unreadable
+		}
+		fm, err := ParseFrontMatter(data)
+		if err != nil {
+			continue // skip malformed
 		}
 		var num int
-		if _, err := fmt.Sscanf(idStr, "%d", &num); err != nil {
+		if _, err := fmt.Sscanf(fm.ID, "%d", &num); err != nil {
 			continue
 		}
 		if num > maxNum {
@@ -266,11 +274,6 @@ func normalizeIDs(ids []string) []string {
 		result[i] = normalizeID(id)
 	}
 	return result
-}
-
-// errorsIs is a wrapper to avoid importing errors in test helpers.
-func errorsIs(err, target error) bool {
-	return errors.Is(err, target)
 }
 
 // ReadTicketForDisplay reads a ticket's front matter for display purposes.

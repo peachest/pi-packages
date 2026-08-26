@@ -38,9 +38,16 @@ func newMilestoneStateCmd() *cobra.Command {
 				return err
 			}
 
+			mfm, err := tracker.ReadMilestone(fs, scratchDir, slug)
+			if err != nil {
+				return err
+			}
+
 			return outputJSON(cmd, map[string]any{
-				"slug":  slug,
-				"state": newState,
+				"slug":       slug,
+				"title":      mfm.Title,
+				"state":      mfm.State,
+				"closed_at":  mfm.ClosedAt,
 			})
 		},
 	}

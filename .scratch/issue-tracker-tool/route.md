@@ -72,7 +72,7 @@
 | R3-Q1 | to-spec local publish | to-spec 调用 tracker ticket create，再用 bash/edit 填充 body |
 | R3-Q2 | triage category | 不加 category 字段（YAGNI） |
 | R3-Q3 | blocking 清空 | `--by ""` 表示清空 |
-| R3-Q4 | list 过滤组合 | AND 组合，--triage null 合法 |
+| R3-Q4 | list 过滤组合 | AND 组合，`--triage-null` bool flag 匹配 null（实现选择，偏离 spec 草稿的 `--triage null`；bool 更清晰，与 `--triage <role>` 分离） |
 | R3-Q5 | Answer heading 缺失 | 报错，不自动插入 |
 | R3-Q6 | .scratch/ 创建 | 自动创建 .scratch/（在 git root 或 cwd） |
 | R3-Q7 | blocked_by 空表示 | 始终写 blocked_by: [] |
@@ -359,7 +359,7 @@ tracker query frontier --map <slug>
 - `ticket status --set` 接受 `open|claimed|resolved`（G2 撤回，G-Q15）。`--set claimed` 前置检查 `reviewed_at != null`（G-Q12）。`--set open` on resolved = reopen（清空 resolved_at + claimed_at，G-Q1/Q2/Q3）。
 - `ticket blocking --by 1,2` 是 **Replace (SET) 语义**——覆盖整个 blocked_by 数组，不是 append（G5 决策）。**清空所有 blocker 用 `--by ""`（空字符串）**，CLI 解析空值为 `blocked_by: []`（R3-Q3）。
 - `ticket create` 只输出 front matter + 最小 body 骨架（`## Answer` + `## Comments`），**不管 body 模板**——body 段模板由 `issue-tracker-local.md` 定义，agent 自觉遵循（G4 决策）。body 段模板包括 type-specific 段（task=`## What to build` + `## Acceptance criteria` + `## Out of scope` + `## Testing`；research/grilling/prototype=`## Question`）以及 to-spec 产出的 spec ticket 使用的段（`## Problem Statement` + `## Solution` + `## Implementation Decisions` + `## Testing Decisions` + `## Out of Scope` + `## Further Notes`）——to-spec ticket type 为 task 但 body 使用 to-spec 自己的模板，不套用 task 模板。
-- `ticket list` 的 `--status`、`--type`、`--triage` 过滤是 **AND 组合**。`--triage null` 合法，匹配 triage 字段为 null/省略的 ticket。`--status`、`--type` 同理支持对应枚举值（R3-Q4）。
+- `ticket list` 的 `--status`、`--type` 过滤是 **AND 组合**。`--triage-null`（bool）匹配 triage 字段为 null/省略的 ticket，与 `--triage <role>` 分离（R3-Q4，实现用 bool flag 而非 spec 草稿的 `--triage null`）——语义无歧义。`--status`、`--type` 同理支持对应枚举值（R3-Q4）。
 - **ID 输入归一化**：`--id <N>` 和 `--by 1,2` 接受 unpadded（`3`）或 padded（`03`）整数。CLI 内部归一化为零填充 2 位字符串匹配 front matter。输出始终为零填充 2 位字符串。
 - **`query frontier` 排序**：返回的 JSON 数组按 ticket id 升序排列（与 wayfinder "first by number wins" 一致）。
 - `map list` 默认包含所有 maps（active + closed），JSON 输出中有 `state` 字段区分。不加 `--state` 过滤（R3-Q8）。

@@ -36,3 +36,4 @@ Thumbs.db
 # Debug dumps & build output
 system-prompt-dump*.txt
 reports/
+/.triage

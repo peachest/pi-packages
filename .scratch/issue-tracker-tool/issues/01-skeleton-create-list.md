@@ -162,7 +162,7 @@ tracker ticket list --map <slug> [--status <s>] [--type <t>] [--triage <t>]
 ```
 
 - Scan `issues/` directory, parse each file's front matter
-- Filters are AND-combinable. `--triage null` matches triage=null/omitted. `--status`, `--type` accept their enum values.
+- Filters are AND-combinable. `--triage-null` (bool) matches triage=null/omitted. `--status`, `--type` accept their enum values.
 - Return JSON array of ticket summaries: `[{"id": "01", "title": "...", "type": "task", "status": "resolved", "triage": null, "blocked_by": []}, ...]`
 - Sort by id ascending (use `slices.SortFunc` + `cmp.Compare`)
 
@@ -226,7 +226,7 @@ Ticket 03's `query frontier` command calls `Frontier()`. Ticket 05's `map progre
 - [ ] `tracker ticket create` without `--blocked-by` writes `blocked_by: []`
 - [ ] `tracker ticket list --map test-map` returns JSON array of all tickets sorted by id
 - [ ] `tracker ticket list --status open --type task` filters with AND logic
-- [ ] `tracker ticket list --triage null` returns tickets with triage=null
+- [ ] `tracker ticket list --triage-null` returns tickets with triage=null
 - [ ] `.scratch/` auto-created at git root when not found
 - [ ] Map directory not found → exit code 2 with actionable error message
 - [ ] `issues/` subdirectory auto-created when map exists but issues/ doesn't

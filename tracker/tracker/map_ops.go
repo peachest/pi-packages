@@ -19,6 +19,20 @@ type MapSummary struct {
 	Progress  Progress `json:"progress"`
 }
 
+// ReadMap reads a map's front matter (title/state/milestone/created_at/closed_at).
+func ReadMap(fs afero.Fs, scratchDir, mapSlug string) (MapFrontMatter, error) {
+	mapPath := filepath.Join(scratchDir, mapSlug, "map.md")
+	data, err := afero.ReadFile(fs, mapPath)
+	if err != nil {
+		return MapFrontMatter{}, fmt.Errorf("%w: map %q not found. No .scratch/%s/map.md file", ErrNotFound, mapSlug, mapSlug)
+	}
+	mfm, err := ParseMapFrontMatter(data)
+	if err != nil {
+		return MapFrontMatter{}, fmt.Errorf("parsing map front matter: %w", err)
+	}
+	return mfm, nil
+}
+
 // SetMapState updates a map's state (active|closed) and closed_at timestamp.
 func SetMapState(fs afero.Fs, scratchDir, mapSlug, newState string, now time.Time) error {
 	if newState != "active" && newState != "closed" {

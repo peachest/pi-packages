@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"bytes"
 	"encoding/json"
 	"testing"
 
@@ -109,5 +108,3 @@ func TestQueryFrontierSortedById(t *testing.T) {
 	}
 }
 
-// Avoid unused imports
-var _ = bytes.NewBuffer
