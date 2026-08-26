@@ -24,16 +24,20 @@ for pkg in packages/*/; do pi install "./$pkg"; done
 
 ## 本地 workspace 依赖链接
 
-`pi-proxy` 和 `pi-wishlist` 的 `import ... from "pi-i18n-utils"` 依赖 Node 从 `node_modules/` 解析该包。`node_modules/` 被 git 忽略、不在版本控制里，所以必须手动 link 到 pi 的 npm 目录，否则 pi 加载时报 `Cannot find module 'pi-i18n-utils'`：
+`pi-proxy` 和 `pi-wishlist` 的 `import ... from "pi-i18n-utils"` 依赖 Node 从 `node_modules/` 解析该包。`node_modules/` 被 git 忽略、不在版本控制里，所以必须手动 link 到**仓库根 `node_modules/`**（pi 的 jiti loader 从扩展文件所在目录**向上搜索** `node_modules/`，`~/.pi/agent/npm 不在搜索链上），否则 pi 启动加载扩展时报` Cannot find module 'pi-i18n-utils'`：
 
 ```bash
-# 1. 在包目录全局注册
-npm link --prefix ./packages/pi-i18n-utils
-# 2. 链接到 pi 的 npm 目录
-(cd ~/.pi/agent/npm && npm link pi-i18n-utils)
+# 在仓库根建软链（从扩展文件向上搜索的必经节点）
+mkdir -p node_modules
+ln -sfn ../packages/pi-i18n-utils node_modules/pi-i18n-utils
 ```
 
-换机器或清掉 `~/.pi/agent/npm/node_modules` 后需重新执行这两步。
+# 验证解析链（模拟 pi 的 jiti loader）
+node -e "console.log(require.resolve('pi-i18n-utils',{paths:['packages/pi-proxy/state/']}))"
+
+换机器或清掉仓库 `node_modules/` 后需重新执行。
+
+> 注意：`~/.pi/agent/npm` 里的软链在 pi 0.84.3 下**无效**——jiti 以 `import.meta.url`（loader.js 所在处）为 base，扩展依赖的裸模块从**扩展文件目录**向上搜索，永远走不到 `~/.pi/agent/npm`。
 
 ## 管理
 
