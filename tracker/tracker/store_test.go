@@ -1,40 +1,41 @@
 package tracker
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
-
-	"github.com/spf13/afero"
 )
 
 func TestFindScratchDir(t *testing.T) {
 	tests := []struct {
 		name    string
-		setup   func(fs afero.Fs) string // returns cwd
+		setup   func(t *testing.T) string // returns cwd
 		wantDir string
 		wantErr bool
 	}{
 		{
 			name: "found in cwd",
-			setup: func(fs afero.Fs) string {
-				fs.MkdirAll("/project/.scratch", 0755)
-				return "/project"
+			setup: func(t *testing.T) string {
+				base := t.TempDir()
+				os.MkdirAll(filepath.Join(base, ".scratch"), 0755)
+				return base
 			},
-			wantDir: "/project/.scratch",
+			// wantDir set in test body (depends on tempdir)
 		},
 		{
 			name: "found in parent",
-			setup: func(fs afero.Fs) string {
-				fs.MkdirAll("/project/.scratch", 0755)
-				fs.MkdirAll("/project/subdir", 0755)
-				return "/project/subdir"
+			setup: func(t *testing.T) string {
+				base := t.TempDir()
+				os.MkdirAll(filepath.Join(base, ".scratch"), 0755)
+				sub := filepath.Join(base, "subdir")
+				os.MkdirAll(sub, 0755)
+				return sub
 			},
-			wantDir: "/project/.scratch",
 		},
 		{
-			name: "not found, no git",
-			setup: func(fs afero.Fs) string {
-				fs.MkdirAll("/newproject", 0755)
-				return "/newproject"
+			name: "not found",
+			setup: func(t *testing.T) string {
+				return t.TempDir()
 			},
 			wantDir: "",
 		},
@@ -42,14 +43,21 @@ func TestFindScratchDir(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			fs := afero.NewMemMapFs()
-			cwd := tt.setup(fs)
-
-			got, err := FindScratchDir(fs, cwd)
+			cwd := tt.setup(t)
+			got, err := FindScratchDir(cwd)
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("FindScratchDir() error = %v, wantErr %v", err, tt.wantErr)
 			}
-			if got != tt.wantDir {
+			// For "found" cases, the result should end with .scratch
+			if tt.name != "not found" {
+				want := filepath.Join(filepath.Dir(cwd), ".scratch")
+				if tt.name == "found in cwd" {
+					want = filepath.Join(cwd, ".scratch")
+				}
+				if got != want {
+					t.Errorf("FindScratchDir() = %q, want %q", got, want)
+				}
+			} else if got != tt.wantDir {
 				t.Errorf("FindScratchDir() = %q, want %q", got, tt.wantDir)
 			}
 		})
@@ -58,69 +66,73 @@ func TestFindScratchDir(t *testing.T) {
 
 func TestEnsureScratchDir(t *testing.T) {
 	t.Run("creates at cwd when not in git repo", func(t *testing.T) {
-		fs := afero.NewMemMapFs()
-		fs.MkdirAll("/project", 0755)
+		base := t.TempDir()
 		oldGit := gitRootFunc
 		gitRootFunc = func(dir string) (string, error) { return "", nil }
 		defer func() { gitRootFunc = oldGit }()
 
-		got, err := EnsureScratchDir(fs, "/project")
+		got, err := EnsureScratchDir(base)
 		if err != nil {
 			t.Fatalf("EnsureScratchDir() error = %v", err)
 		}
-		if got != "/project/.scratch" {
-			t.Errorf("EnsureScratchDir() = %q, want /project/.scratch", got)
+		want := filepath.Join(base, ".scratch")
+		if got != want {
+			t.Errorf("EnsureScratchDir() = %q, want %q", got, want)
+		}
+		if fi, err := os.Stat(want); err != nil || !fi.IsDir() {
+			t.Errorf("expected .scratch dir created at %s", want)
 		}
 	})
 
 	t.Run("creates at git root when in git repo (S1)", func(t *testing.T) {
-		fs := afero.NewMemMapFs()
-		fs.MkdirAll("/repo/subdir", 0755)
+		repo := t.TempDir()
+		subdir := filepath.Join(repo, "subdir")
+		os.MkdirAll(subdir, 0755)
 		oldGit := gitRootFunc
-		gitRootFunc = func(dir string) (string, error) { return "/repo", nil }
+		gitRootFunc = func(dir string) (string, error) { return repo, nil }
 		defer func() { gitRootFunc = oldGit }()
 
-		got, err := EnsureScratchDir(fs, "/repo/subdir")
+		got, err := EnsureScratchDir(subdir)
 		if err != nil {
 			t.Fatalf("EnsureScratchDir() error = %v", err)
 		}
-		if got != "/repo/.scratch" {
-			t.Errorf("EnsureScratchDir() = %q, want /repo/.scratch (git root)", got)
+		want := filepath.Join(repo, ".scratch")
+		if got != want {
+			t.Errorf("EnsureScratchDir() = %q, want %q (git root)", got, want)
 		}
 	})
 
 	t.Run("uses existing", func(t *testing.T) {
-		fs := afero.NewMemMapFs()
-		fs.MkdirAll("/project/.scratch/some-map", 0755)
+		base := t.TempDir()
+		os.MkdirAll(filepath.Join(base, ".scratch", "some-map"), 0755)
 		oldGit := gitRootFunc
 		gitRootFunc = func(dir string) (string, error) { return "", nil }
 		defer func() { gitRootFunc = oldGit }()
 
-		got, err := EnsureScratchDir(fs, "/project")
+		got, err := EnsureScratchDir(base)
 		if err != nil {
 			t.Fatalf("EnsureScratchDir() error = %v", err)
 		}
-		if got != "/project/.scratch" {
-			t.Errorf("EnsureScratchDir() = %q, want /project/.scratch", got)
+		want := filepath.Join(base, ".scratch")
+		if got != want {
+			t.Errorf("EnsureScratchDir() = %q, want %q", got, want)
 		}
 	})
 }
 
 func TestMapExists(t *testing.T) {
-	fs := afero.NewMemMapFs()
-	fs.MkdirAll("/p/.scratch/my-map/issues", 0755)
-	afero.WriteFile(fs, "/p/.scratch/my-map/map.md", []byte("# My Map"), 0644)
+	root := newTestRoot(t)
+	root.MkdirAll("my-map/issues", 0755)
+	root.WriteFile("my-map/map.md", []byte("# My Map"), 0644)
 
-	scratchDir := "/p/.scratch"
-
-	exists, err := MapExists(fs, scratchDir, "my-map")
+	exists, err := MapExists(root, "my-map")
 	if err != nil {
 		t.Fatalf("MapExists() error = %v", err)
 	}
 	if !exists {
 		t.Error("MapExists() = false, want true for existing map")
 	}
-	exists, err = MapExists(fs, scratchDir, "nonexistent")
+	exists, err = MapExists(root, "nonexistent")
 	if err != nil {
 		t.Fatalf("MapExists() error = %v", err)
 	}
@@ -130,16 +142,15 @@ func TestMapExists(t *testing.T) {
 }
 
 func TestMapExistsRejectsTraversal(t *testing.T) {
-	fs := afero.NewMemMapFs()
-	scratchDir := "/p/.scratch"
-	exists, err := MapExists(fs, scratchDir, "../etc")
+	root := newTestRoot(t)
+	// os.Root rejects path traversal at the kernel level (openat).
+	// MapExists returns an error for "../etc" instead of a sentinel;
+	// the path cannot escape the sandbox.
+	exists, err := MapExists(root, "../etc")
 	if err == nil {
-		t.Fatal("MapExists() with ../etc should return error, got nil")
+		t.Fatal("MapExists() with ../etc should return error, got nil (path escaped sandbox)")
 	}
 	if exists {
 		t.Error("MapExists() = true for traversal slug")
-	}
-	if !isErr(err, ErrInvalidInput) {
-		t.Errorf("expected ErrInvalidInput, got %v", err)
 	}
 }

@@ -1,25 +1,26 @@
 package cmd
 
 import (
-	"github.com/peachest/pi-packages/tracker/tracker"
-	"github.com/spf13/afero"
-)
+	"os"
 
-// fs is the filesystem used by commands. Defaults to OS filesystem.
-// Tests override it via SetFS.
-var fs afero.Fs = afero.NewOsFs()
+	"github.com/peachest/pi-packages/tracker/tracker"
+)
 
 // cwd is the current working directory. Defaults to OS cwd.
 // Tests override it via SetCWD.
 var cwd string = "."
 
-// SetFS sets the filesystem used by commands (for testing).
-func SetFS(f afero.Fs) { fs = f }
-
 // SetCWD sets the current working directory (for testing).
 func SetCWD(c string) { cwd = c }
 
-// resolveScratch finds or creates the .scratch/ directory and returns its path.
-func resolveScratch() (string, error) {
-	return tracker.EnsureScratchDir(fs, cwd)
+// openScratchRoot finds or creates the .scratch/ directory and returns an
+// os.Root sandboxed to it. The caller must close the root when done.
+// os.Root enforces path confinement at the kernel level (openat on Unix),
+// replacing the afero filesystem abstraction.
+func openScratchRoot() (*os.Root, error) {
+	scratchDir, err := tracker.EnsureScratchDir(cwd)
+	if err != nil {
+		return nil, err
+	}
+	return os.OpenRoot(scratchDir)
 }

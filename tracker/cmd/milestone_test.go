@@ -2,19 +2,18 @@ package cmd
 
 import (
 	"encoding/json"
+	"os"
 	"testing"
 	"time"
 
 	"github.com/peachest/pi-packages/tracker/tracker"
-	"github.com/spf13/afero"
 )
 
 func TestMilestoneStateCommand(t *testing.T) {
-	fs := afero.NewMemMapFs()
-	writeMilestoneMD(t, fs, "m1", "Milestone One", "active")
+	dir := t.TempDir()
+	writeMilestoneMD(t, dir, "m1", "Milestone One", "active")
 
-	SetFS(fs)
-	SetCWD("/test")
+	SetCWD(dir)
 
 	buf := runCmd(t, []string{"milestone", "state", "--slug", "m1", "--set", "closed"})
 	var result map[string]any
@@ -25,14 +24,13 @@ func TestMilestoneStateCommand(t *testing.T) {
 }
 
 func TestMilestoneProgressCommand(t *testing.T) {
-	fs := afero.NewMemMapFs()
-	writeMilestoneMD(t, fs, "m1", "Milestone One", "active")
+	dir := t.TempDir()
+	writeMilestoneMD(t, dir, "m1", "Milestone One", "active")
 
 	// Create map in milestone with 1 ticket
-	writeMapMD(t, fs, "/test/.scratch/ref-map", "Ref Map", "active", strPtr("m1"))
-	fs.MkdirAll("/test/.scratch/ref-map/issues", 0755)
-	SetFS(fs)
-	SetCWD("/test")
+	writeMapMD(t, dir+"/.scratch/ref-map", "Ref Map", "active", strPtr("m1"))
+	os.MkdirAll(dir+"/.scratch/ref-map/issues", 0755)
+	SetCWD(dir)
 	createTicketViaCmd(t, "ref-map", "t1", "task")
 
 	buf := runCmd(t, []string{"milestone", "progress", "--slug", "m1"})
@@ -52,12 +50,11 @@ func TestMilestoneProgressCommand(t *testing.T) {
 }
 
 func TestMilestoneListCommand(t *testing.T) {
-	fs := afero.NewMemMapFs()
-	writeMilestoneMD(t, fs, "m1", "Milestone One", "active")
-	writeMilestoneMD(t, fs, "m2", "Milestone Two", "closed")
+	dir := t.TempDir()
+	writeMilestoneMD(t, dir, "m1", "Milestone One", "active")
+	writeMilestoneMD(t, dir, "m2", "Milestone Two", "closed")
 
-	SetFS(fs)
-	SetCWD("/test")
+	SetCWD(dir)
 
 	buf := runCmd(t, []string{"milestone", "list"})
 	var results []map[string]any
@@ -75,11 +72,10 @@ func TestMilestoneListCommand(t *testing.T) {
 }
 
 func TestMilestoneListEmpty(t *testing.T) {
-	fs := afero.NewMemMapFs()
-	fs.MkdirAll("/test/.scratch", 0755)
+	dir := t.TempDir()
+	os.MkdirAll(dir+"/.scratch", 0755)
 
-	SetFS(fs)
-	SetCWD("/test")
+	SetCWD(dir)
 
 	buf := runCmd(t, []string{"milestone", "list"})
 	var results []map[string]any
@@ -89,9 +85,9 @@ func TestMilestoneListEmpty(t *testing.T) {
 	}
 }
 
-func writeMilestoneMD(t *testing.T, fs afero.Fs, slug, title, state string) {
+func writeMilestoneMD(t *testing.T, dir, slug, title, state string) {
 	t.Helper()
-	fs.MkdirAll("/test/.scratch/.milestones", 0755)
+	os.MkdirAll(dir+"/.scratch/.milestones", 0755)
 	mfm := tracker.MilestoneFrontMatter{Title: title, State: state}
 	mfm.CreatedAt = fixedTime()
 	data, err := mfm.Marshal()
@@ -99,7 +95,7 @@ func writeMilestoneMD(t *testing.T, fs afero.Fs, slug, title, state string) {
 		t.Fatal(err)
 	}
 	data = append(data, []byte("\n# "+title+"\n")...)
-	if err := afero.WriteFile(fs, "/test/.scratch/.milestones/"+slug+".md", data, 0644); err != nil {
+	if err := os.WriteFile(dir+"/.scratch/.milestones/"+slug+".md", data, 0644); err != nil {
 		t.Fatal(err)
 	}
 }

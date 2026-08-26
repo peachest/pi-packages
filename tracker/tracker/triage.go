@@ -1,25 +1,25 @@
 package tracker
 
 import (
+	"os"
 	"slices"
 
 	"github.com/pkg/errors"
-	"github.com/spf13/afero"
 )
 
 // SetTriage updates a ticket's triage field.
 // wontfix is a triage role, NOT a status change.
-func SetTriage(fs afero.Fs, scratchDir, mapSlug, ticketID, triage string) error {
+func SetTriage(root *os.Root, mapSlug, ticketID, triage string) error {
 	if !slices.Contains(validTriages, triage) {
 		return errors.Wrapf(ErrInvalidInput, "invalid triage %q, valid values: %v", triage, validTriages)
 	}
 
-	path, fm, err := readTicket(fs, scratchDir, mapSlug, ticketID)
+	path, fm, err := readTicket(root, mapSlug, ticketID)
 	if err != nil {
 		return err
 	}
 
 	fm.Triage = &triage
 
-	return writeTicket(fs, path, fm)
+	return writeTicket(root, path, fm)
 }

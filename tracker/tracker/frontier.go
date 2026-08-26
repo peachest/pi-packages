@@ -1,24 +1,24 @@
 package tracker
 
 import (
+	"os"
 	"slices"
 	"strings"
 
 	"github.com/pkg/errors"
-	"github.com/spf13/afero"
 )
 
 // Frontier returns all tickets in the map matching frontier conditions:
 // status=open + triage=null|ready-for-agent + all blocked_by tickets resolved.
 // Only resolved unblocks; wontfix does not unblock.
-func Frontier(fs afero.Fs, scratchDir, mapSlug string) ([]TicketSummary, error) {
-	tickets, err := ListTickets(fs, scratchDir, mapSlug, ListFilter{Status: "open"})
+func Frontier(root *os.Root, mapSlug string) ([]TicketSummary, error) {
+	tickets, err := ListTickets(root, mapSlug, ListFilter{Status: "open"})
 	if err != nil {
 		return nil, errors.Wrapf(err, "listing tickets for frontier")
 	}
 
 	// Build a map of id → status for blocker lookup
-	allTickets, err := ListTickets(fs, scratchDir, mapSlug, ListFilter{})
+	allTickets, err := ListTickets(root, mapSlug, ListFilter{})
 	if err != nil {
 		return nil, errors.Wrapf(err, "listing all tickets for frontier")
 	}
@@ -59,8 +59,8 @@ func Frontier(fs afero.Fs, scratchDir, mapSlug string) ([]TicketSummary, error) 
 }
 
 // ComputeFrontierSize returns the number of tickets in the frontier.
-func ComputeFrontierSize(fs afero.Fs, scratchDir, mapSlug string) (int, error) {
-	frontier, err := Frontier(fs, scratchDir, mapSlug)
+func ComputeFrontierSize(root *os.Root, mapSlug string) (int, error) {
+	frontier, err := Frontier(root, mapSlug)
 	if err != nil {
 		return 0, err
 	}

@@ -3,38 +3,36 @@ package tracker
 import (
 	"testing"
 	"time"
-
-	"github.com/spf13/afero"
 )
 
 func TestSetTriage(t *testing.T) {
-	fs := afero.NewMemMapFs()
-	setupTestMap(t, fs, "/p/.scratch", "m")
-	ticket := createTestTicketSimple(t, fs, "/p/.scratch", "m", "test")
+	root := newTestRoot(t)
+	setupTestMap(t, root, "m")
+	ticket := createTestTicketSimple(t, root, "m", "test")
 
-	err := SetTriage(fs, "/p/.scratch", "m", ticket.ID, "ready-for-agent")
+	err := SetTriage(root, "m", ticket.ID, "ready-for-agent")
 	if err != nil {
 		t.Fatalf("SetTriage() error = %v", err)
 	}
 
-	_, fm, _ := readTicket(fs, "/p/.scratch", "m", ticket.ID)
+	_, fm, _ := readTicket(root, "m", ticket.ID)
 	if fm.Triage == nil || *fm.Triage != "ready-for-agent" {
 		t.Errorf("triage = %v, want \"ready-for-agent\"", fm.Triage)
 	}
 }
 
 func TestSetTriageWontfix(t *testing.T) {
-	fs := afero.NewMemMapFs()
-	setupTestMap(t, fs, "/p/.scratch", "m")
-	ticket := createTestTicketSimple(t, fs, "/p/.scratch", "m", "test")
+	root := newTestRoot(t)
+	setupTestMap(t, root, "m")
+	ticket := createTestTicketSimple(t, root, "m", "test")
 	_ = time.Now()
 
-	err := SetTriage(fs, "/p/.scratch", "m", ticket.ID, "wontfix")
+	err := SetTriage(root, "m", ticket.ID, "wontfix")
 	if err != nil {
 		t.Fatalf("SetTriage() error = %v", err)
 	}
 
-	_, fm, _ := readTicket(fs, "/p/.scratch", "m", ticket.ID)
+	_, fm, _ := readTicket(root, "m", ticket.ID)
 	if fm.Triage == nil || *fm.Triage != "wontfix" {
 		t.Errorf("triage = %v, want \"wontfix\"", fm.Triage)
 	}
@@ -46,11 +44,11 @@ func TestSetTriageWontfix(t *testing.T) {
 }
 
 func TestSetTriageInvalid(t *testing.T) {
-	fs := afero.NewMemMapFs()
-	setupTestMap(t, fs, "/p/.scratch", "m")
-	ticket := createTestTicketSimple(t, fs, "/p/.scratch", "m", "test")
+	root := newTestRoot(t)
+	setupTestMap(t, root, "m")
+	ticket := createTestTicketSimple(t, root, "m", "test")
 
-	err := SetTriage(fs, "/p/.scratch", "m", ticket.ID, "invalid")
+	err := SetTriage(root, "m", ticket.ID, "invalid")
 	if !isErr(err, ErrInvalidInput) {
 		t.Fatalf("expected ErrInvalidInput, got %v", err)
 	}

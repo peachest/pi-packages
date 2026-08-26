@@ -3,15 +3,14 @@ package cmd
 import (
 	"bytes"
 	"encoding/json"
+	"os"
 	"testing"
-
-	"github.com/spf13/afero"
 )
 
 func TestTicketCreateCommand(t *testing.T) {
-	fs := afero.NewMemMapFs()
-	fs.MkdirAll("/test/.scratch/test-map/issues", 0755)
-	afero.WriteFile(fs, "/test/.scratch/test-map/map.md", []byte("# Test Map"), 0644)
+	dir := t.TempDir()
+	os.MkdirAll(dir+"/.scratch/test-map/issues", 0755)
+	os.WriteFile(dir+"/.scratch/test-map/map.md", []byte("# Test Map"), 0644)
 
 	buf := new(bytes.Buffer)
 	root := NewRootCmd()
@@ -20,8 +19,7 @@ func TestTicketCreateCommand(t *testing.T) {
 	root.SetArgs([]string{"ticket", "create", "--map", "test-map", "--title", "Test ticket", "--type", "task"})
 
 	// Inject the memmap fs
-	SetFS(fs)
-	SetCWD("/test")
+	SetCWD(dir)
 
 	err := root.Execute()
 	if err != nil {
@@ -46,9 +44,9 @@ func TestTicketCreateCommand(t *testing.T) {
 }
 
 func TestTicketCreateInvalidType(t *testing.T) {
-	fs := afero.NewMemMapFs()
-	fs.MkdirAll("/test/.scratch/m/issues", 0755)
-	afero.WriteFile(fs, "/test/.scratch/m/map.md", []byte("# M"), 0644)
+	dir := t.TempDir()
+	os.MkdirAll(dir+"/.scratch/m/issues", 0755)
+	os.WriteFile(dir+"/.scratch/m/map.md", []byte("# M"), 0644)
 
 	buf := new(bytes.Buffer)
 	root := NewRootCmd()
@@ -56,8 +54,7 @@ func TestTicketCreateInvalidType(t *testing.T) {
 	root.SetErr(buf)
 	root.SetArgs([]string{"ticket", "create", "--map", "m", "--title", "test", "--type", "invalid"})
 
-	SetFS(fs)
-	SetCWD("/test")
+	SetCWD(dir)
 
 	err := root.Execute()
 	if err == nil {
@@ -66,12 +63,11 @@ func TestTicketCreateInvalidType(t *testing.T) {
 }
 
 func TestTicketListCommand(t *testing.T) {
-	fs := afero.NewMemMapFs()
-	fs.MkdirAll("/test/.scratch/m/issues", 0755)
-	afero.WriteFile(fs, "/test/.scratch/m/map.md", []byte("# M"), 0644)
+	dir := t.TempDir()
+	os.MkdirAll(dir+"/.scratch/m/issues", 0755)
+	os.WriteFile(dir+"/.scratch/m/map.md", []byte("# M"), 0644)
 
-	SetFS(fs)
-	SetCWD("/test")
+	SetCWD(dir)
 
 	// Create two tickets
 	for _, title := range []string{"first", "second"} {
@@ -110,12 +106,11 @@ func TestTicketListCommand(t *testing.T) {
 }
 
 func TestTicketListFilterStatus(t *testing.T) {
-	fs := afero.NewMemMapFs()
-	fs.MkdirAll("/test/.scratch/m/issues", 0755)
-	afero.WriteFile(fs, "/test/.scratch/m/map.md", []byte("# M"), 0644)
+	dir := t.TempDir()
+	os.MkdirAll(dir+"/.scratch/m/issues", 0755)
+	os.WriteFile(dir+"/.scratch/m/map.md", []byte("# M"), 0644)
 
-	SetFS(fs)
-	SetCWD("/test")
+	SetCWD(dir)
 
 	// Create ticket
 	buf := new(bytes.Buffer)
@@ -147,12 +142,11 @@ func TestTicketListFilterStatus(t *testing.T) {
 }
 
 func TestTicketReviewCommand(t *testing.T) {
-	fs := afero.NewMemMapFs()
-	fs.MkdirAll("/test/.scratch/m/issues", 0755)
-	afero.WriteFile(fs, "/test/.scratch/m/map.md", []byte("# M"), 0644)
+	dir := t.TempDir()
+	os.MkdirAll(dir+"/.scratch/m/issues", 0755)
+	os.WriteFile(dir+"/.scratch/m/map.md", []byte("# M"), 0644)
 
-	SetFS(fs)
-	SetCWD("/test")
+	SetCWD(dir)
 
 	// Create a ticket
 	buf := new(bytes.Buffer)

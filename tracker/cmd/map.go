@@ -29,16 +29,17 @@ func newMapStateCmd() *cobra.Command {
 		Short: "Set map state (active|closed)",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			scratchDir, err := resolveScratch()
+			root, err := openScratchRoot()
+			defer root.Close()
 			if err != nil {
 				return err
 			}
 
-			if err := tracker.SetMapState(fs, scratchDir, slug, newState, time.Now().UTC()); err != nil {
+			if err := tracker.SetMapState(root, slug, newState, time.Now().UTC()); err != nil {
 				return err
 			}
 
-			mfm, err := tracker.ReadMap(fs, scratchDir, slug)
+			mfm, err := tracker.ReadMap(root, slug)
 			if err != nil {
 				return err
 			}
@@ -68,22 +69,23 @@ func newMapProgressCmd() *cobra.Command {
 		Short: "Show map progress (ticket counts + frontier_size)",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			scratchDir, err := resolveScratch()
+			root, err := openScratchRoot()
+			defer root.Close()
 			if err != nil {
 				return err
 			}
 
-			progress, err := tracker.ComputeProgress(fs, scratchDir, slug)
+			progress, err := tracker.ComputeProgress(root, slug)
 			if err != nil {
 				return err
 			}
 
-			frontierSize, err := tracker.ComputeFrontierSize(fs, scratchDir, slug)
+			frontierSize, err := tracker.ComputeFrontierSize(root, slug)
 			if err != nil {
 				return err
 			}
 
-			mfm, err := tracker.ReadMap(fs, scratchDir, slug)
+			mfm, err := tracker.ReadMap(root, slug)
 			if err != nil {
 				return err
 			}
@@ -113,12 +115,13 @@ func newMapListCmd() *cobra.Command {
 		Short: "List all maps with progress",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			scratchDir, err := resolveScratch()
+			root, err := openScratchRoot()
+			defer root.Close()
 			if err != nil {
 				return err
 			}
 
-			maps, err := tracker.ListMaps(fs, scratchDir)
+			maps, err := tracker.ListMaps(root)
 			if err != nil {
 				return err
 			}

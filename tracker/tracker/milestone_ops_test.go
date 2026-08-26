@@ -1,17 +1,17 @@
 package tracker
 
 import (
+	"os"
 	"testing"
 	"time"
-
-	"github.com/spf13/afero"
 )
 
-const milestonesDir = "/p/.scratch/.milestones"
+// milestonesRelDir is the milestones directory relative to the scratch root.
+const milestonesRelDir = ".milestones"
 
-func writeMilestoneFile(t *testing.T, fs afero.Fs, slug, title, state string, closedAt *time.Time) {
+func writeMilestoneFile(t *testing.T, root *os.Root, slug, title, state string, closedAt *time.Time) {
 	t.Helper()
-	fs.MkdirAll(milestonesDir, 0755)
+	root.MkdirAll(milestonesRelDir, 0755)
 	now := time.Date(2026, 8, 19, 12, 0, 0, 0, time.UTC)
 	mfm := MilestoneFrontMatter{
 		Title:     title,
@@ -24,23 +24,23 @@ func writeMilestoneFile(t *testing.T, fs afero.Fs, slug, title, state string, cl
 		t.Fatal(err)
 	}
 	data = append(data, []byte("\n# "+title+"\n")...)
-	if err := afero.WriteFile(fs, milestonesDir+"/"+slug+".md", data, 0644); err != nil {
+	if err := root.WriteFile(milestonesRelDir+"/"+slug+".md", data, 0644); err != nil {
 		t.Fatal(err)
 	}
 }
 
 func TestMilestoneSetState(t *testing.T) {
-	fs := afero.NewMemMapFs()
-	writeMilestoneFile(t, fs, "m1", "Milestone One", "active", nil)
+	root := newTestRoot(t)
+	writeMilestoneFile(t, root, "m1", "Milestone One", "active", nil)
 
 	// Close
 	closeTime := time.Date(2026, 8, 26, 10, 0, 0, 0, time.UTC)
-	err := SetMilestoneState(fs, "/p/.scratch", "m1", "closed", closeTime)
+	err := SetMilestoneState(root, "m1", "closed", closeTime)
 	if err != nil {
 		t.Fatalf("SetMilestoneState() error = %v", err)
 	}
 
-	mfm, err := ReadMilestone(fs, "/p/.scratch", "m1")
+	mfm, err := ReadMilestone(root, "m1")
 	if err != nil {
 		t.Fatalf("ReadMilestone() error = %v", err)
 	}
@@ -53,16 +53,16 @@ func TestMilestoneSetState(t *testing.T) {
 }
 
 func TestMilestoneSetStateReopen(t *testing.T) {
-	fs := afero.NewMemMapFs()
+	root := newTestRoot(t)
 	closedAt := time.Date(2026, 8, 25, 0, 0, 0, 0, time.UTC)
-	writeMilestoneFile(t, fs, "m1", "Milestone One", "closed", &closedAt)
+	writeMilestoneFile(t, root, "m1", "Milestone One", "closed", &closedAt)
 
-	err := SetMilestoneState(fs, "/p/.scratch", "m1", "active", time.Now().UTC())
+	err := SetMilestoneState(root, "m1", "active", time.Now().UTC())
 	if err != nil {
 		t.Fatalf("SetMilestoneState() error = %v", err)
 	}
 
-	mfm, _ := ReadMilestone(fs, "/p/.scratch", "m1")
+	mfm, _ := ReadMilestone(root, "m1")
 	if mfm.State != "active" {
 		t.Errorf("state = %q, want \"active\"", mfm.State)
 	}
@@ -72,21 +72,20 @@ func TestMilestoneSetStateReopen(t *testing.T) {
 }
 
 func TestMilestoneSetStateNotFound(t *testing.T) {
-	fs := afero.NewMemMapFs()
-	fs.MkdirAll("/p/.scratch", 0755)
+	root := newTestRoot(t)
 
-	err := SetMilestoneState(fs, "/p/.scratch", "nonexistent", "closed", time.Now().UTC())
+	err := SetMilestoneState(root, "nonexistent", "closed", time.Now().UTC())
 	if !isErr(err, ErrNotFound) {
 		t.Fatalf("expected ErrNotFound, got %v", err)
 	}
 }
 
 func TestMilestoneList(t *testing.T) {
-	fs := afero.NewMemMapFs()
-	writeMilestoneFile(t, fs, "m1", "Milestone One", "active", nil)
-	writeMilestoneFile(t, fs, "m2", "Milestone Two", "closed", timePtr(time.Now().UTC()))
+	root := newTestRoot(t)
+	writeMilestoneFile(t, root, "m1", "Milestone One", "active", nil)
+	writeMilestoneFile(t, root, "m2", "Milestone Two", "closed", timePtr(time.Now().UTC()))
 
-	milestones, err := ListMilestones(fs, "/p/.scratch")
+	milestones, err := ListMilestones(root)
 	if err != nil {
 		t.Fatalf("ListMilestones() error = %v", err)
 	}
@@ -100,11 +99,10 @@ func TestMilestoneList(t *testing.T) {
 }
 
 func TestMilestoneListEmpty(t *testing.T) {
-	fs := afero.NewMemMapFs()
-	fs.MkdirAll("/p/.scratch", 0755)
+	root := newTestRoot(t)
 
 	// .milestones/ dir doesn't exist
-	milestones, err := ListMilestones(fs, "/p/.scratch")
+	milestones, err := ListMilestones(root)
 	if err != nil {
 		t.Fatalf("ListMilestones() error = %v", err)
 	}
@@ -114,21 +112,19 @@ func TestMilestoneListEmpty(t *testing.T) {
 }
 
 func TestMilestoneProgress(t *testing.T) {
-	fs := afero.NewMemMapFs()
-	writeMilestoneFile(t, fs, "ms1", "Milestone One", "active", nil)
+	root := newTestRoot(t)
+	writeMilestoneFile(t, root, "ms1", "Milestone One", "active", nil)
 
 	// Set up: map-a in milestone ms1 (1 ticket), map-b NOT in milestone (1 ticket)
-	_ = "ms1"
-
 	// Create maps with milestone field
-	createMapWithMilestone(t, fs, "/p/.scratch/map-a", "ms1")
-	createMapWithMilestone(t, fs, "/p/.scratch/map-b", "ms2")
+	createMapWithMilestone(t, root, "map-a", "ms1")
+	createMapWithMilestone(t, root, "map-b", "ms2")
 
 	// Tickets in maps
-	createTicketInMap(t, fs, "/p/.scratch", "map-a", "t1")
-	createTicketInMap(t, fs, "/p/.scratch", "map-b", "t2")
+	createTicketInMap(t, root, "map-a", "t1")
+	createTicketInMap(t, root, "map-b", "t2")
 
-	progress, err := MilestoneProgress(fs, "/p/.scratch", "ms1")
+	progress, err := MilestoneProgress(root, "ms1")
 	if err != nil {
 		t.Fatalf("MilestoneProgress() error = %v", err)
 	}
@@ -146,10 +142,10 @@ func TestMilestoneProgress(t *testing.T) {
 }
 
 func TestMilestoneProgressZeroMaps(t *testing.T) {
-	fs := afero.NewMemMapFs()
-	writeMilestoneFile(t, fs, "ms1", "Milestone One", "active", nil)
+	root := newTestRoot(t)
+	writeMilestoneFile(t, root, "ms1", "Milestone One", "active", nil)
 
-	progress, err := MilestoneProgress(fs, "/p/.scratch", "ms1")
+	progress, err := MilestoneProgress(root, "ms1")
 	if err != nil {
 		t.Fatalf("MilestoneProgress() error = %v", err)
 	}
@@ -163,11 +159,11 @@ func TestMilestoneProgressZeroMaps(t *testing.T) {
 	}
 }
 
-func createMapWithMilestone(t *testing.T, fs afero.Fs, mapDir, milestoneSlug string) {
+func createMapWithMilestone(t *testing.T, root *os.Root, mapSlug, milestoneSlug string) {
 	t.Helper()
-	fs.MkdirAll(mapDir, 0755)
+	root.MkdirAll(mapSlug, 0755)
 	mfm := MapFrontMatter{
-		Title:     mapDir,
+		Title:     mapSlug,
 		State:     "active",
 		Milestone: &milestoneSlug,
 		CreatedAt: time.Date(2026, 8, 19, 12, 0, 0, 0, time.UTC),
@@ -176,17 +172,16 @@ func createMapWithMilestone(t *testing.T, fs afero.Fs, mapDir, milestoneSlug str
 	if err != nil {
 		t.Fatal(err)
 	}
-	data = append(data, []byte("\n# "+mapDir+"\n")...)
-	if err := afero.WriteFile(fs, mapDir+"/map.md", data, 0644); err != nil {
+	data = append(data, []byte("\n# "+mapSlug+"\n")...)
+	if err := root.WriteFile(mapSlug+"/map.md", data, 0644); err != nil {
 		t.Fatal(err)
 	}
 }
 
-func createTicketInMap(t *testing.T, fs afero.Fs, scratchDir, mapSlug, title string) {
+func createTicketInMap(t *testing.T, root *os.Root, mapSlug, title string) {
 	t.Helper()
-	fs.MkdirAll(scratchDir+"/"+mapSlug+"/issues", 0755)
 	now := time.Date(2026, 8, 19, 12, 0, 0, 0, time.UTC)
-	if _, err := CreateTicket(fs, scratchDir, TicketOpts{MapSlug: mapSlug, Title: title, Type: "task"}, now); err != nil {
+	if _, err := CreateTicket(root, TicketOpts{MapSlug: mapSlug, Title: title, Type: "task"}, now); err != nil {
 		t.Fatal(err)
 	}
 }

@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"github.com/google/go-cmp/cmp"
-	"github.com/spf13/afero"
 )
 
 func TestMapFrontMatterRoundTrip(t *testing.T) {
@@ -57,25 +56,25 @@ func TestMapFrontMatterNoMilestone(t *testing.T) {
 }
 
 func TestComputeProgress(t *testing.T) {
-	fs := afero.NewMemMapFs()
-	setupTestMap(t, fs, "/p/.scratch", "m")
+	root := newTestRoot(t)
+	setupTestMap(t, root, "m")
 
 	now := time.Date(2026, 8, 19, 12, 0, 0, 0, time.UTC)
 
 	// Create 3 tickets: 1 open, 1 claimed, 1 resolved
-	t1 := createTestTicketSimple(t, fs, "/p/.scratch", "m", "open-one")
+	t1 := createTestTicketSimple(t, root, "m", "open-one")
 	_ = t1
 
-	t2 := createTestTicketSimple(t, fs, "/p/.scratch", "m", "claimed-one")
-	ReviewTicket(fs, "/p/.scratch", "m", t2.ID, now)
-	SetStatus(fs, "/p/.scratch", "m", t2.ID, "claimed", now)
+	t2 := createTestTicketSimple(t, root, "m", "claimed-one")
+	ReviewTicket(root, "m", t2.ID, now)
+	SetStatus(root, "m", t2.ID, "claimed", now)
 
-	t3 := createTestTicketSimple(t, fs, "/p/.scratch", "m", "resolved-one")
-	ReviewTicket(fs, "/p/.scratch", "m", t3.ID, now)
-	SetStatus(fs, "/p/.scratch", "m", t3.ID, "claimed", now)
-	SetStatus(fs, "/p/.scratch", "m", t3.ID, "resolved", now)
+	t3 := createTestTicketSimple(t, root, "m", "resolved-one")
+	ReviewTicket(root, "m", t3.ID, now)
+	SetStatus(root, "m", t3.ID, "claimed", now)
+	SetStatus(root, "m", t3.ID, "resolved", now)
 
-	progress, err := ComputeProgress(fs, "/p/.scratch", "m")
+	progress, err := ComputeProgress(root, "m")
 	if err != nil {
 		t.Fatalf("ComputeProgress() error = %v", err)
 	}
@@ -87,10 +86,10 @@ func TestComputeProgress(t *testing.T) {
 }
 
 func TestComputeProgressEmpty(t *testing.T) {
-	fs := afero.NewMemMapFs()
-	setupTestMap(t, fs, "/p/.scratch", "m")
+	root := newTestRoot(t)
+	setupTestMap(t, root, "m")
 
-	progress, err := ComputeProgress(fs, "/p/.scratch", "m")
+	progress, err := ComputeProgress(root, "m")
 	if err != nil {
 		t.Fatalf("ComputeProgress() error = %v", err)
 	}

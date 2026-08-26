@@ -62,7 +62,8 @@ func newTicketCreateCmd() *cobra.Command {
 		Short: "Create a new ticket",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			scratchDir, err := resolveScratch()
+			root, err := openScratchRoot()
+			defer root.Close()
 			if err != nil {
 				return err
 			}
@@ -82,7 +83,7 @@ func newTicketCreateCmd() *cobra.Command {
 				opts.Triage = &t
 			}
 
-			ticket, err := tracker.CreateTicket(fs, scratchDir, opts, time.Now().UTC())
+			ticket, err := tracker.CreateTicket(root, opts, time.Now().UTC())
 			if err != nil {
 				return err
 			}
@@ -118,7 +119,8 @@ func newTicketListCmd() *cobra.Command {
 		Short: "List tickets in a map",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			scratchDir, err := resolveScratch()
+			root, err := openScratchRoot()
+			defer root.Close()
 			if err != nil {
 				return err
 			}
@@ -132,7 +134,7 @@ func newTicketListCmd() *cobra.Command {
 				filter.Triage = triage
 			}
 
-			tickets, err := tracker.ListTickets(fs, scratchDir, mapSlug, filter)
+			tickets, err := tracker.ListTickets(root, mapSlug, filter)
 			if err != nil {
 				return err
 			}
@@ -163,17 +165,18 @@ func newTicketReviewCmd() *cobra.Command {
 		Short: "Mark a ticket as reviewed (review-spec passed)",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			scratchDir, err := resolveScratch()
+			root, err := openScratchRoot()
+			defer root.Close()
 			if err != nil {
 				return err
 			}
 
-			if err := tracker.ReviewTicket(fs, scratchDir, mapSlug, ticketID, time.Now().UTC()); err != nil {
+			if err := tracker.ReviewTicket(root, mapSlug, ticketID, time.Now().UTC()); err != nil {
 				return err
 			}
 
 			// Read back to get the timestamp
-			_, fm, err := tracker.ReadTicketForDisplay(fs, scratchDir, mapSlug, ticketID)
+			_, fm, err := tracker.ReadTicketForDisplay(root, mapSlug, ticketID)
 			if err != nil {
 				return err
 			}
@@ -206,16 +209,17 @@ func newTicketStatusCmd() *cobra.Command {
 		Short: "Set ticket status (open|claimed|resolved)",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			scratchDir, err := resolveScratch()
+			root, err := openScratchRoot()
+			defer root.Close()
 			if err != nil {
 				return err
 			}
 
-			if err := tracker.SetStatus(fs, scratchDir, mapSlug, ticketID, status, time.Now().UTC()); err != nil {
+			if err := tracker.SetStatus(root, mapSlug, ticketID, status, time.Now().UTC()); err != nil {
 				return err
 			}
 
-			_, fm, err := tracker.ReadTicketForDisplay(fs, scratchDir, mapSlug, ticketID)
+			_, fm, err := tracker.ReadTicketForDisplay(root, mapSlug, ticketID)
 			if err != nil {
 				return err
 			}
@@ -252,16 +256,17 @@ func newTicketTriageCmd() *cobra.Command {
 		Short: "Set ticket triage role",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			scratchDir, err := resolveScratch()
+			root, err := openScratchRoot()
+			defer root.Close()
 			if err != nil {
 				return err
 			}
 
-			if err := tracker.SetTriage(fs, scratchDir, mapSlug, ticketID, triage); err != nil {
+			if err := tracker.SetTriage(root, mapSlug, ticketID, triage); err != nil {
 				return err
 			}
 
-			_, fm, err := tracker.ReadTicketForDisplay(fs, scratchDir, mapSlug, ticketID)
+			_, fm, err := tracker.ReadTicketForDisplay(root, mapSlug, ticketID)
 			if err != nil {
 				return err
 			}
@@ -296,7 +301,8 @@ func newTicketBlockingCmd() *cobra.Command {
 		Short: "Set ticket blocked_by (replace semantics)",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			scratchDir, err := resolveScratch()
+			root, err := openScratchRoot()
+			defer root.Close()
 			if err != nil {
 				return err
 			}
@@ -306,11 +312,11 @@ func newTicketBlockingCmd() *cobra.Command {
 				ids = strings.Split(blockedBy, ",")
 			}
 
-			if err := tracker.SetBlocking(fs, scratchDir, mapSlug, ticketID, ids); err != nil {
+			if err := tracker.SetBlocking(root, mapSlug, ticketID, ids); err != nil {
 				return err
 			}
 
-			_, fm, err := tracker.ReadTicketForDisplay(fs, scratchDir, mapSlug, ticketID)
+			_, fm, err := tracker.ReadTicketForDisplay(root, mapSlug, ticketID)
 			if err != nil {
 				return err
 			}

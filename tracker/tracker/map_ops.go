@@ -1,13 +1,13 @@
 package tracker
 
 import (
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"time"
 
 	"github.com/pkg/errors"
-	"github.com/spf13/afero"
 )
 
 // MapSummary is a compact view of a map for listing.
@@ -20,12 +20,9 @@ type MapSummary struct {
 }
 
 // ReadMap reads a map's front matter (title/state/milestone/created_at/closed_at).
-func ReadMap(fs afero.Fs, scratchDir, mapSlug string) (MapFrontMatter, error) {
-	if err := validateSlug(mapSlug); err != nil {
-		return MapFrontMatter{}, err
-	}
-	mapPath := filepath.Join(scratchDir, mapSlug, "map.md")
-	data, err := afero.ReadFile(fs, mapPath)
+func ReadMap(root *os.Root, mapSlug string) (MapFrontMatter, error) {
+	mapPath := filepath.Join(mapSlug, "map.md")
+	data, err := root.ReadFile(mapPath)
 	if err != nil {
 		return MapFrontMatter{}, errors.Wrapf(ErrNotFound, "map %q not found. No .scratch/%s/map.md file", mapSlug, mapSlug)
 	}
@@ -37,23 +34,20 @@ func ReadMap(fs afero.Fs, scratchDir, mapSlug string) (MapFrontMatter, error) {
 }
 
 // SetMapState updates a map's state (active|closed) and closed_at timestamp.
-func SetMapState(fs afero.Fs, scratchDir, mapSlug, newState string, now time.Time) error {
+func SetMapState(root *os.Root, mapSlug, newState string, now time.Time) error {
 	if newState != "active" && newState != "closed" {
 		return errors.Wrapf(ErrInvalidInput, "invalid state %q, valid values: active, closed", newState)
 	}
-	if err := validateSlug(mapSlug); err != nil {
-		return err
+	mapPath := filepath.Join(mapSlug, "map.md")
+	_, err := root.Stat(mapPath)
+	if os.IsNotExist(err) {
+		return errors.Wrapf(ErrNotFound, "map %q not found. No .scratch/%s/map.md file", mapSlug, mapSlug)
 	}
-	mapPath := filepath.Join(scratchDir, mapSlug, "map.md")
-	exists, err := afero.Exists(fs, mapPath)
 	if err != nil {
 		return errors.Wrapf(err, "checking map.md")
 	}
-	if !exists {
-		return errors.Wrapf(ErrNotFound, "map %q not found. No .scratch/%s/map.md file", mapSlug, mapSlug)
-	}
 
-	data, err := afero.ReadFile(fs, mapPath)
+	data, err := root.ReadFile(mapPath)
 	if err != nil {
 		return errors.Wrapf(err, "reading map.md")
 	}
@@ -79,13 +73,13 @@ func SetMapState(fs afero.Fs, scratchDir, mapSlug, newState string, now time.Tim
 	}
 
 	content := append(fmData, []byte(body)...)
-	return afero.WriteFile(fs, mapPath, content, 0644)
+	return root.WriteFile(mapPath, content, 0644)
 }
 
 // ListMaps scans .scratch/ for directories containing map.md and returns summaries.
 // Includes all maps (active + closed). Does NOT include frontier_size (G-Q6).
-func ListMaps(fs afero.Fs, scratchDir string) ([]MapSummary, error) {
-	entries, err := afero.ReadDir(fs, scratchDir)
+func ListMaps(root *os.Root) ([]MapSummary, error) {
+	entries, err := readDirEntries(root, ".")
 	if err != nil {
 		return []MapSummary{}, nil // scratch dir doesn't exist or unreadable → empty
 	}
@@ -96,13 +90,12 @@ func ListMaps(fs afero.Fs, scratchDir string) ([]MapSummary, error) {
 			continue
 		}
 
-		mapPath := filepath.Join(scratchDir, entry.Name(), "map.md")
-		exists, err := afero.Exists(fs, mapPath)
-		if err != nil || !exists {
-			continue
+		mapPath := filepath.Join(entry.Name(), "map.md")
+		if _, err := root.Stat(mapPath); err != nil {
+			continue // no map.md → not a map
 		}
 
-		data, err := afero.ReadFile(fs, mapPath)
+		data, err := root.ReadFile(mapPath)
 		if err != nil {
 			continue
 		}
@@ -112,7 +105,7 @@ func ListMaps(fs afero.Fs, scratchDir string) ([]MapSummary, error) {
 			continue // skip malformed maps
 		}
 
-		progress, err := ComputeProgress(fs, scratchDir, entry.Name())
+		progress, err := ComputeProgress(root, entry.Name())
 		if err != nil {
 			progress = Progress{}
 		}

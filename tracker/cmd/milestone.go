@@ -29,16 +29,17 @@ func newMilestoneStateCmd() *cobra.Command {
 		Short: "Set milestone state (active|closed)",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			scratchDir, err := resolveScratch()
+			root, err := openScratchRoot()
+			defer root.Close()
 			if err != nil {
 				return err
 			}
 
-			if err := tracker.SetMilestoneState(fs, scratchDir, slug, newState, time.Now().UTC()); err != nil {
+			if err := tracker.SetMilestoneState(root, slug, newState, time.Now().UTC()); err != nil {
 				return err
 			}
 
-			mfm, err := tracker.ReadMilestone(fs, scratchDir, slug)
+			mfm, err := tracker.ReadMilestone(root, slug)
 			if err != nil {
 				return err
 			}
@@ -68,12 +69,13 @@ func newMilestoneProgressCmd() *cobra.Command {
 		Short: "Show milestone progress (aggregate of referencing maps)",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			scratchDir, err := resolveScratch()
+			root, err := openScratchRoot()
+			defer root.Close()
 			if err != nil {
 				return err
 			}
 
-			result, err := tracker.MilestoneProgress(fs, scratchDir, slug)
+			result, err := tracker.MilestoneProgress(root, slug)
 			if err != nil {
 				return err
 			}
@@ -94,12 +96,13 @@ func newMilestoneListCmd() *cobra.Command {
 		Short: "List all milestones",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			scratchDir, err := resolveScratch()
+			root, err := openScratchRoot()
+			defer root.Close()
 			if err != nil {
 				return err
 			}
 
-			milestones, err := tracker.ListMilestones(fs, scratchDir)
+			milestones, err := tracker.ListMilestones(root)
 			if err != nil {
 				return err
 			}

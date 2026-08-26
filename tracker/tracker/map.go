@@ -2,11 +2,11 @@ package tracker
 
 import (
 	"bytes"
+	"os"
 	"strings"
 	"time"
 
 	"github.com/pkg/errors"
-	"github.com/spf13/afero"
 	"gopkg.in/yaml.v3"
 )
 
@@ -94,8 +94,8 @@ func ParseMapFrontMatter(data []byte) (MapFrontMatter, error) {
 
 // ComputeProgress scans all tickets in a map and returns status counts (G-Q6).
 // Does NOT include frontier_size — use ComputeFrontierSize() for that.
-func ComputeProgress(fs afero.Fs, scratchDir, mapSlug string) (Progress, error) {
-	tickets, err := ListTickets(fs, scratchDir, mapSlug, ListFilter{})
+func ComputeProgress(root *os.Root, mapSlug string) (Progress, error) {
+	tickets, err := ListTickets(root, mapSlug, ListFilter{})
 	if err != nil {
 		return Progress{}, errors.Wrapf(err, "listing tickets for progress")
 	}

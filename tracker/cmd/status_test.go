@@ -3,18 +3,16 @@ package cmd
 import (
 	"bytes"
 	"encoding/json"
+	"os"
 	"testing"
-
-	"github.com/spf13/afero"
 )
 
 func TestTicketStatusCommand(t *testing.T) {
-	fs := afero.NewMemMapFs()
-	fs.MkdirAll("/test/.scratch/m/issues", 0755)
-	afero.WriteFile(fs, "/test/.scratch/m/map.md", []byte("# M"), 0644)
+	dir := t.TempDir()
+	os.MkdirAll(dir+"/.scratch/m/issues", 0755)
+	os.WriteFile(dir+"/.scratch/m/map.md", []byte("# M"), 0644)
 
-	SetFS(fs)
-	SetCWD("/test")
+	SetCWD(dir)
 
 	// Create ticket
 	createTicketViaCmd(t, "m", "test", "task")
@@ -32,12 +30,11 @@ func TestTicketStatusCommand(t *testing.T) {
 }
 
 func TestTicketStatusClaimUnreviewed(t *testing.T) {
-	fs := afero.NewMemMapFs()
-	fs.MkdirAll("/test/.scratch/m/issues", 0755)
-	afero.WriteFile(fs, "/test/.scratch/m/map.md", []byte("# M"), 0644)
+	dir := t.TempDir()
+	os.MkdirAll(dir+"/.scratch/m/issues", 0755)
+	os.WriteFile(dir+"/.scratch/m/map.md", []byte("# M"), 0644)
 
-	SetFS(fs)
-	SetCWD("/test")
+	SetCWD(dir)
 
 	createTicketViaCmd(t, "m", "test", "task")
 
@@ -54,12 +51,11 @@ func TestTicketStatusClaimUnreviewed(t *testing.T) {
 }
 
 func TestTicketStatusResolve(t *testing.T) {
-	fs := afero.NewMemMapFs()
-	fs.MkdirAll("/test/.scratch/m/issues", 0755)
-	afero.WriteFile(fs, "/test/.scratch/m/map.md", []byte("# M"), 0644)
+	dir := t.TempDir()
+	os.MkdirAll(dir+"/.scratch/m/issues", 0755)
+	os.WriteFile(dir+"/.scratch/m/map.md", []byte("# M"), 0644)
 
-	SetFS(fs)
-	SetCWD("/test")
+	SetCWD(dir)
 
 	createTicketViaCmd(t, "m", "test", "task")
 	runCmd(t, []string{"ticket", "review", "--map", "m", "--id", "1"})
@@ -75,12 +71,11 @@ func TestTicketStatusResolve(t *testing.T) {
 }
 
 func TestTicketStatusReopen(t *testing.T) {
-	fs := afero.NewMemMapFs()
-	fs.MkdirAll("/test/.scratch/m/issues", 0755)
-	afero.WriteFile(fs, "/test/.scratch/m/map.md", []byte("# M"), 0644)
+	dir := t.TempDir()
+	os.MkdirAll(dir+"/.scratch/m/issues", 0755)
+	os.WriteFile(dir+"/.scratch/m/map.md", []byte("# M"), 0644)
 
-	SetFS(fs)
-	SetCWD("/test")
+	SetCWD(dir)
 
 	createTicketViaCmd(t, "m", "test", "task")
 	runCmd(t, []string{"ticket", "review", "--map", "m", "--id", "1"})
@@ -97,12 +92,11 @@ func TestTicketStatusReopen(t *testing.T) {
 }
 
 func TestTicketTriageCommand(t *testing.T) {
-	fs := afero.NewMemMapFs()
-	fs.MkdirAll("/test/.scratch/m/issues", 0755)
-	afero.WriteFile(fs, "/test/.scratch/m/map.md", []byte("# M"), 0644)
+	dir := t.TempDir()
+	os.MkdirAll(dir+"/.scratch/m/issues", 0755)
+	os.WriteFile(dir+"/.scratch/m/map.md", []byte("# M"), 0644)
 
-	SetFS(fs)
-	SetCWD("/test")
+	SetCWD(dir)
 
 	createTicketViaCmd(t, "m", "test", "task")
 
@@ -115,12 +109,11 @@ func TestTicketTriageCommand(t *testing.T) {
 }
 
 func TestTicketTriageInvalid(t *testing.T) {
-	fs := afero.NewMemMapFs()
-	fs.MkdirAll("/test/.scratch/m/issues", 0755)
-	afero.WriteFile(fs, "/test/.scratch/m/map.md", []byte("# M"), 0644)
+	dir := t.TempDir()
+	os.MkdirAll(dir+"/.scratch/m/issues", 0755)
+	os.WriteFile(dir+"/.scratch/m/map.md", []byte("# M"), 0644)
 
-	SetFS(fs)
-	SetCWD("/test")
+	SetCWD(dir)
 
 	createTicketViaCmd(t, "m", "test", "task")
 
@@ -136,12 +129,11 @@ func TestTicketTriageInvalid(t *testing.T) {
 }
 
 func TestTicketBlockingCommand(t *testing.T) {
-	fs := afero.NewMemMapFs()
-	fs.MkdirAll("/test/.scratch/m/issues", 0755)
-	afero.WriteFile(fs, "/test/.scratch/m/map.md", []byte("# M"), 0644)
+	dir := t.TempDir()
+	os.MkdirAll(dir+"/.scratch/m/issues", 0755)
+	os.WriteFile(dir+"/.scratch/m/map.md", []byte("# M"), 0644)
 
-	SetFS(fs)
-	SetCWD("/test")
+	SetCWD(dir)
 
 	createTicketViaCmd(t, "m", "first", "task")
 	createTicketViaCmd(t, "m", "second", "task")
@@ -157,12 +149,11 @@ func TestTicketBlockingCommand(t *testing.T) {
 }
 
 func TestTicketBlockingSelfBlocking(t *testing.T) {
-	fs := afero.NewMemMapFs()
-	fs.MkdirAll("/test/.scratch/m/issues", 0755)
-	afero.WriteFile(fs, "/test/.scratch/m/map.md", []byte("# M"), 0644)
+	dir := t.TempDir()
+	os.MkdirAll(dir+"/.scratch/m/issues", 0755)
+	os.WriteFile(dir+"/.scratch/m/map.md", []byte("# M"), 0644)
 
-	SetFS(fs)
-	SetCWD("/test")
+	SetCWD(dir)
 
 	createTicketViaCmd(t, "m", "first", "task")
 

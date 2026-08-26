@@ -2,20 +2,20 @@ package tracker
 
 import (
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/pkg/errors"
-	"github.com/spf13/afero"
 )
 
 // SetBlocking replaces a ticket's blocked_by array (SET semantics, G5).
 // Validates that all IDs exist (G-Q4) and no cycle is created (G-Q6: uses new edges).
-func SetBlocking(fs afero.Fs, scratchDir, mapSlug, ticketID string, blockedBy []string) error {
+func SetBlocking(root *os.Root, mapSlug, ticketID string, blockedBy []string) error {
 	// Normalize IDs
 	normalizedIDs := normalizeIDs(blockedBy)
 
 	// Get all tickets to validate IDs and build adjacency list
-	allTickets, err := ListTickets(fs, scratchDir, mapSlug, ListFilter{})
+	allTickets, err := ListTickets(root, mapSlug, ListFilter{})
 	if err != nil {
 		return errors.Wrapf(err, "listing tickets")
 	}
@@ -50,7 +50,7 @@ func SetBlocking(fs afero.Fs, scratchDir, mapSlug, ticketID string, blockedBy []
 	}
 
 	// Write
-	path, fm, err := readTicket(fs, scratchDir, mapSlug, ticketID)
+	path, fm, err := readTicket(root, mapSlug, ticketID)
 	if err != nil {
 		return err
 	}
@@ -60,7 +60,7 @@ func SetBlocking(fs afero.Fs, scratchDir, mapSlug, ticketID string, blockedBy []
 		fm.BlockedBy = []string{}
 	}
 
-	return writeTicket(fs, path, fm)
+	return writeTicket(root, path, fm)
 }
 
 // detectCycle runs DFS from the given node and returns an error message if a cycle is found.

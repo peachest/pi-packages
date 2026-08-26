@@ -22,12 +22,13 @@ func newQueryFrontierCmd() *cobra.Command {
 		Short: "List frontier tickets (open, unblocked, untriaged or ready-for-agent)",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			scratchDir, err := resolveScratch()
+			root, err := openScratchRoot()
+			defer root.Close()
 			if err != nil {
 				return err
 			}
 
-			frontier, err := tracker.Frontier(fs, scratchDir, mapSlug)
+			frontier, err := tracker.Frontier(root, mapSlug)
 			if err != nil {
 				return err
 			}

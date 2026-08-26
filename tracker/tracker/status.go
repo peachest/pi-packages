@@ -1,22 +1,22 @@
 package tracker
 
 import (
+	"os"
 	"slices"
 	"time"
 
 	"github.com/pkg/errors"
-	"github.com/spf13/afero"
 )
 
 var validStatuses = []string{"open", "claimed", "resolved"}
 
 // SetStatus updates a ticket's status and associated timestamps.
-func SetStatus(fs afero.Fs, scratchDir, mapSlug, ticketID, newStatus string, now time.Time) error {
+func SetStatus(root *os.Root, mapSlug, ticketID, newStatus string, now time.Time) error {
 	if !slices.Contains(validStatuses, newStatus) {
 		return errors.Wrapf(ErrInvalidInput, "invalid status %q, valid values: %v", newStatus, validStatuses)
 	}
 
-	path, fm, err := readTicket(fs, scratchDir, mapSlug, ticketID)
+	path, fm, err := readTicket(root, mapSlug, ticketID)
 	if err != nil {
 		return err
 	}
@@ -61,5 +61,5 @@ func SetStatus(fs afero.Fs, scratchDir, mapSlug, ticketID, newStatus string, now
 		fm.ResolvedAt = &now
 	}
 
-	return writeTicket(fs, path, fm)
+	return writeTicket(root, path, fm)
 }

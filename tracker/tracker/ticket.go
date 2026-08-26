@@ -2,13 +2,13 @@ package tracker
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"time"
 
 	"github.com/pkg/errors"
-	"github.com/spf13/afero"
 )
 
 var validTypes = []string{"research", "prototype", "grilling", "task"}
@@ -46,7 +46,7 @@ type ListFilter struct {
 }
 
 // CreateTicket creates a new ticket file in the map's issues/ directory.
-func CreateTicket(fs afero.Fs, scratchDir string, opts TicketOpts, now time.Time) (TicketSummary, error) {
+func CreateTicket(root *os.Root, opts TicketOpts, now time.Time) (TicketSummary, error) {
 	// Validate type (G-Q10)
 	if !slices.Contains(validTypes, opts.Type) {
 		return TicketSummary{}, errors.Wrapf(ErrInvalidInput, "invalid type %q, valid values: %s", opts.Type, strings.Join(validTypes, ", "))
@@ -57,13 +57,8 @@ func CreateTicket(fs afero.Fs, scratchDir string, opts TicketOpts, now time.Time
 		return TicketSummary{}, errors.Wrapf(ErrInvalidInput, "invalid triage %q, valid values: %s", *opts.Triage, strings.Join(validTriages, ", "))
 	}
 
-	// Validate map slug (path traversal defense, L2)
-	if err := validateSlug(opts.MapSlug); err != nil {
-		return TicketSummary{}, err
-	}
-
-	// Check map exists
-	exists, err := MapExists(fs, scratchDir, opts.MapSlug)
+	// Check map exists (os.Root enforces path safety at kernel level)
+	exists, err := MapExists(root, opts.MapSlug)
 	if err != nil {
 		return TicketSummary{}, err
 	}
@@ -73,7 +68,7 @@ func CreateTicket(fs afero.Fs, scratchDir string, opts TicketOpts, now time.Time
 
 	// Validate blocked_by IDs exist (G-Q4)
 	if len(opts.BlockedBy) > 0 {
-		existingIDs, err := collectTicketIDs(fs, scratchDir, opts.MapSlug)
+		existingIDs, err := collectTicketIDs(root, opts.MapSlug)
 		if err != nil {
 			return TicketSummary{}, err
 		}
@@ -88,13 +83,13 @@ func CreateTicket(fs afero.Fs, scratchDir string, opts TicketOpts, now time.Time
 	}
 
 	// Ensure issues/ directory exists
-	issuesDir := IssuesDir(scratchDir, opts.MapSlug)
-	if err := fs.MkdirAll(issuesDir, 0755); err != nil {
+	issuesDir := IssuesDir(opts.MapSlug)
+	if err := root.MkdirAll(issuesDir, 0755); err != nil {
 		return TicketSummary{}, errors.Wrapf(err, "creating issues directory")
 	}
 
 	// Assign next ID
-	nextID, err := nextTicketID(fs, issuesDir)
+	nextID, err := nextTicketID(root, issuesDir)
 	if err != nil {
 		return TicketSummary{}, err
 	}
@@ -130,8 +125,8 @@ func CreateTicket(fs afero.Fs, scratchDir string, opts TicketOpts, now time.Time
 
 	// Write file
 	filename := fmt.Sprintf("%s-%s.md", nextID, Slug(opts.Title))
-	path := TicketPath(scratchDir, opts.MapSlug, filename)
-	if err := afero.WriteFile(fs, path, content, 0644); err != nil {
+	path := TicketPath(opts.MapSlug, filename)
+	if err := root.WriteFile(path, content, 0644); err != nil {
 		return TicketSummary{}, errors.Wrapf(err, "writing ticket file")
 	}
 
@@ -149,20 +144,18 @@ func CreateTicket(fs afero.Fs, scratchDir string, opts TicketOpts, now time.Time
 }
 
 // ListTickets reads all tickets in a map and optionally filters them.
-func ListTickets(fs afero.Fs, scratchDir, mapSlug string, filter ListFilter) ([]TicketSummary, error) {
-	if err := validateSlug(mapSlug); err != nil {
-		return nil, err
-	}
-	issuesDir := IssuesDir(scratchDir, mapSlug)
-	exists, err := afero.DirExists(fs, issuesDir)
-	if err != nil {
+func ListTickets(root *os.Root, mapSlug string, filter ListFilter) ([]TicketSummary, error) {
+	issuesDir := IssuesDir(mapSlug)
+	// Directory may not exist yet for an empty map — return empty list.
+	fi, err := root.Stat(issuesDir)
+	if err != nil && !os.IsNotExist(err) {
 		return nil, errors.Wrapf(err, "checking issues directory")
 	}
-	if !exists {
+	if err != nil || !fi.IsDir() {
 		return []TicketSummary{}, nil
 	}
 
-	entries, err := afero.ReadDir(fs, issuesDir)
+	entries, err := readDirEntries(root, issuesDir)
 	if err != nil {
 		return nil, errors.Wrapf(err, "reading issues directory")
 	}
@@ -173,7 +166,7 @@ func ListTickets(fs afero.Fs, scratchDir, mapSlug string, filter ListFilter) ([]
 			continue
 		}
 		path := filepath.Join(issuesDir, entry.Name())
-		data, err := afero.ReadFile(fs, path)
+		data, err := root.ReadFile(path)
 		if err != nil {
 			continue // skip unreadable files
 		}
@@ -230,8 +223,8 @@ func matchesFilter(t TicketSummary, f ListFilter) bool {
 
 // nextTicketID scans the issues directory for the maximum ID and returns the next one.
 // The front matter `id` is the source of truth (Q16), not the filename.
-func nextTicketID(fs afero.Fs, issuesDir string) (string, error) {
-	entries, err := afero.ReadDir(fs, issuesDir)
+func nextTicketID(root *os.Root, issuesDir string) (string, error) {
+	entries, err := readDirEntries(root, issuesDir)
 	if err != nil {
 		return "", errors.Wrapf(err, "reading issues directory for numbering")
 	}
@@ -241,7 +234,7 @@ func nextTicketID(fs afero.Fs, issuesDir string) (string, error) {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") {
 			continue
 		}
-		data, err := afero.ReadFile(fs, filepath.Join(issuesDir, entry.Name()))
+		data, err := root.ReadFile(filepath.Join(issuesDir, entry.Name()))
 		if err != nil {
 			continue // skip unreadable
 		}
@@ -261,8 +254,8 @@ func nextTicketID(fs afero.Fs, issuesDir string) (string, error) {
 	return fmt.Sprintf("%02d", maxNum+1), nil
 }
 
-func collectTicketIDs(fs afero.Fs, scratchDir, mapSlug string) ([]string, error) {
-	tickets, err := ListTickets(fs, scratchDir, mapSlug, ListFilter{})
+func collectTicketIDs(root *os.Root, mapSlug string) ([]string, error) {
+	tickets, err := ListTickets(root, mapSlug, ListFilter{})
 	if err != nil {
 		return nil, err
 	}
@@ -290,31 +283,28 @@ func normalizeIDs(ids []string) []string {
 }
 
 // ReadTicketForDisplay reads a ticket's front matter for display purposes.
-func ReadTicketForDisplay(fs afero.Fs, scratchDir, mapSlug, ticketID string) (string, FrontMatter, error) {
-	return readTicket(fs, scratchDir, mapSlug, ticketID)
+func ReadTicketForDisplay(root *os.Root, mapSlug, ticketID string) (string, FrontMatter, error) {
+	return readTicket(root, mapSlug, ticketID)
 }
 
 // ReviewTicket marks a ticket as reviewed by setting reviewed_at.
 // Can be called multiple times (re-review updates reviewed_at).
-func ReviewTicket(fs afero.Fs, scratchDir, mapSlug, ticketID string, now time.Time) error {
-	path, fm, err := readTicket(fs, scratchDir, mapSlug, ticketID)
+func ReviewTicket(root *os.Root, mapSlug, ticketID string, now time.Time) error {
+	path, fm, err := readTicket(root, mapSlug, ticketID)
 	if err != nil {
 		return err
 	}
 
 	fm.ReviewedAt = &now
 
-	return writeTicket(fs, path, fm)
+	return writeTicket(root, path, fm)
 }
 
 // readTicket finds and reads a ticket file by ID.
-func readTicket(fs afero.Fs, scratchDir, mapSlug, ticketID string) (string, FrontMatter, error) {
-	if err := validateSlug(mapSlug); err != nil {
-		return "", FrontMatter{}, err
-	}
+func readTicket(root *os.Root, mapSlug, ticketID string) (string, FrontMatter, error) {
 	normalizedID := normalizeID(ticketID)
-	issuesDir := IssuesDir(scratchDir, mapSlug)
-	entries, err := afero.ReadDir(fs, issuesDir)
+	issuesDir := IssuesDir(mapSlug)
+	entries, err := readDirEntries(root, issuesDir)
 	if err != nil {
 		return "", FrontMatter{}, errors.Wrapf(err, "reading issues directory")
 	}
@@ -324,7 +314,7 @@ func readTicket(fs afero.Fs, scratchDir, mapSlug, ticketID string) (string, Fron
 			continue
 		}
 		path := filepath.Join(issuesDir, entry.Name())
-		data, err := afero.ReadFile(fs, path)
+		data, err := root.ReadFile(path)
 		if err != nil {
 			continue
 		}
@@ -341,9 +331,10 @@ func readTicket(fs afero.Fs, scratchDir, mapSlug, ticketID string) (string, Fron
 }
 
 // writeTicket writes front matter + existing body back to the ticket file.
-func writeTicket(fs afero.Fs, path string, fm FrontMatter) error {
+// path is relative to root.
+func writeTicket(root *os.Root, path string, fm FrontMatter) error {
 	// Read existing file to preserve body
-	data, err := afero.ReadFile(fs, path)
+	data, err := root.ReadFile(path)
 	if err != nil {
 		return errors.Wrapf(err, "reading ticket file")
 	}
@@ -357,7 +348,7 @@ func writeTicket(fs afero.Fs, path string, fm FrontMatter) error {
 	}
 
 	content := append(fmData, []byte(body)...)
-	return afero.WriteFile(fs, path, content, 0644)
+	return root.WriteFile(path, content, 0644)
 }
 
 // extractBody returns the content after the YAML front matter (after the second ---).

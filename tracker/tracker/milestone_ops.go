@@ -1,13 +1,13 @@
 package tracker
 
 import (
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"time"
 
 	"github.com/pkg/errors"
-	"github.com/spf13/afero"
 )
 
 // MilestoneSummary is a compact view of a milestone for listing.
@@ -27,18 +27,15 @@ type MilestoneProgressResult struct {
 	Progress Progress `json:"progress"`
 }
 
-// MilestonePath returns the path to a milestone file.
-func MilestonePath(scratchDir, slug string) string {
-	return filepath.Join(scratchDir, ".milestones", slug+".md")
+// MilestonePath returns the path to a milestone file, relative to root.
+func MilestonePath(slug string) string {
+	return filepath.Join(".milestones", slug+".md")
 }
 
 // ReadMilestone reads a milestone's front matter.
-func ReadMilestone(fs afero.Fs, scratchDir, slug string) (MilestoneFrontMatter, error) {
-	if err := validateSlug(slug); err != nil {
-		return MilestoneFrontMatter{}, err
-	}
-	path := MilestonePath(scratchDir, slug)
-	data, err := afero.ReadFile(fs, path)
+func ReadMilestone(root *os.Root, slug string) (MilestoneFrontMatter, error) {
+	path := MilestonePath(slug)
+	data, err := root.ReadFile(path)
 	if err != nil {
 		return MilestoneFrontMatter{}, errors.Wrapf(ErrNotFound, "milestone %q not found. No .scratch/.milestones/%s.md file", slug, slug)
 	}
@@ -50,15 +47,12 @@ func ReadMilestone(fs afero.Fs, scratchDir, slug string) (MilestoneFrontMatter, 
 }
 
 // SetMilestoneState updates a milestone's state (active|closed) and closed_at timestamp.
-func SetMilestoneState(fs afero.Fs, scratchDir, slug, newState string, now time.Time) error {
+func SetMilestoneState(root *os.Root, slug, newState string, now time.Time) error {
 	if newState != "active" && newState != "closed" {
 		return errors.Wrapf(ErrInvalidInput, "invalid state %q, valid values: active, closed", newState)
 	}
-	if err := validateSlug(slug); err != nil {
-		return err
-	}
-	path := MilestonePath(scratchDir, slug)
-	data, err := afero.ReadFile(fs, path)
+	path := MilestonePath(slug)
+	data, err := root.ReadFile(path)
 	if err != nil {
 		return errors.Wrapf(ErrNotFound, "milestone %q not found. No .scratch/.milestones/%s.md file", slug, slug)
 	}
@@ -84,23 +78,23 @@ func SetMilestoneState(fs afero.Fs, scratchDir, slug, newState string, now time.
 	}
 
 	content := append(fmData, []byte(body)...)
-	return afero.WriteFile(fs, path, content, 0644)
+	return root.WriteFile(path, content, 0644)
 }
 
 // ListMilestones scans .scratch/.milestones/ for milestone files.
-func ListMilestones(fs afero.Fs, scratchDir string) ([]MilestoneSummary, error) {
-	milestonesDir := filepath.Join(scratchDir, ".milestones")
-	exists, err := afero.DirExists(fs, milestonesDir)
-	if err != nil || !exists {
+func ListMilestones(root *os.Root) ([]MilestoneSummary, error) {
+	milestonesDir := ".milestones"
+	fi, err := root.Stat(milestonesDir)
+	if err != nil || !fi.IsDir() {
 		return []MilestoneSummary{}, nil
 	}
 
-	entries, err := afero.ReadDir(fs, milestonesDir)
+	entries, err := readDirEntries(root, milestonesDir)
 	if err != nil {
 		return []MilestoneSummary{}, nil
 	}
 
-	maps, err := ListMaps(fs, scratchDir)
+	maps, err := ListMaps(root)
 	if err != nil {
 		maps = []MapSummary{}
 	}
@@ -112,7 +106,7 @@ func ListMilestones(fs afero.Fs, scratchDir string) ([]MilestoneSummary, error) 
 		}
 
 		slug := strings.TrimSuffix(entry.Name(), ".md")
-		mfm, err := ReadMilestone(fs, scratchDir, slug)
+		mfm, err := ReadMilestone(root, slug)
 		if err != nil {
 			continue // skip malformed
 		}
@@ -136,13 +130,13 @@ func ListMilestones(fs afero.Fs, scratchDir string) ([]MilestoneSummary, error) 
 }
 
 // MilestoneProgress computes progress across all maps referencing a milestone.
-func MilestoneProgress(fs afero.Fs, scratchDir, slug string) (MilestoneProgressResult, error) {
-	mfm, err := ReadMilestone(fs, scratchDir, slug)
+func MilestoneProgress(root *os.Root, slug string) (MilestoneProgressResult, error) {
+	mfm, err := ReadMilestone(root, slug)
 	if err != nil {
 		return MilestoneProgressResult{}, err
 	}
 
-	maps, err := ListMaps(fs, scratchDir)
+	maps, err := ListMaps(root)
 	if err != nil {
 		return MilestoneProgressResult{}, errors.Wrapf(err, "listing maps")
 	}
@@ -154,7 +148,7 @@ func MilestoneProgress(fs afero.Fs, scratchDir, slug string) (MilestoneProgressR
 		slugs     []string
 	)
 	for _, m := range refMaps {
-		p, err := ComputeProgress(fs, scratchDir, m.Slug)
+		p, err := ComputeProgress(root, m.Slug)
 		if err != nil {
 			continue
 		}

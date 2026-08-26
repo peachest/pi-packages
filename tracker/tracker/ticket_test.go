@@ -6,18 +6,17 @@ import (
 	"time"
 
 	"github.com/google/go-cmp/cmp"
-	"github.com/spf13/afero"
 )
 
 func TestCreateTicket(t *testing.T) {
-	fs := afero.NewMemMapFs()
-	fs.MkdirAll("/p/.scratch/test-map/issues", 0755)
-	afero.WriteFile(fs, "/p/.scratch/test-map/map.md", []byte("# Test Map"), 0644)
+	root := newTestRoot(t)
+	root.MkdirAll("test-map/issues", 0755)
+	root.WriteFile("test-map/map.md", []byte("# Test Map"), 0644)
 
 	created := time.Date(2026, 8, 19, 12, 0, 0, 0, time.UTC)
 
 	// First create a ticket to block on
-	CreateTicket(fs, "/p/.scratch", TicketOpts{MapSlug: "test-map", Title: "blocker", Type: "task"}, created)
+	CreateTicket(root, TicketOpts{MapSlug: "test-map", Title: "blocker", Type: "task"}, created)
 
 	opts := TicketOpts{
 		MapSlug:   "test-map",
@@ -27,7 +26,7 @@ func TestCreateTicket(t *testing.T) {
 		Triage:    nil,
 	}
 
-	ticket, err := CreateTicket(fs, "/p/.scratch", opts, created)
+	ticket, err := CreateTicket(root, opts, created)
 	if err != nil {
 		t.Fatalf("CreateTicket() error = %v", err)
 	}
@@ -46,8 +45,8 @@ func TestCreateTicket(t *testing.T) {
 	}
 
 	// Verify file was written
-	path := "/p/.scratch/test-map/issues/02-fix-bug-123.md"
-	data, err := afero.ReadFile(fs, path)
+	path := "test-map/issues/02-fix-bug-123.md"
+	data, err := root.ReadFile(path)
 	if err != nil {
 		t.Fatalf("ticket file not written: %v", err)
 	}
@@ -78,21 +77,21 @@ func TestCreateTicket(t *testing.T) {
 }
 
 func TestCreateTicketNumbering(t *testing.T) {
-	fs := afero.NewMemMapFs()
-	fs.MkdirAll("/p/.scratch/m/issues", 0755)
-	afero.WriteFile(fs, "/p/.scratch/m/map.md", []byte("# M"), 0644)
+	root := newTestRoot(t)
+	root.MkdirAll("m/issues", 0755)
+	root.WriteFile("m/map.md", []byte("# M"), 0644)
 
 	// Pre-create ticket 01 and 02
 	now := time.Date(2026, 8, 19, 12, 0, 0, 0, time.UTC)
 	for _, title := range []string{"first", "second"} {
-		_, err := CreateTicket(fs, "/p/.scratch", TicketOpts{MapSlug: "m", Title: title, Type: "task"}, now)
+		_, err := CreateTicket(root, TicketOpts{MapSlug: "m", Title: title, Type: "task"}, now)
 		if err != nil {
 			t.Fatalf("CreateTicket() error = %v", err)
 		}
 	}
 
 	// Third ticket should be 03
-	ticket, err := CreateTicket(fs, "/p/.scratch", TicketOpts{MapSlug: "m", Title: "third", Type: "task"}, now)
+	ticket, err := CreateTicket(root, TicketOpts{MapSlug: "m", Title: "third", Type: "task"}, now)
 	if err != nil {
 		t.Fatalf("CreateTicket() error = %v", err)
 	}
@@ -102,10 +101,9 @@ func TestCreateTicketNumbering(t *testing.T) {
 }
 
 func TestCreateTicketMapNotFound(t *testing.T) {
-	fs := afero.NewMemMapFs()
-	fs.MkdirAll("/p/.scratch", 0755)
+	root := newTestRoot(t)
 
-	_, err := CreateTicket(fs, "/p/.scratch", TicketOpts{MapSlug: "nonexistent", Title: "test", Type: "task"}, time.Now())
+	_, err := CreateTicket(root, TicketOpts{MapSlug: "nonexistent", Title: "test", Type: "task"}, time.Now())
 	if err == nil {
 		t.Fatal("expected error for nonexistent map")
 	}
@@ -115,11 +113,11 @@ func TestCreateTicketMapNotFound(t *testing.T) {
 }
 
 func TestCreateTicketInvalidType(t *testing.T) {
-	fs := afero.NewMemMapFs()
-	fs.MkdirAll("/p/.scratch/m/issues", 0755)
-	afero.WriteFile(fs, "/p/.scratch/m/map.md", []byte("# M"), 0644)
+	root := newTestRoot(t)
+	root.MkdirAll("m/issues", 0755)
+	root.WriteFile("m/map.md", []byte("# M"), 0644)
 
-	_, err := CreateTicket(fs, "/p/.scratch", TicketOpts{MapSlug: "m", Title: "test", Type: "invalid"}, time.Now())
+	_, err := CreateTicket(root, TicketOpts{MapSlug: "m", Title: "test", Type: "invalid"}, time.Now())
 	if err == nil {
 		t.Fatal("expected error for invalid type")
 	}
@@ -129,11 +127,11 @@ func TestCreateTicketInvalidType(t *testing.T) {
 }
 
 func TestCreateTicketBlockedByNonExistent(t *testing.T) {
-	fs := afero.NewMemMapFs()
-	fs.MkdirAll("/p/.scratch/m/issues", 0755)
-	afero.WriteFile(fs, "/p/.scratch/m/map.md", []byte("# M"), 0644)
+	root := newTestRoot(t)
+	root.MkdirAll("m/issues", 0755)
+	root.WriteFile("m/map.md", []byte("# M"), 0644)
 
-	_, err := CreateTicket(fs, "/p/.scratch", TicketOpts{MapSlug: "m", Title: "test", Type: "task", BlockedBy: []string{"99"}}, time.Now())
+	_, err := CreateTicket(root, TicketOpts{MapSlug: "m", Title: "test", Type: "task", BlockedBy: []string{"99"}}, time.Now())
 	if err == nil {
 		t.Fatal("expected error for non-existent blocked_by ID")
 	}
@@ -143,15 +141,15 @@ func TestCreateTicketBlockedByNonExistent(t *testing.T) {
 }
 
 func TestListTickets(t *testing.T) {
-	fs := afero.NewMemMapFs()
-	fs.MkdirAll("/p/.scratch/m/issues", 0755)
-	afero.WriteFile(fs, "/p/.scratch/m/map.md", []byte("# M"), 0644)
+	root := newTestRoot(t)
+	root.MkdirAll("m/issues", 0755)
+	root.WriteFile("m/map.md", []byte("# M"), 0644)
 
 	now := time.Date(2026, 8, 19, 12, 0, 0, 0, time.UTC)
-	CreateTicket(fs, "/p/.scratch", TicketOpts{MapSlug: "m", Title: "first", Type: "task"}, now)
-	CreateTicket(fs, "/p/.scratch", TicketOpts{MapSlug: "m", Title: "second", Type: "research"}, now)
+	CreateTicket(root, TicketOpts{MapSlug: "m", Title: "first", Type: "task"}, now)
+	CreateTicket(root, TicketOpts{MapSlug: "m", Title: "second", Type: "research"}, now)
 
-	tickets, err := ListTickets(fs, "/p/.scratch", "m", ListFilter{})
+	tickets, err := ListTickets(root, "m", ListFilter{})
 	if err != nil {
 		t.Fatalf("ListTickets() error = %v", err)
 	}
@@ -167,24 +165,24 @@ func TestListTickets(t *testing.T) {
 }
 
 func TestListTicketsFilterStatus(t *testing.T) {
-	fs := afero.NewMemMapFs()
-	fs.MkdirAll("/p/.scratch/m/issues", 0755)
-	afero.WriteFile(fs, "/p/.scratch/m/map.md", []byte("# M"), 0644)
+	root := newTestRoot(t)
+	root.MkdirAll("m/issues", 0755)
+	root.WriteFile("m/map.md", []byte("# M"), 0644)
 
 	now := time.Date(2026, 8, 19, 12, 0, 0, 0, time.UTC)
-	CreateTicket(fs, "/p/.scratch", TicketOpts{MapSlug: "m", Title: "open-one", Type: "task"}, now)
+	CreateTicket(root, TicketOpts{MapSlug: "m", Title: "open-one", Type: "task"}, now)
 
 	// Create second ticket and manually set it to resolved
-	_, _ = CreateTicket(fs, "/p/.scratch", TicketOpts{MapSlug: "m", Title: "resolved-one", Type: "task"}, now)
-	path := TicketPath("/p/.scratch", "m", "02-resolved-one.md")
-	data, _ := afero.ReadFile(fs, path)
+	_, _ = CreateTicket(root, TicketOpts{MapSlug: "m", Title: "resolved-one", Type: "task"}, now)
+	path := TicketPath("m", "02-resolved-one.md")
+	data, _ := root.ReadFile(path)
 	fm, _ := ParseFrontMatter(data)
 	fm.Status = "resolved"
 	fmData, _ := fm.Marshal()
-	afero.WriteFile(fs, path, append(fmData, []byte("\n# resolved-one\n\n## Answer\n\ndone\n\n## Comments\n")...), 0644)
+	root.WriteFile(path, append(fmData, []byte("\n# resolved-one\n\n## Answer\n\ndone\n\n## Comments\n")...), 0644)
 
 	// Filter open only
-	open, err := ListTickets(fs, "/p/.scratch", "m", ListFilter{Status: "open"})
+	open, err := ListTickets(root, "m", ListFilter{Status: "open"})
 	if err != nil {
 		t.Fatalf("ListTickets() error = %v", err)
 	}
@@ -196,7 +194,7 @@ func TestListTicketsFilterStatus(t *testing.T) {
 	}
 
 	// Filter resolved only
-	resolved, err := ListTickets(fs, "/p/.scratch", "m", ListFilter{Status: "resolved"})
+	resolved, err := ListTickets(root, "m", ListFilter{Status: "resolved"})
 	if err != nil {
 		t.Fatalf("ListTickets() error = %v", err)
 	}
@@ -206,17 +204,17 @@ func TestListTicketsFilterStatus(t *testing.T) {
 }
 
 func TestListTicketsFilterTriageNull(t *testing.T) {
-	fs := afero.NewMemMapFs()
-	fs.MkdirAll("/p/.scratch/m/issues", 0755)
-	afero.WriteFile(fs, "/p/.scratch/m/map.md", []byte("# M"), 0644)
+	root := newTestRoot(t)
+	root.MkdirAll("m/issues", 0755)
+	root.WriteFile("m/map.md", []byte("# M"), 0644)
 
 	now := time.Date(2026, 8, 19, 12, 0, 0, 0, time.UTC)
 	triage := "ready-for-agent"
-	CreateTicket(fs, "/p/.scratch", TicketOpts{MapSlug: "m", Title: "with-triage", Type: "task", Triage: &triage}, now)
-	CreateTicket(fs, "/p/.scratch", TicketOpts{MapSlug: "m", Title: "no-triage", Type: "task"}, now)
+	CreateTicket(root, TicketOpts{MapSlug: "m", Title: "with-triage", Type: "task", Triage: &triage}, now)
+	CreateTicket(root, TicketOpts{MapSlug: "m", Title: "no-triage", Type: "task"}, now)
 
 	// Filter triage=null
-	nullTriage, err := ListTickets(fs, "/p/.scratch", "m", ListFilter{TriageNull: true})
+	nullTriage, err := ListTickets(root, "m", ListFilter{TriageNull: true})
 	if err != nil {
 		t.Fatalf("ListTickets() error = %v", err)
 	}

@@ -2,18 +2,16 @@ package cmd
 
 import (
 	"encoding/json"
+	"os"
 	"testing"
-
-	"github.com/spf13/afero"
 )
 
 func TestQueryFrontierCommand(t *testing.T) {
-	fs := afero.NewMemMapFs()
-	fs.MkdirAll("/test/.scratch/m/issues", 0755)
-	afero.WriteFile(fs, "/test/.scratch/m/map.md", []byte("# M"), 0644)
+	dir := t.TempDir()
+	os.MkdirAll(dir+"/.scratch/m/issues", 0755)
+	os.WriteFile(dir+"/.scratch/m/map.md", []byte("# M"), 0644)
 
-	SetFS(fs)
-	SetCWD("/test")
+	SetCWD(dir)
 
 	// Create tickets: #01 resolved, #02 open (in frontier)
 	createTicketViaCmd(t, "m", "resolved-one", "task")
@@ -40,12 +38,11 @@ func TestQueryFrontierCommand(t *testing.T) {
 }
 
 func TestQueryFrontierEmpty(t *testing.T) {
-	fs := afero.NewMemMapFs()
-	fs.MkdirAll("/test/.scratch/m/issues", 0755)
-	afero.WriteFile(fs, "/test/.scratch/m/map.md", []byte("# M"), 0644)
+	dir := t.TempDir()
+	os.MkdirAll(dir+"/.scratch/m/issues", 0755)
+	os.WriteFile(dir+"/.scratch/m/map.md", []byte("# M"), 0644)
 
-	SetFS(fs)
-	SetCWD("/test")
+	SetCWD(dir)
 
 	buf := runCmd(t, []string{"query", "frontier", "--map", "m"})
 
@@ -59,12 +56,11 @@ func TestQueryFrontierEmpty(t *testing.T) {
 }
 
 func TestQueryFrontierBlockedByClaimed(t *testing.T) {
-	fs := afero.NewMemMapFs()
-	fs.MkdirAll("/test/.scratch/m/issues", 0755)
-	afero.WriteFile(fs, "/test/.scratch/m/map.md", []byte("# M"), 0644)
+	dir := t.TempDir()
+	os.MkdirAll(dir+"/.scratch/m/issues", 0755)
+	os.WriteFile(dir+"/.scratch/m/map.md", []byte("# M"), 0644)
 
-	SetFS(fs)
-	SetCWD("/test")
+	SetCWD(dir)
 
 	// #01 claimed, #02 open blocked by #01 → NOT in frontier
 	createTicketViaCmd(t, "m", "claimed-one", "task")
@@ -84,12 +80,11 @@ func TestQueryFrontierBlockedByClaimed(t *testing.T) {
 }
 
 func TestQueryFrontierSortedById(t *testing.T) {
-	fs := afero.NewMemMapFs()
-	fs.MkdirAll("/test/.scratch/m/issues", 0755)
-	afero.WriteFile(fs, "/test/.scratch/m/map.md", []byte("# M"), 0644)
+	dir := t.TempDir()
+	os.MkdirAll(dir+"/.scratch/m/issues", 0755)
+	os.WriteFile(dir+"/.scratch/m/map.md", []byte("# M"), 0644)
 
-	SetFS(fs)
-	SetCWD("/test")
+	SetCWD(dir)
 
 	// Create 3 open tickets
 	createTicketViaCmd(t, "m", "third", "task")

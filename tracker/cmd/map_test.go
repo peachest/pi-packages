@@ -2,20 +2,19 @@ package cmd
 
 import (
 	"encoding/json"
+	"os"
 	"testing"
 	"time"
 
 	"github.com/peachest/pi-packages/tracker/tracker"
-	"github.com/spf13/afero"
 )
 
 func TestMapStateCommand(t *testing.T) {
-	fs := afero.NewMemMapFs()
-	fs.MkdirAll("/test/.scratch/m", 0755)
-	writeMapMD(t, fs, "/test/.scratch/m", "Test Map", "active", nil)
+	dir := t.TempDir()
+	os.MkdirAll(dir+"/.scratch/m", 0755)
+	writeMapMD(t, dir+"/.scratch/m", "Test Map", "active", nil)
 
-	SetFS(fs)
-	SetCWD("/test")
+	SetCWD(dir)
 
 	buf := runCmd(t, []string{"map", "state", "--slug", "m", "--set", "closed"})
 	var result map[string]any
@@ -26,12 +25,11 @@ func TestMapStateCommand(t *testing.T) {
 }
 
 func TestMapProgressCommand(t *testing.T) {
-	fs := afero.NewMemMapFs()
-	fs.MkdirAll("/test/.scratch/m/issues", 0755)
-	writeMapMD(t, fs, "/test/.scratch/m", "Test Map", "active", nil)
+	dir := t.TempDir()
+	os.MkdirAll(dir+"/.scratch/m/issues", 0755)
+	writeMapMD(t, dir+"/.scratch/m", "Test Map", "active", nil)
 
-	SetFS(fs)
-	SetCWD("/test")
+	SetCWD(dir)
 
 	// Create 2 tickets, resolve 1
 	createTicketViaCmd(t, "m", "first", "task")
@@ -64,14 +62,13 @@ func TestMapProgressCommand(t *testing.T) {
 }
 
 func TestMapListCommand(t *testing.T) {
-	fs := afero.NewMemMapFs()
-	fs.MkdirAll("/test/.scratch/map-a", 0755)
-	fs.MkdirAll("/test/.scratch/map-b", 0755)
-	writeMapMD(t, fs, "/test/.scratch/map-a", "Map A", "active", nil)
-	writeMapMD(t, fs, "/test/.scratch/map-b", "Map B", "closed", nil)
+	dir := t.TempDir()
+	os.MkdirAll(dir+"/.scratch/map-a", 0755)
+	os.MkdirAll(dir+"/.scratch/map-b", 0755)
+	writeMapMD(t, dir+"/.scratch/map-a", "Map A", "active", nil)
+	writeMapMD(t, dir+"/.scratch/map-b", "Map B", "closed", nil)
 
-	SetFS(fs)
-	SetCWD("/test")
+	SetCWD(dir)
 
 	buf := runCmd(t, []string{"map", "list"})
 	var results []map[string]any
@@ -90,11 +87,10 @@ func TestMapListCommand(t *testing.T) {
 }
 
 func TestMapListEmpty(t *testing.T) {
-	fs := afero.NewMemMapFs()
-	fs.MkdirAll("/test/.scratch", 0755)
+	dir := t.TempDir()
+	os.MkdirAll(dir+"/.scratch", 0755)
 
-	SetFS(fs)
-	SetCWD("/test")
+	SetCWD(dir)
 
 	buf := runCmd(t, []string{"map", "list"})
 	var results []map[string]any
@@ -105,15 +101,14 @@ func TestMapListEmpty(t *testing.T) {
 }
 
 func TestMapListFilterMilestone(t *testing.T) {
-	fs := afero.NewMemMapFs()
-	fs.MkdirAll("/test/.scratch/with-ms", 0755)
-	fs.MkdirAll("/test/.scratch/no-ms", 0755)
+	dir := t.TempDir()
+	os.MkdirAll(dir+"/.scratch/with-ms", 0755)
+	os.MkdirAll(dir+"/.scratch/no-ms", 0755)
 	ms := "infra"
-	writeMapMD(t, fs, "/test/.scratch/with-ms", "With MS", "active", &ms)
-	writeMapMD(t, fs, "/test/.scratch/no-ms", "No MS", "active", nil)
+	writeMapMD(t, dir+"/.scratch/with-ms", "With MS", "active", &ms)
+	writeMapMD(t, dir+"/.scratch/no-ms", "No MS", "active", nil)
 
-	SetFS(fs)
-	SetCWD("/test")
+	SetCWD(dir)
 
 	buf := runCmd(t, []string{"map", "list", "--milestone", "infra"})
 	var results []map[string]any
@@ -127,8 +122,9 @@ func TestMapListFilterMilestone(t *testing.T) {
 	}
 }
 
-func writeMapMD(t *testing.T, fs afero.Fs, dir, title, state string, milestone *string) {
+func writeMapMD(t *testing.T, dir, title, state string, milestone *string) {
 	t.Helper()
+	os.MkdirAll(dir, 0755)
 	mfm := tracker.MapFrontMatter{
 		Title:     title,
 		State:     state,
@@ -141,7 +137,7 @@ func writeMapMD(t *testing.T, fs afero.Fs, dir, title, state string, milestone *
 		t.Fatal(err)
 	}
 	data = append(data, []byte("\n# "+title+"\n")...)
-	if err := afero.WriteFile(fs, dir+"/map.md", data, 0644); err != nil {
+	if err := os.WriteFile(dir+"/map.md", data, 0644); err != nil {
 		t.Fatal(err)
 	}
 }
