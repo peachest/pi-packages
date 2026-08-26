@@ -156,7 +156,7 @@ _Avoid_: stats, metrics
 
 ### wayfinder Map 的 decisions_so_far 表示
 
-数据模型定义 `decisions_so_far` 为"结构化索引 `[{ticket_ref, gist}]`"，但 Map 文件格式中它是 markdown 文本（`- [title](link) — gist`）。**两者不矛盾**：markdown 文本是持久化形式，结构化索引是逻辑视图。CLI 的 `ticket resolve` 追加一行 markdown 到 `## Decisions so far` 段；`map progress` 等查询命令解析 markdown 行提取结构化数据。wayfinder skill 的 Map body 模板保持 markdown 格式不变。
+数据模型定义 `decisions_so_far` 为"结构化索引 `[{ticket_ref, gist}]`"，但 Map 文件格式中它是 markdown 文本（`- [title](link) — gist`）。**两者不矛盾**：markdown 文本是持久化形式，结构化索引是逻辑视图。agent 按 issue-tracker-local.md 指引用 bash/edit 追加一行 markdown 到 `## Decisions so far` 段（thin CRUD, G-Q15）；`map progress` 等查询命令解析 markdown 行提取结构化数据。wayfinder skill 的 Map body 模板保持 markdown 格式不变。
 
 ## Research 结论
 
@@ -330,15 +330,14 @@ PPU device plugin 完整对标 HAMi NVIDIA device plugin 的 MIG 功能
 
 ## CLI Interface Spec
 
-### 命令清单（13 个子命令）
+### 命令清单（12 个子命令）
 
 ```
-# Ticket (6)
+# Ticket (5)
 tracker ticket create --map <slug> --title "..." --type <type> [--blocked-by 1,2] [--triage <t>]
-tracker ticket resolve --map <slug> --id <N> --answer "..." --gist "..."
 tracker ticket list --map <slug> [--status <s>] [--type <t>] [--triage <t>]
 tracker ticket blocking --map <slug> --id <N> --by 1,2
-tracker ticket status --map <slug> --id <N> --set <open|claimed>
+tracker ticket status --map <slug> --id <N> --set <open|claimed|resolved>
 tracker ticket triage --map <slug> --id <N> --set <triage>
 
 # Map (3)
@@ -356,8 +355,8 @@ tracker query frontier --map <slug>
 ```
 
 **命令设计决策**:
-- `ticket status --set` 只接受 `open|claimed`，**不接受 `resolved`**——resolved 只能通过 `ticket resolve` 原子操作到达（G2 决策）。`--set resolved` 报错：`Error: Use 'tracker ticket resolve --map <slug> --id <N> --answer "..." --gist "..."' to resolve a ticket. Direct status change to resolved is not allowed.`
-- `ticket resolve` 新增 `--gist` 参数——一行摘要写入 map.md 的 Decisions so far，`--answer` 是完整答案写入 ticket 的 `## Answer` 段（G3 决策）。
+- **CLI 是 thin CRUD（G-Q15）**——只管 front matter 字段读写，不解析/修改 markdown body。`ticket resolve` 命令已删除（G2 撤回）；`ticket status --set resolved` 允许。Body 操作（`## Answer` fill、map.md decision pointer）由 agent 按 issue-tracker-local.md 指引用 bash/edit 完成，与 GitHub 模式一致（agent 用 `gh issue comment` 加答案，gh 不管内容）。
+- `ticket status --set` 接受 `open|claimed|resolved`（G2 撤回，G-Q15）。`--set claimed` 前置检查 `reviewed_at != null`（G-Q12）。`--set open` on resolved = reopen（清空 resolved_at + claimed_at，G-Q1/Q2/Q3）。
 - `ticket blocking --by 1,2` 是 **Replace (SET) 语义**——覆盖整个 blocked_by 数组，不是 append（G5 决策）。**清空所有 blocker 用 `--by ""`（空字符串）**，CLI 解析空值为 `blocked_by: []`（R3-Q3）。
 - `ticket create` 只输出 front matter + 最小 body 骨架（`## Answer` + `## Comments`），**不管 body 模板**——body 段模板由 `issue-tracker-local.md` 定义，agent 自觉遵循（G4 决策）。body 段模板包括 type-specific 段（task=`## What to build` + `## Acceptance criteria` + `## Out of scope` + `## Testing`；research/grilling/prototype=`## Question`）以及 to-spec 产出的 spec ticket 使用的段（`## Problem Statement` + `## Solution` + `## Implementation Decisions` + `## Testing Decisions` + `## Out of Scope` + `## Further Notes`）——to-spec ticket type 为 task 但 body 使用 to-spec 自己的模板，不套用 task 模板。
 - `ticket list` 的 `--status`、`--type`、`--triage` 过滤是 **AND 组合**。`--triage null` 合法，匹配 triage 字段为 null/省略的 ticket。`--status`、`--type` 同理支持对应枚举值（R3-Q4）。
@@ -376,9 +375,9 @@ tracker query frontier --map <slug>
 {"id": "03", "title": "Define GpuInstanceInterface", "map": "hgml-gi-ci-interface", "type": "task", "status": "open", "path": ".scratch/hgml-gi-ci-interface/issues/03-define-gpuinstanceinterface.md", "blocked_by": ["01", "02"], "triage": null, "created_at": "2026-08-13T10:30:00Z"}
 ```
 
-**ticket resolve**:
+**ticket status (resolved)**:
 ```json
-{"id": "03", "map": "hgml-gi-ci-interface", "status": "resolved", "resolved_at": "2026-08-13T12:00:00Z", "decision_pointer_appended": true, "map_progress": {"open": 2, "claimed": 1, "resolved": 3, "total": 6}}
+{"id": "03", "map": "hgml-gi-ci-interface", "status": "resolved", "resolved_at": "2026-08-13T12:00:00Z"}
 ```
 
 **ticket list**:
@@ -458,25 +457,17 @@ Available: <可用选项或修复建议>
 - Map 不存在：`Error: Map 'nonexistent' not found. No .scratch/nonexistent/ directory. Run 'tracker map list' to see available maps.`
 - .scratch/ 不存在（自动创建前的检查）：如果 git root 或 cwd 不可写，报错：`Error: Cannot create .scratch/ directory at <path>: permission denied.`
 - Ticket 已 resolved：`Error: Ticket #03 is already resolved. Cannot change status of a resolved ticket. Use 'tracker ticket status --set open' to reopen first.`
-- `--set resolved` 被拒绝：`Error: Use 'tracker ticket resolve --map <slug> --id <N> --answer "..." --gist "..."' to resolve a ticket. Direct status change to resolved is not allowed.`
-- `## Answer` heading 缺失（R3-Q5）：`Error: Expected '## Answer' heading not found in ticket file. Add '## Answer' manually or run 'tracker ticket create' to regenerate.`
+- `--set resolved` 允许（G2 撤回，G-Q15）：`tracker ticket status --map <slug> --id <N> --set resolved`。Agent 负责先填 `## Answer` + 追加 map.md decision pointer（见 issue-tracker-local.md）。
+- `## Answer` heading 缺失（R3-Q5）：`Error: Expected '## Answer' heading not found in ticket file.`——agent 用 bash/edit 手动加，或重新 create。
 
-### `ticket resolve` 原子性
+### Resolve 工作流（G-Q15：thin CRUD，不是原子操作）
 
-**操作顺序**：
-1. 前置检查：ticket 存在、status 不是 resolved、map.md 存在、`## Answer` heading 存在、`## Decisions so far` 段存在
-2. 写 ticket 文件：**fill `## Answer` heading**（空则插入，已有内容则覆盖）+ 更新 front matter（status=resolved, resolved_at）
-3. 追加 map.md 的 `## Decisions so far` 段：`- [ticket title](issues/NN-slug.md) — <gist>`。**如果 `## Decisions so far` 段不存在**，报错 exit 1：`Error: Expected '## Decisions so far' heading not found in map.md. Add it manually or regenerate map.md from wayfinder template.`（wayfinder Map 模板应包含此段，缺失说明 map.md 被手动修改，CLI 不应猜测文件结构）
-4. 全部成功 → 返回 JSON（含 map_progress）
+resolve 不再是一个原子 CLI 命令。流程（由 issue-tracker-local.md 指引 agent）：
+1. Agent 用 bash/edit 填 `## Answer` 段（G6：覆盖已有内容，最终答案不留草稿）
+2. Agent 用 bash/edit 在 map.md `## Decisions so far` 追加/替换 decision pointer 行：`- [#<id> <title>](issues/<NN>-<slug>.md) — <gist>`（replace 按 `- [#<id>` 前缀匹配，G-Q1）
+3. `tracker ticket status --map <slug> --id <N> --set resolved`（写 resolved_at）
 
-**`## Answer` fill 语义**（G6 决策）：CLI 解析 markdown 找到 `## Answer` 段，在其后、下一个 `##` 段（通常是 `## Comments`）前插入 answer 内容。create skeleton 预置空 `## Answer` heading 就是为了让 resolve fill 它——不会出现两个 `## Answer` heading。**如果 `## Answer` 段已有内容**（agent 预先写了部分答案），CLI **覆盖**已有内容为 `--answer` 的值（resolve 是最终答案，不应保留草稿）。
-
-**部分失败处理**：不回滚。如果 step 3 失败（map.md 不存在或写入失败），ticket 已是 resolved 状态，返回错误：
-```
-Error: Ticket #03 marked resolved, but failed to append decision pointer to map.md: <reason>.
-Manual fix: append '- [#03 title](issues/03-foo.md) — <gist>' to .scratch/<map>/map.md under ## Decisions so far.
-```
-Agent 根据错误信息手动修复 map.md。不回滚的理由：ticket resolved 是事实决策，map.md 追加是记录——记录失败不应撤销决策。
+`## Answer` 和 `## Decisions so far` heading 缺失时，agent 按 R3-Q5 的错误信息手动处理（ticket 文件用 create 重新生成，map.md 从 wayfinder 模板补）。
 
 ### `ticket create` 后的文件内容
 
@@ -522,7 +513,7 @@ resolved_at: null
 | # | Skill 文件 | 当前格式 | 新格式 | 动作 |
 |---|-----------|----------|--------|------|
 | 1 | `issue-tracker-local.md` | "Conventions" 段：`Status:` 行记录 triage state；`Type:` 行记录 ticket type；`Blocked by: NN, NN` 行 | YAML front matter（`id/title/map/type/status/triage/blocked_by/timestamps`）；body 只留自由文本段 | 重写 |
-| 2 | `issue-tracker-local.md` | "Wayfinding operations" 段：Claim=set `Status: claimed`；Resolve=append `## Answer` + set `Status: resolved` + append decision pointer；Frontier=scan issues/ | 引用 CLI：Claim=`tracker ticket status --set claimed`；Resolve=`tracker ticket resolve --map <slug> --id <N> --answer "..." --gist "..."`；Frontier=`tracker query frontier --map <slug>` | 重写 |
+| 2 | `issue-tracker-local.md` | "Wayfinding operations" 段：Claim=set `Status: claimed`；Resolve=append `## Answer` + set `Status: resolved` + append decision pointer；Frontier=scan issues/ | 引用 CLI：Claim=`tracker ticket status --set claimed`；Resolve=`tracker ticket status --map <slug> --id <N> --set resolved`（agent 先填 `## Answer` + 追加 map.md decision pointer，thin CRUD G-Q15）；Frontier=`tracker query frontier --map <slug>` | 重写 |
 | 3 | `issue-tracker-local.md` | "When a skill says publish/fetch" 段："Create a new file" / "Read the file" | publish=`tracker ticket create`；fetch=读文件（不变）或 `tracker ticket list` | 更新 |
 | 4 | `issue-tracker-local.md` | 无 "实现操作" 段 | 新增 "实现操作" 段：local ticket commit convention `Resolves <map>/#<N>`（G7 决策——commit convention 放 tracker doc，不放 implement/SKILL.md） | 新增段落 |
 | 5 | `issue-tracker-local.md` | 无 body 模板定义 | 新增 body 段模板定义（G4 决策——CLI 不管模板，模板在此定义）。**完整段列表**：task=`## What to build` + `## Acceptance criteria` + `## Out of scope`（可选）+ `## Testing`（可选）；research/grilling/prototype=`## Question`。to-spec 产出的 spec ticket（type=task 但用 to-spec 模板）：`## Problem Statement` + `## Solution` + `## User Stories` + `## Implementation Decisions` + `## Testing Decisions` + `## Out of Scope` + `## Further Notes`（to-spec SKILL.md 定义，不变）。所有 type 共有：`## Answer`（CLI 预置）+ `## Comments`（CLI 预置）。 | 新增段落 |
@@ -530,7 +521,7 @@ resolved_at: null
 | 7 | `to-tickets/SKILL.md` | "Publish to the configured tracker" → "Local files → write one file per ticket" | "Local files → run `tracker ticket create` for each ticket" | 更新 |
 | 8 | `to-tickets/SKILL.md` | "Apply the `ready-for-agent` triage label unless instructed otherwise" | **行为变更**（数据模型驱动的修正，非 skill 业务逻辑变更）：wayfinder/to-tickets 产生的 ticket 不填 triage 字段（值为 null）。`ready-for-agent` triage 用于外部 inbound issue **和 to-spec 产出的 spec ticket**（见 item 18），不用于 wayfinder/to-tickets ticket。 | 更新 |
 | 9 | `wayfinder/SKILL.md` | Map body 模板无 front matter | Map body 模板增加 front matter 示例（`title/state/milestone/created_at/closed_at`） | 更新 |
-| 10 | `wayfinder/SKILL.md` | "Work through the map" → Claim/Resolve 用文本行操作 | 引用 CLI 命令（`tracker ticket status` / `tracker ticket resolve`）。**注意语义**：wayfinder 说 "assign it to yourself"，local CLI 用 `status --set claimed`（无 assignee 字段，claimed 状态即 claim） | 更新 |
+| 10 | `wayfinder/SKILL.md` | "Work through the map" → Claim/Resolve 用文本行操作 | 引用 CLI 命令（`tracker ticket status --set claimed` / `tracker ticket status --set resolved`）。**注意语义**：wayfinder 说 "assign it to yourself"，local CLI 用 `status --set claimed`（无 assignee 字段，claimed 状态即 claim） | 更新 |
 | 11 | `triage/SKILL.md` | 基于 label 的 triage（GitHub/GitLab）；无 local tracker 路径 | 增加 local tracker 路径：triage 操作 = 读写 ticket front matter 的 `triage:` 字段（`tracker ticket triage --set <role>`）。**wontfix 仍是 triage role**，local 中 wontfix = `tracker ticket triage --set wontfix`（不是 status 变更）。triage Roles 段保持 5 个 roles 不变。**triage category（bug/enhancement）是 GitHub/GitLab-only**——local ticket 只有 state roles（triage 字段），无 category 字段。triage skill 的“每个 issue 必须有且仅有一个 category role 和一个 state role”规则只适用于 GitHub/GitLab；local ticket 只要求 state role（可选）。 | 新增段落 |
 | 12 | `setup-matt-pocock-skills/SKILL.md` | 种子模板 `issue-tracker-local.md` 用旧格式 | 种子模板匹配新 YAML front matter 格式 | 更新种子 |
 | 13 | `setup-matt-pocock-skills/SKILL.md` | Section B 文本说 "five canonical roles" | **不变**——triage 仍保持 5 个 roles（含 wontfix），wontfix 未被移除 | 无需改动 |
