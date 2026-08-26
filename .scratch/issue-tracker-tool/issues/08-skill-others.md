@@ -3,13 +3,13 @@ id: "08"
 title: Skill migration - to-tickets + wayfinder + triage + implement + to-spec
 map: issue-tracker-tool
 type: task
-status: open
+status: resolved
 triage: null
 blocked_by: ["07"]
 created_at: 2026-08-19T12:00:00Z
-reviewed_at: null
-claimed_at: null
-resolved_at: null
+reviewed_at: 2026-08-26T08:00:32Z
+claimed_at: 2026-08-26T08:00:32Z
+resolved_at: 2026-08-26T08:05:00Z
 ---
 
 # Skill migration - to-tickets + wayfinder + triage + implement + to-spec
