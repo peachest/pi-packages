@@ -1,12 +1,12 @@
 package tracker
 
 import (
-	"fmt"
 	"path/filepath"
 	"slices"
 	"strings"
 	"time"
 
+	"github.com/pkg/errors"
 	"github.com/spf13/afero"
 )
 
@@ -24,11 +24,11 @@ func ReadMap(fs afero.Fs, scratchDir, mapSlug string) (MapFrontMatter, error) {
 	mapPath := filepath.Join(scratchDir, mapSlug, "map.md")
 	data, err := afero.ReadFile(fs, mapPath)
 	if err != nil {
-		return MapFrontMatter{}, fmt.Errorf("%w: map %q not found. No .scratch/%s/map.md file", ErrNotFound, mapSlug, mapSlug)
+		return MapFrontMatter{}, errors.Wrapf(ErrNotFound, "map %q not found. No .scratch/%s/map.md file", mapSlug, mapSlug)
 	}
 	mfm, err := ParseMapFrontMatter(data)
 	if err != nil {
-		return MapFrontMatter{}, fmt.Errorf("parsing map front matter: %w", err)
+		return MapFrontMatter{}, errors.Wrapf(err, "parsing map front matter")
 	}
 	return mfm, nil
 }
@@ -36,26 +36,26 @@ func ReadMap(fs afero.Fs, scratchDir, mapSlug string) (MapFrontMatter, error) {
 // SetMapState updates a map's state (active|closed) and closed_at timestamp.
 func SetMapState(fs afero.Fs, scratchDir, mapSlug, newState string, now time.Time) error {
 	if newState != "active" && newState != "closed" {
-		return fmt.Errorf("%w: invalid state %q, valid values: active, closed", ErrInvalidInput, newState)
+		return errors.Wrapf(ErrInvalidInput, "invalid state %q, valid values: active, closed", newState)
 	}
 
 	mapPath := filepath.Join(scratchDir, mapSlug, "map.md")
 	exists, err := afero.Exists(fs, mapPath)
 	if err != nil {
-		return fmt.Errorf("checking map.md: %w", err)
+		return errors.Wrapf(err, "checking map.md")
 	}
 	if !exists {
-		return fmt.Errorf("%w: map %q not found. No .scratch/%s/map.md file", ErrNotFound, mapSlug, mapSlug)
+		return errors.Wrapf(ErrNotFound, "map %q not found. No .scratch/%s/map.md file", mapSlug, mapSlug)
 	}
 
 	data, err := afero.ReadFile(fs, mapPath)
 	if err != nil {
-		return fmt.Errorf("reading map.md: %w", err)
+		return errors.Wrapf(err, "reading map.md")
 	}
 
 	mfm, err := ParseMapFrontMatter(data)
 	if err != nil {
-		return fmt.Errorf("parsing map front matter: %w", err)
+		return errors.Wrapf(err, "parsing map front matter")
 	}
 
 	mfm.State = newState
@@ -70,7 +70,7 @@ func SetMapState(fs afero.Fs, scratchDir, mapSlug, newState string, now time.Tim
 
 	fmData, err := mfm.Marshal()
 	if err != nil {
-		return fmt.Errorf("marshaling map front matter: %w", err)
+		return errors.Wrapf(err, "marshaling map front matter")
 	}
 
 	content := append(fmData, []byte(body)...)

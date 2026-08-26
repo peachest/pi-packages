@@ -1,11 +1,11 @@
 package tracker
 
 import (
-	"fmt"
 	"os/exec"
 	"path/filepath"
 	"strings"
 
+	"github.com/pkg/errors"
 	"github.com/spf13/afero"
 )
 
@@ -33,7 +33,7 @@ func FindScratchDir(fs afero.Fs, cwd string) (string, error) {
 		candidate := filepath.Join(dir, ".scratch")
 		exists, err := afero.DirExists(fs, candidate)
 		if err != nil {
-			return "", fmt.Errorf("checking for .scratch at %s: %w", candidate, err)
+			return "", errors.Wrapf(err, "checking for .scratch at %s", candidate)
 		}
 		if exists {
 			return candidate, nil
@@ -69,7 +69,7 @@ func EnsureScratchDir(fs afero.Fs, cwd string) (string, error) {
 
 	scratchDir := filepath.Join(createAt, ".scratch")
 	if err := fs.MkdirAll(scratchDir, 0755); err != nil {
-		return "", fmt.Errorf("creating .scratch/ at %s: %w (permission denied)", scratchDir, err)
+		return "", errors.Wrapf(err, "creating .scratch/ at %s", scratchDir)
 	}
 	return scratchDir, nil
 }

@@ -1,10 +1,10 @@
 package tracker
 
 import (
-	"fmt"
 	"slices"
 	"time"
 
+	"github.com/pkg/errors"
 	"github.com/spf13/afero"
 )
 
@@ -13,7 +13,7 @@ var validStatuses = []string{"open", "claimed", "resolved"}
 // SetStatus updates a ticket's status and associated timestamps.
 func SetStatus(fs afero.Fs, scratchDir, mapSlug, ticketID, newStatus string, now time.Time) error {
 	if !slices.Contains(validStatuses, newStatus) {
-		return fmt.Errorf("%w: invalid status %q, valid values: %v", ErrInvalidInput, newStatus, validStatuses)
+		return errors.Wrapf(ErrInvalidInput, "invalid status %q, valid values: %v", newStatus, validStatuses)
 	}
 
 	path, fm, err := readTicket(fs, scratchDir, mapSlug, ticketID)
@@ -23,17 +23,17 @@ func SetStatus(fs afero.Fs, scratchDir, mapSlug, ticketID, newStatus string, now
 
 	// Check: cannot claim a resolved ticket
 	if newStatus == "claimed" && fm.Status == "resolved" {
-		return fmt.Errorf("%w: ticket #%s is already resolved. Use 'tracker ticket status --set open' to reopen first", ErrAlreadyResolved, fm.ID)
+		return errors.Wrapf(ErrAlreadyResolved, "ticket #%s is already resolved. Use 'tracker ticket status --set open' to reopen first", fm.ID)
 	}
 
 	// Check: cannot resolve an already resolved ticket
 	if newStatus == "resolved" && fm.Status == "resolved" {
-		return fmt.Errorf("%w: ticket #%s is already resolved", ErrAlreadyResolved, fm.ID)
+		return errors.Wrapf(ErrAlreadyResolved, "ticket #%s is already resolved", fm.ID)
 	}
 
 	// Claim precondition: reviewed_at must be non-null (G-Q12)
 	if newStatus == "claimed" && fm.ReviewedAt == nil {
-		return fmt.Errorf("%w: ticket #%s has not been reviewed. Run /skill:review-spec and 'tracker ticket review --map %s --id %s' before claiming", ErrInvalidInput, fm.ID, mapSlug, fm.ID)
+		return errors.Wrapf(ErrInvalidInput, "ticket #%s has not been reviewed. Run /skill:review-spec and 'tracker ticket review --map %s --id %s' before claiming", fm.ID, mapSlug, fm.ID)
 	}
 
 	// Apply status transition

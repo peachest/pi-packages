@@ -1,9 +1,9 @@
 package tracker
 
 import (
-	"fmt"
 	"slices"
 
+	"github.com/pkg/errors"
 	"github.com/spf13/afero"
 )
 
@@ -11,7 +11,7 @@ import (
 // wontfix is a triage role, NOT a status change.
 func SetTriage(fs afero.Fs, scratchDir, mapSlug, ticketID, triage string) error {
 	if !slices.Contains(validTriages, triage) {
-		return fmt.Errorf("%w: invalid triage %q, valid values: %v", ErrInvalidInput, triage, validTriages)
+		return errors.Wrapf(ErrInvalidInput, "invalid triage %q, valid values: %v", triage, validTriages)
 	}
 
 	path, fm, err := readTicket(fs, scratchDir, mapSlug, ticketID)

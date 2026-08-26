@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pkg/errors"
 	"github.com/spf13/afero"
 )
 
@@ -48,17 +49,17 @@ type ListFilter struct {
 func CreateTicket(fs afero.Fs, scratchDir string, opts TicketOpts, now time.Time) (TicketSummary, error) {
 	// Validate type (G-Q10)
 	if !slices.Contains(validTypes, opts.Type) {
-		return TicketSummary{}, fmt.Errorf("%w: invalid type %q, valid values: %s", ErrInvalidInput, opts.Type, strings.Join(validTypes, ", "))
+		return TicketSummary{}, errors.Wrapf(ErrInvalidInput, "invalid type %q, valid values: %s", opts.Type, strings.Join(validTypes, ", "))
 	}
 
 	// Validate triage if provided (G-Q10)
 	if opts.Triage != nil && !slices.Contains(validTriages, *opts.Triage) {
-		return TicketSummary{}, fmt.Errorf("%w: invalid triage %q, valid values: %s", ErrInvalidInput, *opts.Triage, strings.Join(validTriages, ", "))
+		return TicketSummary{}, errors.Wrapf(ErrInvalidInput, "invalid triage %q, valid values: %s", *opts.Triage, strings.Join(validTriages, ", "))
 	}
 
 	// Check map exists
 	if !MapExists(fs, scratchDir, opts.MapSlug) {
-		return TicketSummary{}, fmt.Errorf("%w: map %q not found. No .scratch/%s/ directory. Run 'tracker map list' to see available maps", ErrNotFound, opts.MapSlug, opts.MapSlug)
+		return TicketSummary{}, errors.Wrapf(ErrNotFound, "map %q not found. No .scratch/%s/ directory. Run 'tracker map list' to see available maps", opts.MapSlug, opts.MapSlug)
 	}
 
 	// Validate blocked_by IDs exist (G-Q4)
@@ -70,7 +71,7 @@ func CreateTicket(fs afero.Fs, scratchDir string, opts TicketOpts, now time.Time
 		for _, id := range opts.BlockedBy {
 			normalized := normalizeID(id)
 			if !slices.Contains(existingIDs, normalized) {
-				return TicketSummary{}, fmt.Errorf("%w: ticket #%s not found in map. Cannot block on a non-existent ticket", ErrInvalidInput, normalized)
+				return TicketSummary{}, errors.Wrapf(ErrInvalidInput, "ticket #%s not found in map. Cannot block on a non-existent ticket", normalized)
 			}
 		}
 		// Normalize blocked_by
@@ -80,7 +81,7 @@ func CreateTicket(fs afero.Fs, scratchDir string, opts TicketOpts, now time.Time
 	// Ensure issues/ directory exists
 	issuesDir := IssuesDir(scratchDir, opts.MapSlug)
 	if err := fs.MkdirAll(issuesDir, 0755); err != nil {
-		return TicketSummary{}, fmt.Errorf("creating issues directory: %w", err)
+		return TicketSummary{}, errors.Wrapf(err, "creating issues directory")
 	}
 
 	// Assign next ID
@@ -110,7 +111,7 @@ func CreateTicket(fs afero.Fs, scratchDir string, opts TicketOpts, now time.Time
 
 	fmData, err := fm.Marshal()
 	if err != nil {
-		return TicketSummary{}, fmt.Errorf("marshaling front matter: %w", err)
+		return TicketSummary{}, errors.Wrapf(err, "marshaling front matter")
 	}
 
 	// Build body skeleton (G4: only ## Answer + ## Comments)
@@ -122,7 +123,7 @@ func CreateTicket(fs afero.Fs, scratchDir string, opts TicketOpts, now time.Time
 	filename := fmt.Sprintf("%s-%s.md", nextID, Slug(opts.Title))
 	path := TicketPath(scratchDir, opts.MapSlug, filename)
 	if err := afero.WriteFile(fs, path, content, 0644); err != nil {
-		return TicketSummary{}, fmt.Errorf("writing ticket file: %w", err)
+		return TicketSummary{}, errors.Wrapf(err, "writing ticket file")
 	}
 
 	return TicketSummary{
@@ -143,7 +144,7 @@ func ListTickets(fs afero.Fs, scratchDir, mapSlug string, filter ListFilter) ([]
 	issuesDir := IssuesDir(scratchDir, mapSlug)
 	exists, err := afero.DirExists(fs, issuesDir)
 	if err != nil {
-		return nil, fmt.Errorf("checking issues directory: %w", err)
+		return nil, errors.Wrapf(err, "checking issues directory")
 	}
 	if !exists {
 		return []TicketSummary{}, nil
@@ -151,7 +152,7 @@ func ListTickets(fs afero.Fs, scratchDir, mapSlug string, filter ListFilter) ([]
 
 	entries, err := afero.ReadDir(fs, issuesDir)
 	if err != nil {
-		return nil, fmt.Errorf("reading issues directory: %w", err)
+		return nil, errors.Wrapf(err, "reading issues directory")
 	}
 
 	var tickets []TicketSummary
@@ -220,7 +221,7 @@ func matchesFilter(t TicketSummary, f ListFilter) bool {
 func nextTicketID(fs afero.Fs, issuesDir string) (string, error) {
 	entries, err := afero.ReadDir(fs, issuesDir)
 	if err != nil {
-		return "", fmt.Errorf("reading issues directory for numbering: %w", err)
+		return "", errors.Wrapf(err, "reading issues directory for numbering")
 	}
 
 	maxNum := 0
@@ -300,7 +301,7 @@ func readTicket(fs afero.Fs, scratchDir, mapSlug, ticketID string) (string, Fron
 	issuesDir := IssuesDir(scratchDir, mapSlug)
 	entries, err := afero.ReadDir(fs, issuesDir)
 	if err != nil {
-		return "", FrontMatter{}, fmt.Errorf("reading issues directory: %w", err)
+		return "", FrontMatter{}, errors.Wrapf(err, "reading issues directory")
 	}
 
 	for _, entry := range entries {
@@ -321,7 +322,7 @@ func readTicket(fs afero.Fs, scratchDir, mapSlug, ticketID string) (string, Fron
 		}
 	}
 
-	return "", FrontMatter{}, fmt.Errorf("%w: ticket #%s not found in map %s", ErrNotFound, normalizedID, mapSlug)
+	return "", FrontMatter{}, errors.Wrapf(ErrNotFound, "ticket #%s not found in map %s", normalizedID, mapSlug)
 }
 
 // writeTicket writes front matter + existing body back to the ticket file.
@@ -329,7 +330,7 @@ func writeTicket(fs afero.Fs, path string, fm FrontMatter) error {
 	// Read existing file to preserve body
 	data, err := afero.ReadFile(fs, path)
 	if err != nil {
-		return fmt.Errorf("reading ticket file: %w", err)
+		return errors.Wrapf(err, "reading ticket file")
 	}
 
 	// Extract body (everything after the closing ---)
@@ -337,7 +338,7 @@ func writeTicket(fs afero.Fs, path string, fm FrontMatter) error {
 
 	fmData, err := fm.Marshal()
 	if err != nil {
-		return fmt.Errorf("marshaling front matter: %w", err)
+		return errors.Wrapf(err, "marshaling front matter")
 	}
 
 	content := append(fmData, []byte(body)...)

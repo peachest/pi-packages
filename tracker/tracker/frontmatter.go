@@ -2,10 +2,10 @@ package tracker
 
 import (
 	"bytes"
-	"fmt"
 	"strings"
 	"time"
 
+	"github.com/pkg/errors"
 	"gopkg.in/yaml.v3"
 )
 
@@ -39,7 +39,7 @@ func (fm FrontMatter) Marshal() ([]byte, error) {
 	// Use yaml.Node to guarantee key order (G-Q9)
 	node := fm.toNode()
 	if err := enc.Encode(node); err != nil {
-		return nil, fmt.Errorf("marshaling front matter: %w", err)
+		return nil, errors.Wrapf(err, "marshaling front matter")
 	}
 	enc.Close()
 
@@ -137,7 +137,7 @@ func ParseFrontMatter(data []byte) (FrontMatter, error) {
 	dec := yaml.NewDecoder(strings.NewReader(content))
 	dec.KnownFields(true)
 	if err := dec.Decode(&fm); err != nil {
-		return FrontMatter{}, fmt.Errorf("parsing front matter: %w", err)
+		return FrontMatter{}, errors.Wrapf(err, "parsing front matter")
 	}
 
 	// Ensure blocked_by is never nil (always [] for consistency)

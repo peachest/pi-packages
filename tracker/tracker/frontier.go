@@ -1,10 +1,10 @@
 package tracker
 
 import (
-	"fmt"
 	"slices"
 	"strings"
 
+	"github.com/pkg/errors"
 	"github.com/spf13/afero"
 )
 
@@ -14,13 +14,13 @@ import (
 func Frontier(fs afero.Fs, scratchDir, mapSlug string) ([]TicketSummary, error) {
 	tickets, err := ListTickets(fs, scratchDir, mapSlug, ListFilter{Status: "open"})
 	if err != nil {
-		return nil, fmt.Errorf("listing tickets for frontier: %w", err)
+		return nil, errors.Wrapf(err, "listing tickets for frontier")
 	}
 
 	// Build a map of id → status for blocker lookup
 	allTickets, err := ListTickets(fs, scratchDir, mapSlug, ListFilter{})
 	if err != nil {
-		return nil, fmt.Errorf("listing all tickets for frontier: %w", err)
+		return nil, errors.Wrapf(err, "listing all tickets for frontier")
 	}
 	statusByID := make(map[string]string, len(allTickets))
 	for _, t := range allTickets {

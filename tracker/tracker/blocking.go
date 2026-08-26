@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/pkg/errors"
 	"github.com/spf13/afero"
 )
 
@@ -16,7 +17,7 @@ func SetBlocking(fs afero.Fs, scratchDir, mapSlug, ticketID string, blockedBy []
 	// Get all tickets to validate IDs and build adjacency list
 	allTickets, err := ListTickets(fs, scratchDir, mapSlug, ListFilter{})
 	if err != nil {
-		return fmt.Errorf("listing tickets: %w", err)
+		return errors.Wrapf(err, "listing tickets")
 	}
 
 	existingIDs := make(map[string]bool, len(allTickets))
@@ -28,7 +29,7 @@ func SetBlocking(fs afero.Fs, scratchDir, mapSlug, ticketID string, blockedBy []
 	normalizedTargetID := normalizeID(ticketID)
 	for _, id := range normalizedIDs {
 		if !existingIDs[id] {
-			return fmt.Errorf("%w: ticket #%s not found in map. Cannot block on a non-existent ticket", ErrInvalidInput, id)
+			return errors.Wrapf(ErrInvalidInput, "ticket #%s not found in map. Cannot block on a non-existent ticket", id)
 		}
 	}
 
@@ -45,7 +46,7 @@ func SetBlocking(fs afero.Fs, scratchDir, mapSlug, ticketID string, blockedBy []
 
 	// Cycle detection via DFS
 	if cycle := detectCycle(adj, normalizedTargetID); cycle != "" {
-		return fmt.Errorf("%w: %s", ErrCycleDetected, cycle)
+		return errors.Wrapf(ErrCycleDetected, "%s", cycle)
 	}
 
 	// Write

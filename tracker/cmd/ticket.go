@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pkg/errors"
 	"github.com/peachest/pi-packages/tracker/tracker"
 	"github.com/spf13/cobra"
 )
@@ -335,7 +336,7 @@ func newTicketBlockingCmd() *cobra.Command {
 func outputJSON(cmd *cobra.Command, v any) error {
 	data, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
-		return fmt.Errorf("marshaling JSON: %w", err)
+		return errors.Wrapf(err, "marshaling JSON")
 	}
 	_, err = fmt.Fprintln(cmd.OutOrStdout(), string(data))
 	return err

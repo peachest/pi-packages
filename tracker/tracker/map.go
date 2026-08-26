@@ -2,10 +2,10 @@ package tracker
 
 import (
 	"bytes"
-	"fmt"
 	"strings"
 	"time"
 
+	"github.com/pkg/errors"
 	"github.com/spf13/afero"
 	"gopkg.in/yaml.v3"
 )
@@ -59,7 +59,7 @@ func (mfm MapFrontMatter) Marshal() ([]byte, error) {
 	}
 
 	if err := enc.Encode(node); err != nil {
-		return nil, fmt.Errorf("marshaling map front matter: %w", err)
+		return nil, errors.Wrapf(err, "marshaling map front matter")
 	}
 	enc.Close()
 
@@ -86,7 +86,7 @@ func ParseMapFrontMatter(data []byte) (MapFrontMatter, error) {
 	dec := yaml.NewDecoder(strings.NewReader(content))
 	dec.KnownFields(true)
 	if err := dec.Decode(&mfm); err != nil {
-		return MapFrontMatter{}, fmt.Errorf("parsing map front matter: %w", err)
+		return MapFrontMatter{}, errors.Wrapf(err, "parsing map front matter")
 	}
 
 	return mfm, nil
@@ -97,7 +97,7 @@ func ParseMapFrontMatter(data []byte) (MapFrontMatter, error) {
 func ComputeProgress(fs afero.Fs, scratchDir, mapSlug string) (Progress, error) {
 	tickets, err := ListTickets(fs, scratchDir, mapSlug, ListFilter{})
 	if err != nil {
-		return Progress{}, fmt.Errorf("listing tickets for progress: %w", err)
+		return Progress{}, errors.Wrapf(err, "listing tickets for progress")
 	}
 
 	p := Progress{Total: len(tickets)}

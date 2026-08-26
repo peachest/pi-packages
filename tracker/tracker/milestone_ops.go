@@ -1,12 +1,12 @@
 package tracker
 
 import (
-	"fmt"
 	"path/filepath"
 	"slices"
 	"strings"
 	"time"
 
+	"github.com/pkg/errors"
 	"github.com/spf13/afero"
 )
 
@@ -37,11 +37,11 @@ func ReadMilestone(fs afero.Fs, scratchDir, slug string) (MilestoneFrontMatter, 
 	path := MilestonePath(scratchDir, slug)
 	data, err := afero.ReadFile(fs, path)
 	if err != nil {
-		return MilestoneFrontMatter{}, fmt.Errorf("%w: milestone %q not found. No .scratch/.milestones/%s.md file", ErrNotFound, slug, slug)
+		return MilestoneFrontMatter{}, errors.Wrapf(ErrNotFound, "milestone %q not found. No .scratch/.milestones/%s.md file", slug, slug)
 	}
 	mfm, err := ParseMilestoneFrontMatter(data)
 	if err != nil {
-		return MilestoneFrontMatter{}, fmt.Errorf("parsing milestone front matter: %w", err)
+		return MilestoneFrontMatter{}, errors.Wrapf(err, "parsing milestone front matter")
 	}
 	return mfm, nil
 }
@@ -49,18 +49,18 @@ func ReadMilestone(fs afero.Fs, scratchDir, slug string) (MilestoneFrontMatter, 
 // SetMilestoneState updates a milestone's state (active|closed) and closed_at timestamp.
 func SetMilestoneState(fs afero.Fs, scratchDir, slug, newState string, now time.Time) error {
 	if newState != "active" && newState != "closed" {
-		return fmt.Errorf("%w: invalid state %q, valid values: active, closed", ErrInvalidInput, newState)
+		return errors.Wrapf(ErrInvalidInput, "invalid state %q, valid values: active, closed", newState)
 	}
 
 	path := MilestonePath(scratchDir, slug)
 	data, err := afero.ReadFile(fs, path)
 	if err != nil {
-		return fmt.Errorf("%w: milestone %q not found. No .scratch/.milestones/%s.md file", ErrNotFound, slug, slug)
+		return errors.Wrapf(ErrNotFound, "milestone %q not found. No .scratch/.milestones/%s.md file", slug, slug)
 	}
 
 	mfm, err := ParseMilestoneFrontMatter(data)
 	if err != nil {
-		return fmt.Errorf("parsing milestone front matter: %w", err)
+		return errors.Wrapf(err, "parsing milestone front matter")
 	}
 
 	mfm.State = newState
@@ -75,7 +75,7 @@ func SetMilestoneState(fs afero.Fs, scratchDir, slug, newState string, now time.
 
 	fmData, err := mfm.Marshal()
 	if err != nil {
-		return fmt.Errorf("marshaling milestone front matter: %w", err)
+		return errors.Wrapf(err, "marshaling milestone front matter")
 	}
 
 	content := append(fmData, []byte(body)...)
@@ -139,7 +139,7 @@ func MilestoneProgress(fs afero.Fs, scratchDir, slug string) (MilestoneProgressR
 
 	maps, err := ListMaps(fs, scratchDir)
 	if err != nil {
-		return MilestoneProgressResult{}, fmt.Errorf("listing maps: %w", err)
+		return MilestoneProgressResult{}, errors.Wrapf(err, "listing maps")
 	}
 
 	refMaps := FilterMapsByMilestone(maps, slug)

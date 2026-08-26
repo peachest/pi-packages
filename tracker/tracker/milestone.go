@@ -2,10 +2,10 @@ package tracker
 
 import (
 	"bytes"
-	"fmt"
 	"strings"
 	"time"
 
+	"github.com/pkg/errors"
 	"gopkg.in/yaml.v3"
 )
 
@@ -43,7 +43,7 @@ func (mfm MilestoneFrontMatter) Marshal() ([]byte, error) {
 	}
 
 	if err := enc.Encode(node); err != nil {
-		return nil, fmt.Errorf("marshaling milestone front matter: %w", err)
+		return nil, errors.Wrapf(err, "marshaling milestone front matter")
 	}
 	enc.Close()
 
@@ -70,7 +70,7 @@ func ParseMilestoneFrontMatter(data []byte) (MilestoneFrontMatter, error) {
 	dec := yaml.NewDecoder(strings.NewReader(content))
 	dec.KnownFields(true)
 	if err := dec.Decode(&mfm); err != nil {
-		return MilestoneFrontMatter{}, fmt.Errorf("parsing milestone front matter: %w", err)
+		return MilestoneFrontMatter{}, errors.Wrapf(err, "parsing milestone front matter")
 	}
 
 	return mfm, nil

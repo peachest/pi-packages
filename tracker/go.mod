@@ -4,6 +4,7 @@ go 1.26.6
 
 require (
 	github.com/google/go-cmp v0.7.0
+	github.com/pkg/errors v0.9.1
 	github.com/spf13/afero v1.15.0
 	github.com/spf13/cobra v1.10.2
 	gopkg.in/yaml.v3 v3.0.1
