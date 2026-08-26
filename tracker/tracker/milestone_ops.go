@@ -34,6 +34,9 @@ func MilestonePath(scratchDir, slug string) string {
 
 // ReadMilestone reads a milestone's front matter.
 func ReadMilestone(fs afero.Fs, scratchDir, slug string) (MilestoneFrontMatter, error) {
+	if err := validateSlug(slug); err != nil {
+		return MilestoneFrontMatter{}, err
+	}
 	path := MilestonePath(scratchDir, slug)
 	data, err := afero.ReadFile(fs, path)
 	if err != nil {
@@ -51,7 +54,9 @@ func SetMilestoneState(fs afero.Fs, scratchDir, slug, newState string, now time.
 	if newState != "active" && newState != "closed" {
 		return errors.Wrapf(ErrInvalidInput, "invalid state %q, valid values: active, closed", newState)
 	}
-
+	if err := validateSlug(slug); err != nil {
+		return err
+	}
 	path := MilestonePath(scratchDir, slug)
 	data, err := afero.ReadFile(fs, path)
 	if err != nil {

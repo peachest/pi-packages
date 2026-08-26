@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pkg/errors"
 	"github.com/peachest/pi-packages/tracker/tracker"
+	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
 )
 
@@ -124,8 +124,8 @@ func newTicketListCmd() *cobra.Command {
 			}
 
 			filter := tracker.ListFilter{
-				Status:    status,
-				Type:      typeVal,
+				Status:     status,
+				Type:       typeVal,
 				TriageNull: triageNull,
 			}
 			if !triageNull && triage != "" {
@@ -179,8 +179,8 @@ func newTicketReviewCmd() *cobra.Command {
 			}
 
 			return outputJSON(cmd, map[string]any{
-				"id":         fm.ID,
-				"map":        mapSlug,
+				"id":          fm.ID,
+				"map":         mapSlug,
 				"reviewed_at": fm.ReviewedAt,
 			})
 		},
@@ -341,4 +341,3 @@ func outputJSON(cmd *cobra.Command, v any) error {
 	_, err = fmt.Fprintln(cmd.OutOrStdout(), string(data))
 	return err
 }
-

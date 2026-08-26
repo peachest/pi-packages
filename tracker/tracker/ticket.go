@@ -25,24 +25,24 @@ type TicketOpts struct {
 
 // TicketSummary is a compact view of a ticket for listing.
 type TicketSummary struct {
-	ID        string     `json:"id"`
-	Title     string     `json:"title"`
-	Map       string     `json:"map"`
-	Type      string     `json:"type"`
-	Status    string     `json:"status"`
-	Triage    *string    `json:"triage"`
-	BlockedBy []string   `json:"blocked_by"`
-	Path      string     `json:"path"`
-	CreatedAt time.Time  `json:"created_at"`
+	ID        string    `json:"id"`
+	Title     string    `json:"title"`
+	Map       string    `json:"map"`
+	Type      string    `json:"type"`
+	Status    string    `json:"status"`
+	Triage    *string   `json:"triage"`
+	BlockedBy []string  `json:"blocked_by"`
+	Path      string    `json:"path"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 // ListFilter holds optional filters for listing tickets.
 // All filters are AND-combined. Zero-value fields are ignored.
 type ListFilter struct {
-	Status    string // "open", "claimed", "resolved"; "" = no filter
-	Type      string // "research", "prototype", "grilling", "task"; "" = no filter
-	Triage    string // specific triage role; "" = no filter
-	TriageNull bool  // if true, match triage=null (overrides Triage)
+	Status     string // "open", "claimed", "resolved"; "" = no filter
+	Type       string // "research", "prototype", "grilling", "task"; "" = no filter
+	Triage     string // specific triage role; "" = no filter
+	TriageNull bool   // if true, match triage=null (overrides Triage)
 }
 
 // CreateTicket creates a new ticket file in the map's issues/ directory.
@@ -57,8 +57,17 @@ func CreateTicket(fs afero.Fs, scratchDir string, opts TicketOpts, now time.Time
 		return TicketSummary{}, errors.Wrapf(ErrInvalidInput, "invalid triage %q, valid values: %s", *opts.Triage, strings.Join(validTriages, ", "))
 	}
 
+	// Validate map slug (path traversal defense, L2)
+	if err := validateSlug(opts.MapSlug); err != nil {
+		return TicketSummary{}, err
+	}
+
 	// Check map exists
-	if !MapExists(fs, scratchDir, opts.MapSlug) {
+	exists, err := MapExists(fs, scratchDir, opts.MapSlug)
+	if err != nil {
+		return TicketSummary{}, err
+	}
+	if !exists {
 		return TicketSummary{}, errors.Wrapf(ErrNotFound, "map %q not found. No .scratch/%s/ directory. Run 'tracker map list' to see available maps", opts.MapSlug, opts.MapSlug)
 	}
 
@@ -102,10 +111,10 @@ func CreateTicket(fs afero.Fs, scratchDir string, opts TicketOpts, now time.Time
 		Title:      opts.Title,
 		Map:        opts.MapSlug,
 		Type:       opts.Type,
-		Status:    "open",
-		Triage:    opts.Triage,
-		BlockedBy: blockedBy,
-		CreatedAt: now,
+		Status:     "open",
+		Triage:     opts.Triage,
+		BlockedBy:  blockedBy,
+		CreatedAt:  now,
 		ReviewedAt: nil,
 	}
 
@@ -141,6 +150,9 @@ func CreateTicket(fs afero.Fs, scratchDir string, opts TicketOpts, now time.Time
 
 // ListTickets reads all tickets in a map and optionally filters them.
 func ListTickets(fs afero.Fs, scratchDir, mapSlug string, filter ListFilter) ([]TicketSummary, error) {
+	if err := validateSlug(mapSlug); err != nil {
+		return nil, err
+	}
 	issuesDir := IssuesDir(scratchDir, mapSlug)
 	exists, err := afero.DirExists(fs, issuesDir)
 	if err != nil {
@@ -297,6 +309,9 @@ func ReviewTicket(fs afero.Fs, scratchDir, mapSlug, ticketID string, now time.Ti
 
 // readTicket finds and reads a ticket file by ID.
 func readTicket(fs afero.Fs, scratchDir, mapSlug, ticketID string) (string, FrontMatter, error) {
+	if err := validateSlug(mapSlug); err != nil {
+		return "", FrontMatter{}, err
+	}
 	normalizedID := normalizeID(ticketID)
 	issuesDir := IssuesDir(scratchDir, mapSlug)
 	entries, err := afero.ReadDir(fs, issuesDir)

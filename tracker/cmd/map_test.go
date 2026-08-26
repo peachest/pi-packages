@@ -145,4 +145,3 @@ func writeMapMD(t *testing.T, fs afero.Fs, dir, title, state string, milestone *
 		t.Fatal(err)
 	}
 }
-

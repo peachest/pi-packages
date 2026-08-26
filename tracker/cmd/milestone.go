@@ -44,10 +44,10 @@ func newMilestoneStateCmd() *cobra.Command {
 			}
 
 			return outputJSON(cmd, map[string]any{
-				"slug":       slug,
-				"title":      mfm.Title,
-				"state":      mfm.State,
-				"closed_at":  mfm.ClosedAt,
+				"slug":      slug,
+				"title":     mfm.Title,
+				"state":     mfm.State,
+				"closed_at": mfm.ClosedAt,
 			})
 		},
 	}

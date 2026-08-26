@@ -107,4 +107,3 @@ func TestQueryFrontierSortedById(t *testing.T) {
 		t.Errorf("not sorted by id: %v %v %v", results[0]["id"], results[1]["id"], results[2]["id"])
 	}
 }
-

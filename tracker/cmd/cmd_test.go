@@ -182,4 +182,3 @@ func TestTicketReviewCommand(t *testing.T) {
 		t.Error("reviewed_at should not be nil after review")
 	}
 }
-

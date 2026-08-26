@@ -75,13 +75,18 @@ func EnsureScratchDir(fs afero.Fs, cwd string) (string, error) {
 }
 
 // MapExists checks if a map directory with map.md exists under .scratch/.
-func MapExists(fs afero.Fs, scratchDir, mapSlug string) bool {
+// Returns an error if the filesystem check itself fails, so callers can
+// distinguish "map not found" from an I/O problem.
+func MapExists(fs afero.Fs, scratchDir, mapSlug string) (bool, error) {
+	if err := validateSlug(mapSlug); err != nil {
+		return false, err
+	}
 	mapPath := filepath.Join(scratchDir, mapSlug, "map.md")
 	exists, err := afero.Exists(fs, mapPath)
 	if err != nil {
-		return false
+		return false, errors.Wrapf(err, "checking map existence at %s", mapPath)
 	}
-	return exists
+	return exists, nil
 }
 
 // MapDir returns the path to a map's directory.
@@ -97,4 +102,17 @@ func IssuesDir(scratchDir, mapSlug string) string {
 // TicketPath returns the path to a ticket file.
 func TicketPath(scratchDir, mapSlug, filename string) string {
 	return filepath.Join(IssuesDir(scratchDir, mapSlug), filename)
+}
+
+// validateSlug rejects slugs that could escape the scratch directory via path
+// traversal. It uses filepath.IsLocal (Go 1.20+) which performs lexical
+// analysis to reject absolute paths, ".." components, and empty elements.
+// This defends against accidental escape (e.g. --map ../etc) for a local CLI;
+// for adversarial symlink attacks, os.Root (Go 1.24) would be needed but is
+// incompatible with the afero filesystem abstraction used here.
+func validateSlug(slug string) error {
+	if slug == "" || !filepath.IsLocal(slug) {
+		return errors.Wrapf(ErrInvalidInput, "invalid slug %q: must be a relative path without .. or absolute components", slug)
+	}
+	return nil
 }

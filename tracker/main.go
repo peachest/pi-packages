@@ -24,13 +24,13 @@ func main() {
 
 // exitCodeFor maps sentinel errors to exit codes.
 //   - ErrNotFound → 2
-//   - ErrAlreadyResolved, ErrCycleDetected → 3
+//   - ErrAlreadyResolved, ErrAlreadyClaimed, ErrCycleDetected → 3
 //   - others → 1
 func exitCodeFor(err error) int {
 	switch {
 	case errors.Is(err, tracker.ErrNotFound):
 		return 2
-	case errors.Is(err, tracker.ErrAlreadyResolved), errors.Is(err, tracker.ErrCycleDetected):
+	case errors.Is(err, tracker.ErrAlreadyResolved), errors.Is(err, tracker.ErrAlreadyClaimed), errors.Is(err, tracker.ErrCycleDetected):
 		return 3
 	default:
 		return 1

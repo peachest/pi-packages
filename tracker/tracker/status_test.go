@@ -144,6 +144,41 @@ func TestSetStatusResolveAlreadyResolved(t *testing.T) {
 	}
 }
 
+func TestSetStatusClaimAlreadyClaimed(t *testing.T) {
+	fs := afero.NewMemMapFs()
+	setupTestMap(t, fs, "/p/.scratch", "m")
+	ticket := createTestTicketReviewedAndClaimed(t, fs, "/p/.scratch", "m", "test")
+
+	// ticket is already claimed (by helper). Claim again → error, preserves original ClaimedAt.
+	originalClaimTime := time.Date(2026, 8, 21, 10, 0, 0, 0, time.UTC)
+	err := SetStatus(fs, "/p/.scratch", "m", ticket.ID, "claimed", originalClaimTime.Add(1*time.Hour))
+	if !isErr(err, ErrAlreadyClaimed) {
+		t.Fatalf("expected ErrAlreadyClaimed, got %v", err)
+	}
+
+	// Verify original ClaimedAt is preserved (not overwritten)
+	_, fm, _ := readTicket(fs, "/p/.scratch", "m", ticket.ID)
+	if fm.ClaimedAt == nil || !fm.ClaimedAt.Equal(originalClaimTime) {
+		t.Errorf("claimed_at = %v, want %v (original preserved)", fm.ClaimedAt, originalClaimTime)
+	}
+}
+
+func TestSetStatusOpenIdempotent(t *testing.T) {
+	fs := afero.NewMemMapFs()
+	setupTestMap(t, fs, "/p/.scratch", "m")
+	ticket := createTestTicketSimple(t, fs, "/p/.scratch", "m", "test")
+
+	// Already open; setting open again is a no-op (no error, no timestamp changes)
+	err := SetStatus(fs, "/p/.scratch", "m", ticket.ID, "open", time.Now().UTC())
+	if err != nil {
+		t.Fatalf("SetStatus(open) on open ticket should be no-op, got %v", err)
+	}
+	_, fm, _ := readTicket(fs, "/p/.scratch", "m", ticket.ID)
+	if fm.Status != "open" {
+		t.Errorf("status = %q, want open", fm.Status)
+	}
+}
+
 func TestSetStatusInvalidStatus(t *testing.T) {
 	fs := afero.NewMemMapFs()
 	setupTestMap(t, fs, "/p/.scratch", "m")

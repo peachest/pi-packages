@@ -20,7 +20,7 @@ func newMapCmd() *cobra.Command {
 
 func newMapStateCmd() *cobra.Command {
 	var (
-		slug    string
+		slug     string
 		newState string
 	)
 
@@ -44,9 +44,9 @@ func newMapStateCmd() *cobra.Command {
 			}
 
 			return outputJSON(cmd, map[string]any{
-				"slug":    slug,
-				"title":   mfm.Title,
-				"state":   mfm.State,
+				"slug":      slug,
+				"title":     mfm.Title,
+				"state":     mfm.State,
 				"closed_at": mfm.ClosedAt,
 			})
 		},

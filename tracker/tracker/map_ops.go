@@ -21,6 +21,9 @@ type MapSummary struct {
 
 // ReadMap reads a map's front matter (title/state/milestone/created_at/closed_at).
 func ReadMap(fs afero.Fs, scratchDir, mapSlug string) (MapFrontMatter, error) {
+	if err := validateSlug(mapSlug); err != nil {
+		return MapFrontMatter{}, err
+	}
 	mapPath := filepath.Join(scratchDir, mapSlug, "map.md")
 	data, err := afero.ReadFile(fs, mapPath)
 	if err != nil {
@@ -38,7 +41,9 @@ func SetMapState(fs afero.Fs, scratchDir, mapSlug, newState string, now time.Tim
 	if newState != "active" && newState != "closed" {
 		return errors.Wrapf(ErrInvalidInput, "invalid state %q, valid values: active, closed", newState)
 	}
-
+	if err := validateSlug(mapSlug); err != nil {
+		return err
+	}
 	mapPath := filepath.Join(scratchDir, mapSlug, "map.md")
 	exists, err := afero.Exists(fs, mapPath)
 	if err != nil {

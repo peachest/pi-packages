@@ -113,10 +113,33 @@ func TestMapExists(t *testing.T) {
 
 	scratchDir := "/p/.scratch"
 
-	if !MapExists(fs, scratchDir, "my-map") {
+	exists, err := MapExists(fs, scratchDir, "my-map")
+	if err != nil {
+		t.Fatalf("MapExists() error = %v", err)
+	}
+	if !exists {
 		t.Error("MapExists() = false, want true for existing map")
 	}
-	if MapExists(fs, scratchDir, "nonexistent") {
+	exists, err = MapExists(fs, scratchDir, "nonexistent")
+	if err != nil {
+		t.Fatalf("MapExists() error = %v", err)
+	}
+	if exists {
 		t.Error("MapExists() = true for nonexistent map")
+	}
+}
+
+func TestMapExistsRejectsTraversal(t *testing.T) {
+	fs := afero.NewMemMapFs()
+	scratchDir := "/p/.scratch"
+	exists, err := MapExists(fs, scratchDir, "../etc")
+	if err == nil {
+		t.Fatal("MapExists() with ../etc should return error, got nil")
+	}
+	if exists {
+		t.Error("MapExists() = true for traversal slug")
+	}
+	if !isErr(err, ErrInvalidInput) {
+		t.Errorf("expected ErrInvalidInput, got %v", err)
 	}
 }

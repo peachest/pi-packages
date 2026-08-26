@@ -26,6 +26,11 @@ func SetStatus(fs afero.Fs, scratchDir, mapSlug, ticketID, newStatus string, now
 		return errors.Wrapf(ErrAlreadyResolved, "ticket #%s is already resolved. Use 'tracker ticket status --set open' to reopen first", fm.ID)
 	}
 
+	// Check: cannot claim an already claimed ticket (preserves original ClaimedAt)
+	if newStatus == "claimed" && fm.Status == "claimed" {
+		return errors.Wrapf(ErrAlreadyClaimed, "ticket #%s is already claimed", fm.ID)
+	}
+
 	// Check: cannot resolve an already resolved ticket
 	if newStatus == "resolved" && fm.Status == "resolved" {
 		return errors.Wrapf(ErrAlreadyResolved, "ticket #%s is already resolved", fm.ID)
@@ -42,6 +47,10 @@ func SetStatus(fs afero.Fs, scratchDir, mapSlug, ticketID, newStatus string, now
 		fm.Status = "claimed"
 		fm.ClaimedAt = &now
 	case "open":
+		// Idempotent: already open, no-op (avoid clearing timestamps needlessly)
+		if fm.Status == "open" {
+			return nil
+		}
 		// Reopen from resolved (G-Q1/Q2/Q3): clear both resolved_at and claimed_at
 		// Release claim from claimed: clear claimed_at
 		fm.Status = "open"
