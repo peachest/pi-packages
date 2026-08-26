@@ -3,13 +3,13 @@ id: "09"
 title: Skill migration - setup seeds + CONTEXT.md
 map: issue-tracker-tool
 type: task
-status: open
+status: resolved
 triage: null
 blocked_by: ["07"]
 created_at: 2026-08-19T12:00:00Z
-reviewed_at: null
-claimed_at: null
-resolved_at: null
+reviewed_at: 2026-08-26T08:08:11Z
+claimed_at: 2026-08-26T08:08:11Z
+resolved_at: 2026-08-26T08:10:00Z
 ---
 
 # Skill migration - setup seeds + CONTEXT.md
