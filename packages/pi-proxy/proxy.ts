@@ -1,7 +1,7 @@
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createBashTool, createLocalBashOperations } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, realpathSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
 import { createRequire } from "node:module";
@@ -203,28 +203,65 @@ export function dispatcherPathFromMain(mainPath: string): string {
 }
 
 /**
+ * Walk up from `startDir` looking for the first ancestor that contains
+ * `dist/core/http-dispatcher.js`. Bounded by the filesystem root. Pure-ish
+ * (uses existsSync against the real fs); tested via mkdtemp fixtures.
+ *
+ * This is the robust locator: pi's cli entry always lives somewhere inside the
+ * installed package tree (e.g. pkgRoot/dist/bundle/cli.js), so an upward search
+ * from the realpath of process.argv[1] finds pkgRoot regardless of how pi was
+ * invoked (bin symlink, direct node call) or where the node binary lives.
+ */
+export function findDispatcherUpward(startDir: string): string | undefined {
+  const REL = join("dist", "core", "http-dispatcher.js");
+  let dir = startDir;
+  // Guard: stop once dirname stops changing (reached root).
+  for (;;) {
+    const candidate = join(dir, REL);
+    if (existsSync(candidate)) return candidate;
+    const parent = dirname(dir);
+    if (parent === dir) return undefined;
+    dir = parent;
+  }
+}
+
+/**
  * Rebuild the undici global dispatcher by calling pi's configureHttpDispatcher.
  * Must be called when proxy URL changes — NO_PROXY changes are auto-detected.
  *
  * The package's exports field only has "import" (no "require"), so CJS
- * require.resolve fails. Resolution strategy:
+ * require.resolve fails. Resolution strategy (first existing wins):
  *
- * 1. import.meta.resolve — jiti's importMetaResolvePlugin rewrites this to its
- *    alias-aware resolver, which maps "@earendil-works/pi-coding-agent" to the
- *    actual install location (the loader's own __dirname), regardless of where
- *    the node binary lives. This is the robust path.
+ * 1. realpath(process.argv[1]) upward search. pi is always launched via its cli
+ *    entry; argv[1] is the invoked script (often a bin symlink). realpathSync
+ *    follows it to the real cli.js inside the package tree, then we walk up to
+ *    the package root. Robust to nix-managed node (where execPath resolves into
+ *    a read-only store) and to jiti internals — it only depends on argv[1]
+ *    pointing at pi's entry, which is structural.
  *
- * 2. Fallback: derive from process.execPath
- *    (/prefix/bin/node → /prefix/lib/node_modules/...). Breaks when node is a
- *    symlink into a read-only store (e.g. nix), where execPath resolves away
- *    from the tree that holds the global packages — which is exactly why
- *    strategy 1 is preferred.
+ * 2. import.meta.resolve — was the primary strategy added for nix node, but
+ *    pi 0.84.4's bundled jiti stopped applying the alias map to
+ *    import.meta.resolve (it throws "Cannot find module" for the bare
+ *    specifier). Kept as a fallback for any environment where it still works.
+ *
+ * 3. process.execPath heuristic (/prefix/bin/node → /prefix/lib/node_modules/...).
+ *    Breaks when node is a symlink into a read-only store (e.g. nix) — which is
+ *    exactly why strategy 1 is preferred.
  */
 async function rebuildDispatcher(): Promise<void> {
   const req = createRequire(import.meta.url);
   const candidates: string[] = [];
 
-  // Strategy 1: import.meta.resolve (jiti-shimmed, alias-aware).
+  // Strategy 1: realpath(argv[1]) upward search.
+  try {
+    const entryReal = realpathSync(process.argv[1]);
+    const found = findDispatcherUpward(dirname(entryReal));
+    if (found) candidates.push(found);
+  } catch {
+    // argv[1] missing or realpath failed — fall through.
+  }
+
+  // Strategy 2: import.meta.resolve (jiti-shimmed; unreliable since 0.84.4).
   try {
     const resolved = import.meta.resolve("@earendil-works/pi-coding-agent");
     candidates.push(dispatcherPathFromMain(fileURLToPath(resolved)));
@@ -232,7 +269,7 @@ async function rebuildDispatcher(): Promise<void> {
     // import.meta.resolve unavailable or specifier unresolvable — fall through.
   }
 
-  // Strategy 2 (fallback): process.execPath heuristic.
+  // Strategy 3 (fallback): process.execPath heuristic.
   const globalModules = join(dirname(dirname(process.execPath)), "lib", "node_modules");
   candidates.push(
     join(globalModules, "@earendil-works", "pi-coding-agent", "dist", "core", "http-dispatcher.js"),
