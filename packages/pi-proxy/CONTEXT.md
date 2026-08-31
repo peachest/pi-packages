@@ -69,5 +69,13 @@ _避免使用_: command override、bash patch
 _避免使用_: status bar、banner
 
 **Process Env Sync (进程环境同步)**:
-pi-proxy 在修改代理配置后，将 `proxy.env` 的内容同步写入 `process.env`，使 pi 主进程的 undici `EnvHttpProxyAgent` 能读取到最新值。`NO_PROXY` 变更由 undici 自动检测；代理 URL 变更需调用 `configureHttpDispatcher()` 重建全局 dispatcher。
+pi-proxy 在修改代理配置后，将 `proxy.env` 的内容同步写入 `process.env`，使 pi 主进程的 undici `EnvHttpProxyAgent` 能读取到最新值。`NO_PROXY` 变更由 undici 自动检测；代理 URL 变更需触发 Dispatcher Rebuild 重建全局 dispatcher。
 _避免使用_: env override、process injection
+
+**Dispatcher Resolution (调度器解析)**:
+定位 pi-coding-agent 内部模块 `dist/core/http-dispatcher.js` 的过程。pi-proxy 需调用其中的 `configureHttpDispatcher()` 来重建 undici 全局 dispatcher（见 Dispatcher Rebuild）。该包 `exports` 字段仅有 `import`（无 `require`），CJS `require.resolve` 失败；且解析受 pi 的 jiti loader 行为和 node 二进制位置影响，需多策略兜底（realpath(argv[1]) 向上查找为主，import.meta.resolve 和 execPath 启发式为辅）。
+_避免使用_: module lookup、path discovery
+
+**Dispatcher Rebuild (调度器重建)**:
+当代理 URL 变更时调用 `configureHttpDispatcher()` 重建 pi 进程的 undici 全局 dispatcher，使新代理 URL 对后续 HTTP 请求生效。`NO_PROXY` 变更无需重建（undici 自动检测）。与 Process Env Sync 是两个独立关注点：后者同步 env 值，前者重建使用这些值的 dispatcher。
+_避免使用_: dispatcher refresh、http agent reset
