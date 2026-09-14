@@ -7,6 +7,7 @@ This is a monorepo with 10 packages under `packages/*`. Each package has its own
 | Package | Domain | Description |
 |---------|--------|-------------|
 | [pi-herdr-ask-bridge](packages/pi-herdr-ask-bridge/CONTEXT.md) | Event bridging | 将 ask_user_question 的 blocked 信号桥接到 Herdr，pane 图标切换为 blocked 态 |
+| [pi-herdr-tab-rename](packages/pi-herdr-tab-rename/README.md) | Event bridging | 将 pi session 重命名（session_info_changed）同步到 Herdr tab 标签 |
 | [oh-my-pet](packages/oh-my-pet/CONTEXT.md) | Agent Pet | 数字宠物伴侣，binlog 驱动的属性系统，状态栏展示 |
 | [pi-insight](packages/pi-insight/CONTEXT.md) | Insight | 会话洞察报告：量化产出、识别模式、发现摩擦点 |
 | [pi-poll](packages/pi-poll/CONTEXT.md) | Poll | 轮询 shell 条件直到 exit 0，替代固定 sleep 等待后台进程/CI/端口/文件 |
