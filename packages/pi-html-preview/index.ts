@@ -122,7 +122,7 @@ export default function vscodePreviewExtension(pi: ExtensionAPI) {
 			const st = await stat(path).catch(() => null);
 			if (!st?.isFile()) {
 				return {
-					content: [{ type: "text", text: `File not found: ${path}` }],
+					content: [{ type: "text", text: `文件不存在：${path}` }],
 					details: { ok: false, path, target },
 				};
 			}
