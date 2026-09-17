@@ -36,7 +36,7 @@
 ## 5. controller-runtime（架构血统）
 
 - 来源: k8s 社区设计（未读本地源码，凭既有知识 + T1 调研裁剪）
-- 保留: 事件表（informer 的 durable shadow）、订阅索引（indexer 降维成两张内存 Map）、workqueue 重试/去重、rate limiting（指数退避 2s→5min→dead-letter）、resync（重连 reconcile 一次，非周期）
+- 保留: 事件表（informer cache 的持久化形态）、订阅索引（indexer 降维成两张内存 Map）、workqueue 重试/去重、rate limiting（指数退避 2s→5min→dead-letter）、resync（重连 reconcile 一次，非周期）
 - 跳过: informer/DeltaFIFO、SharedInformerFactory、leader election、metrics、CRD 机械
 - 给了: level-trigger 评估 + edge-trigger 通知语义（P-006 的理论根据）
 
