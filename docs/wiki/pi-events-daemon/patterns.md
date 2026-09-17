@@ -68,3 +68,10 @@
 - 根因: cwd → 项目不是函数（一个目录可指向多个远端事实源）
 - 推论: GitLab 判定器模板把 host/project 作为占位参数由 agent 填；daemon 不做 remote 解析、不做凭证逻辑（glab 登录态是前置条件）；凭证引用统一 `$(glab config get token --host <host>)` 由 check 运行时自解析——顺带规避明文 token 进命令行的历史事故模式（P-005 同源）
 - 去向: #20 决议 3/4
+
+## P-012 订阅与状态注册表是两种模式，不合并
+- 状态: absorbed-into-spec
+- 现象: #24 branch 状态机讨论中暴露混淆——"等 MR merged"（订阅）与"哪些 branch 活跃"（查询）被当作同一需求
+- 根因: 订阅=通知模式（per-agent、一次性、等事实成立）；注册表=现状模式（事实持久存在、任意 session 任意时刻可查）。reckon 的痛点全在后侧
+- 推论: 事件/订阅管通知，states 表管现状查询；states 是一等业务数据，与 #23（遥测 out-of-scope）不冲突；泛化只到 schema（entityType/entityKey/status/payload），迁移逻辑留在模板层 checker 安装链
+- 去向: #25 决议 1/2/4
