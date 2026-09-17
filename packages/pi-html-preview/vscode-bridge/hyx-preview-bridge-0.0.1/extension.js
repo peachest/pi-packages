@@ -7,7 +7,10 @@ const path = require("path");
 // keep in sync with pi-html-preview/index.ts (BASE_PORT + REGISTRY path)
 const BASE_PORT = 39271;
 const PORT_TRIES = 10;
-const REGISTRY = path.join(os.homedir(), ".vscode-server", "preview-bridge-registry.json");
+// test hook: hermetic protocol tests redirect the registry to a temp file
+const REGISTRY =
+	process.env.PREVIEW_BRIDGE_REGISTRY ||
+	path.join(os.homedir(), ".vscode-server", "preview-bridge-registry.json");
 
 function loadRegistry() {
 	try {
