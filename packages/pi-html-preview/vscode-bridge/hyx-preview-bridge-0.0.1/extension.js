@@ -19,7 +19,12 @@ function loadRegistry() {
 
 function saveRegistry(reg) {
 	fs.mkdirSync(path.dirname(REGISTRY), { recursive: true });
-	fs.writeFileSync(REGISTRY, JSON.stringify(reg, null, 2));
+	// atomic write: an interrupted writeFileSync would leave corrupt JSON that
+	// breaks every bridge's registry read; lost-update races remain possible
+	// (two windows activating in the same ms) but self-heal on next activate
+	const tmp = `${REGISTRY}.tmp-${process.pid}`;
+	fs.writeFileSync(tmp, JSON.stringify(reg, null, 2));
+	fs.renameSync(tmp, REGISTRY);
 }
 
 function alive(pid) {
@@ -38,9 +43,17 @@ function pruneDead(reg) {
 
 function handleSocket(socket) {
 	let buf = "";
-	socket.on("data", (d) => (buf += d));
+	// idle guard: a connection must deliver its request promptly. Once the full
+	// request arrives ('end') we clear it, so a slow first-time LP launch isn't
+	// killed mid-execute — the client's own timeout bounds that case instead.
+	socket.setTimeout(5000, () => socket.destroy());
+	socket.on("data", (d) => {
+		buf += d;
+		if (buf.length > 1e6) socket.destroy(); // request-size cap
+	});
 	socket.on("error", () => {});
 	socket.on("end", () => {
+		socket.setTimeout(0);
 		let msg;
 		try {
 			msg = JSON.parse(buf);
@@ -50,6 +63,12 @@ function handleSocket(socket) {
 		}
 		if (!msg || typeof msg.command !== "string") {
 			socket.end(JSON.stringify({ ok: false, error: "missing command" }));
+			return;
+		}
+		// local-trust pipe, but narrow the surface: only Live Preview commands
+		// (start.* for previews, end for stopping the server)
+		if (!/^livePreview\./.test(msg.command)) {
+			socket.end(JSON.stringify({ ok: false, error: `command not allowed: ${msg.command}` }));
 			return;
 		}
 		// "file:///abs/path" string args are promoted to vscode.Uri (external preview wants a Uri)
@@ -72,13 +91,21 @@ async function activate(context) {
 	for (let p = BASE_PORT; p < BASE_PORT + PORT_TRIES && !server; p++) {
 		server = await new Promise((resolve) => {
 			const srv = net.createServer({ allowHalfOpen: true }, handleSocket);
-			srv.once("error", () => resolve(null));
-			srv.listen(p, "127.0.0.1", () => resolve(srv));
+			const onProbeErr = () => resolve(null);
+			srv.once("error", onProbeErr);
+			srv.listen(p, "127.0.0.1", () => {
+				// probe over: swap the throwaway error handler for a logged one
+				srv.removeListener("error", onProbeErr);
+				srv.on("error", (e) => console.error("preview-bridge server error:", e.message));
+				resolve(srv);
+			});
 		});
 		if (server) port = p;
 	}
 	if (!server) {
-		console.error(`preview-bridge: no free port in ${BASE_PORT}..${BASE_PORT + PORT_TRIES - 1}`);
+		const msg = `preview-bridge: no free port in ${BASE_PORT}..${BASE_PORT + PORT_TRIES - 1}`;
+		console.error(msg);
+		vscode.window.showErrorMessage(msg);
 		return;
 	}
 

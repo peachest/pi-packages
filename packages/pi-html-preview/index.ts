@@ -131,11 +131,21 @@ export default function vscodePreviewExtension(pi: ExtensionAPI) {
 
 			// registry may be absent (old bridge) → fall back to the fixed base port
 			let bridge: BridgeEntry | null = null;
+			let registryParsed = false;
 			try {
 				const reg = JSON.parse(readFileSync(REGISTRY, "utf8"));
+				registryParsed = true;
 				bridge = chooseBridge(reg.bridges ?? [], path, process.cwd());
 			} catch {
 				// no registry → legacy single-window bridge on BASE_PORT
+			}
+			if (registryParsed && !bridge) {
+				// a readable registry means new-version bridges; no alive entry means
+				// none is running — falling back to BASE_PORT would only misdiagnose
+				return {
+					content: [{ type: "text", text: BRIDGE_NOT_RUNNING }],
+					details: { ok: false, path, target },
+				};
 			}
 			const port = bridge?.port ?? BASE_PORT;
 
