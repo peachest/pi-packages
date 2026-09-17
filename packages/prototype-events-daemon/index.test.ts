@@ -163,6 +163,19 @@ describe("pi-events-daemon API shape", () => {
 		d.stop(); d2.stop();
 	});
 
+	it("query() without sessionId crosses sessions (reckon use case); with sessionId filters", async () => {
+		const d = new DaemonStub({ wake: () => {}, verifyDelivery: () => true, execCheck: async () => ({ code: 1, output: "" }) });
+		d.subscribe("A", { topic: "gitlab:mr:24248-58:merged", check: "glab api …" });
+		d.subscribe("B", { topic: "custom:corpus:job-42:done" });
+		const all = d.query();
+		expect(all.topics.length).toBe(2);
+		expect(all.topics.map((t) => t.subscribers).sort()).toEqual([1, 1]);
+		const onlyA = d.query("A");
+		expect(onlyA.topics.length).toBe(1);
+		expect(onlyA.topics[0].topic).toBe("gitlab:mr:24248-58:merged");
+		d.stop();
+	});
+
 	it("real shell check runs (end-to-end smoke with actual exec)", async () => {
 		const execCheck = (check: string) => new Promise<{ code: number; output: string }>((resolve) => {
 			execFile("/bin/sh", ["-c", check], { timeout: 5000 }, (err, stdout, stderr) => {
