@@ -16,3 +16,4 @@
 - 2026-09-17 | #19 原型三轮迭代（v0.1 边沿触发缺口 → v0.2 batch 窗口+failed 绕行 → v0.3 evidence 阈值化）9/9 绿 | 关票；7 操作定稿
 - 2026-09-17 | context-mode 源码调研（阈值常量/FTS5 schema/tool_result 真相）| event_chunks 自有库设计；query 跨 session 裁定
 - 2026-09-17 | wiki 建立（本目录）| 下一次站在已有知识之上
+- 2026-09-17 | T4（#20）GitLab 判定器挖掘：310 文件 6008 条轨迹，两实例成功形态提取（差异在凭证引用/代理而非端点）；用户裁定模板参数化+零凭证逻辑 | 关票；数据 ~/tmp/gitlab-check-mining.json

@@ -61,3 +61,10 @@
 - 现象: 10+ 扩展全部进程内随 session 存亡；唯一独立 daemon 先例 nemo-relay（手动启动/端口锁/HTTP）；`schedule.create`（持久 schedule + catchUp）是离线补投的半个先例
 - 推论: 惰性拉起无先例可抄也无坑可踩；flock+socket 是标准解；herdr 的 env 发现（`HERDR_SOCKET_PATH` → `PI_EVENTS_SOCK`）+ JSON-RPC 单行协议直接照抄
 - 去向: #18 决议 1/2/5；#21 调研
+
+## P-011 多 remote 是常态，host/project 必须由 agent 显式填
+- 状态: absorbed-into-spec
+- 现象: HAMi 项目有三个 remote（internal/github/hyxfork）；初稿推荐的"extension 从 git remote 自动解析"在多 remote 下有歧义；/tmp 脚本场景干脆没有 remote
+- 根因: cwd → 项目不是函数（一个目录可指向多个远端事实源）
+- 推论: GitLab 判定器模板把 host/project 作为占位参数由 agent 填；daemon 不做 remote 解析、不做凭证逻辑（glab 登录态是前置条件）；凭证引用统一 `$(glab config get token --host <host>)` 由 check 运行时自解析——顺带规避明文 token 进命令行的历史事故模式（P-005 同源）
+- 去向: #20 决议 3/4
