@@ -82,3 +82,35 @@ The notification path: `finalizeTask` → `notifyCompletion` (registry.ts:2291�
 - The store is the source of truth; the queue is a rebuildable view. Daemon restart = reload store → rebuild index → rescan un-acked → resume. No in-memory-only state anywhere in the delivery path.
 - Ack-by-verification (not ack-by-API-success) is the single most important divergence from bg_run, and it maps cleanly onto workqueue's `Forget` only after verified delivery.
 - Keep the check evaluation stateless per tick (level-trigger): the subscription's `Done when` is re-derived from the world each interval, so crashes/missed ticks self-heal on the next tick — this is what makes "resync" nearly free.
+
+---
+
+## 附录（2026-09-17 追加）：pi-subagents 的异步通知链路对比
+
+来源：`~/.pi/agent/npm/node_modules/pi-subagents/`（v0.68.0）`src/runs/background/{notify,result-watcher,completion-batcher,completion-dedupe}.ts`、`docs/observability.md`。
+
+### 它做对了什么（bg_run 没做到的）
+
+| 机制 | 实现 | 证据 |
+|---|---|---|
+| **result file = durable 真相，delete-after-ack** | async 子任务写 result 文件；watcher 监听；**只有 `sendMessage` 接受通知后才删除文件**，未接受则 100ms 重试循环（`scheduleResult(file, triggerTurn, RETRY_DELAY_MS)`） | notify.ts 头注释；result-watcher.ts:574-578 |
+| **事件总线 ≠ 投递确认** | "The event bus remains an observation channel, not a delivery acknowledgement" | notify.ts:2-4 |
+| **所有权绑定** | `ownsResult(sessionId, completionOwnerId, epoch)`，foreground session 不匹配直接拒绝投递 | notify.ts deliver() |
+| **去重 + TTL** | `buildCompletionKey` + `markSeenWithTtl`，dedupe 键按 session/cwd | completion-dedupe.ts |
+| **成功项合流批量投递** | "Successful sibling completions are held briefly and delivered as a quiet grouped completion"；failed/paused 立即立即投 | observability.md:291-296 |
+| **投递状态落盘** | `markDeliveredNotification()` 先标记 result 文件再 unlink，状态机在文件上 | result-watcher.ts:581 |
+| **steer 回执** | async 子进程走 file control inbox，回执四态 queued/delivered/missed/failed，且"报告子进程的相关性消费，不止 inbox 接受" | tool-reference.md:149-151 |
+
+### 它仍然没做到的（正是 daemon 的差异化空间）
+
+1. **ack 仍是 API 接受而非 transcript 验证**——`sendMessage` 返回 true 就删文件重试循环终止；而 T1 已证明 sendMessage 接受 ≠ 条目落盘（触发 turn 被 abort 时条目不写入）。pi-subagents 缩小了丢失窗口（失败会重试），但没有关闭它（accepted 后删除文件 → abort 场景无补救）。daemon 的 ack-by-verification 更严。
+2. **只回 originating session**："Async completions belong only to the originating session"——无跨 session 订阅。
+3. **生命周期绑死父进程**：`session_shutdown` dispose 全部 in-process child sessions；`pi.events` 明确文档化为 in-process only，跨进程只能走文件 artifacts 或 pi-intercom。
+4. **无独立 daemon**：watcher/notify 全部活在父 pi 进程内，父进程死则链路死。
+
+### 设计指令（并入 #19 实现参考）
+
+- **复用** delete-after-ack 重试循环 + result 文件状态机 + dedupe/TTL + batcher 合流——这是生态内已验证的最近似实现
+- **升级** ack 终点：accepted 只是"可以停止重试的信号"，最终 ack 仍以 transcript 验证为准（两段式：accepted→停止高频重试，verified→标记 delivered）
+- 跨 session / 跨进程按既定协议走 socket + store，不走 pi.events
+- pi-subagents 的 `schedule.create`（持久 schedule + catchUp latest/none）是"离线补投"的半个先例，实现 daemon reconcile 时可参考其 miss 补偿语义
