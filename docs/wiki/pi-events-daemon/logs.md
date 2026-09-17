@@ -22,3 +22,4 @@
 - 2026-09-17 | T8（#24）branch 状态机：全自动链+CI 失败自动拉日志+弃置不处置+reckon 改造读 daemon | 关票——spec 范围再增状态面
 - 2026-09-17 | T9（#25）状态建模通用化：泛化 schema+typed status op，MVP 仅 git-branch profile（用户裁定等调用数据再提取），不做状态机引擎 | 关票——状态面定稿
 - 2026-09-17 | to-spec 产出 Spec #26（ready-for-agent）：seam=socket 集成（用户裁定）；spec 草稿 ~/tmp/pi-events-daemon-spec.md | map 收官，进入实施阶段
+- 2026-09-17 | pi harness v2 浅调研（#27）：存储地基已铺/coding-agent 未接线/无时间表 → spec 加单一 adapter 注记，#27 关成 watch | 重启条件=SessionRepo 默认化
