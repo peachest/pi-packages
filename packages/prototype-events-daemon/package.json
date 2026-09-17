@@ -1,0 +1,9 @@
+{
+  "name": "prototype-events-daemon",
+  "version": "0.0.1",
+  "private": true,
+  "description": "API-shape prototype for pi-events-daemon (wayfinder #19) — not an installable extension yet",
+  "type": "module",
+  "main": "./index.ts",
+  "scripts": { "test": "vitest run" }
+}
