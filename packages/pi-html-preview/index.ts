@@ -19,11 +19,35 @@ import { connect } from "node:net";
 import { readFileSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
-// keep in sync with vscode-bridge/hyx-preview-bridge-*/extension.js
-const BASE_PORT = 39271;
-const REGISTRY = join(homedir(), ".vscode-server", "preview-bridge-registry.json");
+// protocol contract shared with the bridge — single source of truth lives in
+// vscode-bridge/hyx-preview-bridge-*/protocol.json; both runtimes load it and
+// the protocol tests assert both sides read it verbatim
+export interface BridgeProtocol {
+	basePort: number;
+	portTries: number;
+	registryPath: string;
+	commandPrefix: string;
+	maxRequestBytes: number;
+	idleTimeoutMs: number;
+}
+
+export const BRIDGE_PROTOCOL: BridgeProtocol = JSON.parse(
+	readFileSync(
+		join(
+			dirname(fileURLToPath(import.meta.url)),
+			"vscode-bridge",
+			"hyx-preview-bridge-0.0.1",
+			"protocol.json"
+		),
+		"utf8"
+	)
+) as BridgeProtocol;
+
+const BASE_PORT = BRIDGE_PROTOCOL.basePort;
+const REGISTRY = join(homedir(), BRIDGE_PROTOCOL.registryPath);
 
 export type PreviewTarget = "internal" | "external";
 

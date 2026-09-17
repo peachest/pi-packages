@@ -1,5 +1,8 @@
 import { describe, it, expect } from "vitest";
-import { buildCommand, chooseBridge } from "./index.js";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { BRIDGE_PROTOCOL, buildCommand, chooseBridge } from "./index.js";
 
 const DEAD_PID = 2147483000; // above any pid_max; guaranteed ESRCH
 
@@ -20,7 +23,17 @@ describe("buildCommand", () => {
 		expect(r.args).toEqual(["/a/b/page.html"]);
 	});
 
-	describe("chooseBridge", () => {
+	describe("protocol contract", () => {
+	it("tool side loads the shared protocol.json verbatim (no hand-copied constants)", () => {
+		const pkgRoot = dirname(fileURLToPath(import.meta.url));
+		const file = JSON.parse(
+			readFileSync(join(pkgRoot, "vscode-bridge/hyx-preview-bridge-0.0.1/protocol.json"), "utf8")
+		);
+		expect(BRIDGE_PROTOCOL).toEqual(file);
+	});
+});
+
+describe("chooseBridge", () => {
 		const A = "/home/u/proj-a";
 		const B = "/home/u/proj-b";
 

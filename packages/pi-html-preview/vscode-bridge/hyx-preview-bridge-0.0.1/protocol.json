@@ -1,0 +1,8 @@
+{
+	"basePort": 39271,
+	"portTries": 10,
+	"registryPath": ".vscode-server/preview-bridge-registry.json",
+	"commandPrefix": "^livePreview\\.",
+	"maxRequestBytes": 1000000,
+	"idleTimeoutMs": 5000
+}

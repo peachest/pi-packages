@@ -75,6 +75,11 @@ function send(payload) {
 	});
 }
 
+test("loads the shared protocol contract verbatim (no hand-copied constants)", () => {
+	const file = JSON.parse(fs.readFileSync(path.join(here, "hyx-preview-bridge-0.0.1", "protocol.json"), "utf8"));
+	assert.deepEqual(ext.protocol, file);
+});
+
 test("registers itself in the registry with workspace folders and a probed port", () => {
 	const reg = JSON.parse(fs.readFileSync(registryFile, "utf8"));
 	const me = reg.bridges.find((b) => b.pid === process.pid);

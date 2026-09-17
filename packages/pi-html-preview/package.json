@@ -32,6 +32,6 @@
     ]
   },
   "scripts": {
-    "test": "vitest run"
+    "test": "vitest run && node --test vscode-bridge/protocol.test.mjs"
   }
 }

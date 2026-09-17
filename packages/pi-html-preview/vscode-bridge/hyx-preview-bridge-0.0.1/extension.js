@@ -4,13 +4,12 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-// keep in sync with pi-html-preview/index.ts (BASE_PORT + REGISTRY path)
-const BASE_PORT = 39271;
-const PORT_TRIES = 10;
+// single source of truth for both runtimes: pi-html-preview/index.ts loads
+// the same file — drift is caught by the protocol tests on either side
+const protocol = require("./protocol.json");
 // test hook: hermetic protocol tests redirect the registry to a temp file
 const REGISTRY =
-	process.env.PREVIEW_BRIDGE_REGISTRY ||
-	path.join(os.homedir(), ".vscode-server", "preview-bridge-registry.json");
+	process.env.PREVIEW_BRIDGE_REGISTRY || path.join(os.homedir(), protocol.registryPath);
 
 function loadRegistry() {
 	try {
@@ -49,10 +48,10 @@ function handleSocket(socket) {
 	// idle guard: a connection must deliver its request promptly. Once the full
 	// request arrives ('end') we clear it, so a slow first-time LP launch isn't
 	// killed mid-execute — the client's own timeout bounds that case instead.
-	socket.setTimeout(5000, () => socket.destroy());
+	socket.setTimeout(protocol.idleTimeoutMs, () => socket.destroy());
 	socket.on("data", (d) => {
 		buf += d;
-		if (buf.length > 1e6) socket.destroy(); // request-size cap
+		if (buf.length > protocol.maxRequestBytes) socket.destroy(); // request-size cap
 	});
 	socket.on("error", () => {});
 	socket.on("end", () => {
@@ -70,7 +69,7 @@ function handleSocket(socket) {
 		}
 		// local-trust pipe, but narrow the surface: only Live Preview commands
 		// (start.* for previews, end for stopping the server)
-		if (!/^livePreview\./.test(msg.command)) {
+		if (!new RegExp(protocol.commandPrefix).test(msg.command)) {
 			socket.end(JSON.stringify({ ok: false, error: `command not allowed: ${msg.command}` }));
 			return;
 		}
@@ -91,7 +90,7 @@ async function activate(context) {
 	// probe BASE_PORT..BASE_PORT+PORT_TRIES-1 so multiple windows coexist
 	let server = null;
 	let port = 0;
-	for (let p = BASE_PORT; p < BASE_PORT + PORT_TRIES && !server; p++) {
+	for (let p = protocol.basePort; p < protocol.basePort + protocol.portTries && !server; p++) {
 		server = await new Promise((resolve) => {
 			const srv = net.createServer({ allowHalfOpen: true }, handleSocket);
 			const onProbeErr = () => resolve(null);
@@ -106,7 +105,7 @@ async function activate(context) {
 		if (server) port = p;
 	}
 	if (!server) {
-		const msg = `preview-bridge: no free port in ${BASE_PORT}..${BASE_PORT + PORT_TRIES - 1}`;
+		const msg = `preview-bridge: no free port in ${protocol.basePort}..${protocol.basePort + protocol.portTries - 1}`;
 		console.error(msg);
 		vscode.window.showErrorMessage(msg);
 		return;
@@ -142,4 +141,4 @@ async function activate(context) {
 
 function deactivate() {}
 
-module.exports = { activate, deactivate };
+module.exports = { activate, deactivate, protocol };
