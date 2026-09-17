@@ -1,0 +1,3 @@
+# Transitions emit on (state, contentIdentity) pairs, not state alone
+
+Invariant I1 is extended: a transition produces an event when the *pair* (state, content identity) changes, not only when the state enum changes. A pushed image whose state stays `present` but whose digest changes still emits — "latest 被他人更新" is a real, awaited occurrence (common-ci breaking-change notification). This unifies image digests, file content hashes, and config revisions under one mechanism, instead of special-casing "data changed while state didn't". Rejected alternative: payload-diff events outside the state machine, which would create a second event pathway and violate "events are transition byproducts".

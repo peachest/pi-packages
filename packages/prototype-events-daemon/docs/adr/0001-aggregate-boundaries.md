@@ -1,0 +1,5 @@
+# Aggregate boundaries: one rich aggregate, two single-root aggregates
+
+The domain splits into three aggregates — **Entity**, **Subscription**, **Delivery** — where only Entity has persistent internal entities (its transition events, held inside its transaction by invariant I1: a transition and its event commit together). Subscription and Delivery are deliberately **root-only (single-root) aggregates**: each owns real invariants (ProbeSpec value-equality ⇒ shared runner; one row per (notification, session)) but has no persistent children. We explicitly reject giving them collection roots (e.g. a `SubscriptionBook`) — that is the classic "root for a collection" anti-pattern — and reject folding Deliveries into a Notification aggregate, because a notification fans out to N sessions whose verifications are independent; a Notification root would serialize every session's ack behind one transaction.
+
+Considered options: Notification-as-root with Delivery children (rejected: cross-session contention, violates small-aggregate rule); collection-container roots (rejected: anti-pattern).

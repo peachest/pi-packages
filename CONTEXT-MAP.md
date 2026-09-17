@@ -16,6 +16,7 @@ This is a monorepo with 10 packages under `packages/*`. Each package has its own
 | [pi-think-tool](packages/pi-think-tool/CONTEXT.md) | Think/Env/Consequence | 推理记录、环境采集、后果评估三工具 |
 | [pi-wishlist](packages/pi-wishlist/CONTEXT.md) | Wishlist | Pi Package 愿望单，后台更新检查和通知 |
 | [pi-skill-presets](packages/pi-skill-presets/CONTEXT.md) | Presets | Skill 分组与动态加载：prefix-cache-aware 的 transient injection + persistent entry 状态跟踪 |
+| [prototype-events-daemon](packages/prototype-events-daemon/CONTEXT.md) | Events daemon | 实体状态机基底：实体镜像外部系统，转换产出事件，订阅唤醒 session |
 
 ## Packages without CONTEXT.md yet
 
@@ -25,5 +26,7 @@ This is a monorepo with 10 packages under `packages/*`. Each package has its own
 - pi-project-manager
 - pi-weave-a-towel
 - pi-role
+- pi-html-preview
+- pitrace
 
 `CONTEXT.md` for each package is created lazily by `/domain-modeling` when terms or decisions actually need recording.
