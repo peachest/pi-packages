@@ -24,3 +24,4 @@
 - 2026-09-17 | to-spec 产出 Spec #26（ready-for-agent）：seam=socket 集成（用户裁定）；spec 草稿 ~/tmp/pi-events-daemon-spec.md | map 收官，进入实施阶段
 - 2026-09-17 | pi harness v2 浅调研（#27）：存储地基已铺/coding-agent 未接线/无时间表 → spec 加单一 adapter 注记，#27 关成 watch | 重启条件=SessionRepo 默认化
 - 2026-09-17 | 研究（#28）事件驱动 agent：5 方向+合成落 ~/research/event-driven-agents/；投递契约获 Temporal 同构验证、wake 推送无先例、70-90% 数字为引用死循环、D5 裁决 build+reuse patterns | 12 项裁定全部获佐证
+- 2026-09-17 | pi harness v2 文章对读（harness-v2/j4 分支 3446 行设计稿）：意图/结果配对与两段式 ack 同构、ID 预分配验证 Subscribe 例外、fx:Effects 测试模式入 spec 增量、lane 感知并入 #27 | 六条映射落 #29
