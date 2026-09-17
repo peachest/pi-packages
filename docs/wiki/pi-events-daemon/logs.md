@@ -18,3 +18,4 @@
 - 2026-09-17 | wiki 建立（本目录）| 下一次站在已有知识之上
 - 2026-09-17 | T4（#20）GitLab 判定器挖掘：310 文件 6008 条轨迹，两实例成功形态提取（差异在凭证引用/代理而非端点）；用户裁定模板参数化+零凭证逻辑 | 关票；数据 ~/tmp/gitlab-check-mining.json
 - 2026-09-17 | T7（#23）telemetry+doctor 需求提出后整体撤销：store 即遥测、采集组件=新增长源、nemo-relay 类比不成立 | 关票进 Out of scope
+- 2026-09-17 | T6（#22）三裁定：validate 独立 op+smoke 代跑；两阶段扁平参数；fail 即终态 | 关票——map destination 达成，待交 to-spec
