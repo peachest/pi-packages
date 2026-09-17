@@ -1,0 +1,17 @@
+{
+	"name": "preview-bridge",
+	"displayName": "Preview Bridge",
+	"description": "Executes VS Code commands received as JSON over TCP on 127.0.0.1:39271. Used by the pi vscode_preview tool. Local-trust pipe: binds loopback only.",
+	"publisher": "hyx",
+	"version": "0.0.1",
+	"engines": {
+		"vscode": "^1.80.0"
+	},
+	"categories": [
+		"Other"
+	],
+	"activationEvents": [
+		"onStartupFinished"
+	],
+	"main": "./extension.js"
+}

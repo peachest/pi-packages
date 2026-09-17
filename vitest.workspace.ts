@@ -6,4 +6,5 @@ export default [
   "packages/pi-poll",
   "packages/pi-proxy",
   "packages/pi-wishlist",
+  "packages/pi-html-preview",
 ];
