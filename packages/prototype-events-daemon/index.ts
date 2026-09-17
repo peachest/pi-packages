@@ -63,6 +63,8 @@ export interface DaemonOptions {
 	wake: (billboard: { sessionId: string; count: number; items: Array<{ topic: string; verdict: Verdict }> }) => void;
 	/** Two-stage ack stage 2: has the notification entry landed in the session transcript? */
 	verifyDelivery: (notificationId: string, sessionId: string) => boolean;
+	/** Billboard coalescing window (ms). "passed" wakes hold for the window; "failed" bypass it. Default 0 = immediate. */
+	batchMs?: number;
 	now?: () => number;
 	execCheck?: (check: string) => Promise<{ code: number; output: string }>;
 }
@@ -107,6 +109,7 @@ export class DaemonStub {
 	private seq = 0;
 	private timer: ReturnType<typeof setInterval> | null = null;
 	private closedSubs: Subscription[] = [];
+	private pendingWakes = new Map<string, { timer: ReturnType<typeof setTimeout>; items: Array<{ topic: string; verdict: Verdict }> }>();
 
 	constructor(private opts: DaemonOptions) {}
 
@@ -261,10 +264,29 @@ export class DaemonStub {
 			if (s.once) { s.closed = true; s.closedReason = "once-delivered"; this.closedSubs.push(s); }
 		}
 		this.events.push({ ...e, deliveries });
-		// Coalesced billboard: one wake per session per event batch. Write-ahead is done
-		// (deliveries rows exist); wake is best-effort and loses nothing.
+		// Billboard: write-ahead is done (delivery rows exist); wake is best-effort.
+		// Coalescing window per session — "passed" events hold for batchMs and merge into
+		// one billboard; "failed" bypasses the window and wakes immediately (pi-subagents
+		// precedent: failures must not wait behind a batching window).
+		const batchMs = this.opts.batchMs ?? 0;
 		for (const [sessionId, items] of wakeBySession) {
-			this.opts.wake({ sessionId, count: items.length, items });
+			if (batchMs <= 0 || items.some((i) => i.verdict === "failed")) {
+				// Immediate flush; merge any coalescing items so a failed wake carries them along.
+				const pending = this.pendingWakes.get(sessionId)?.items ?? [];
+				this.flushWake(sessionId, [...pending, ...items]);
+				continue;
+			}
+			const pending = this.pendingWakes.get(sessionId);
+			if (pending) { pending.items.push(...items); continue; }
+			const entry = { timer: setTimeout(() => this.flushWake(sessionId, entry.items), batchMs), items };
+			this.pendingWakes.set(sessionId, entry);
 		}
+	}
+
+	private flushWake(sessionId: string, items: Array<{ topic: string; verdict: Verdict }>) {
+		const pending = this.pendingWakes.get(sessionId);
+		if (pending) { clearTimeout(pending.timer); this.pendingWakes.delete(sessionId); }
+		if (items.length === 0) return;
+		this.opts.wake({ sessionId, count: items.length, items });
 	}
 }

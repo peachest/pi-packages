@@ -106,6 +106,43 @@ describe("pi-events-daemon API shape", () => {
 		d.stop();
 	});
 
+	it("batch window: passed events coalesce into one billboard; failed bypasses immediately", async () => {
+		const wakes: Array<{ sessionId: string; count: number; items: Array<{ topic: string; verdict: string }> }> = [];
+		const d = new DaemonStub({
+			wake: (b) => wakes.push(b),
+			verifyDelivery: () => true,
+			batchMs: 80,
+			execCheck: fakeExec([{ match: /health/, code: 0, out: "ok" }]),
+		});
+		// Two publish-fed subscriptions for session A, both events land inside the window.
+		d.subscribe("A", { topic: "custom:job1:done" });
+		d.subscribe("A", { topic: "custom:job2:done" });
+		d.publish("C", "custom:job1:done", { ok: 1 });
+		d.publish("C", "custom:job2:done", { ok: 2 });
+		expect(wakes.length).toBe(0); // holding…
+		await sleep(120);
+		expect(wakes.length).toBe(1); // coalesced into one billboard
+		expect(wakes[0].count).toBe(2);
+
+		// Failed event bypasses the window: immediate wake carrying coalesced items along.
+		const d2 = new DaemonStub({
+			wake: (b) => wakes.push(b),
+			verifyDelivery: () => true,
+			batchMs: 10_000,
+			execCheck: fakeExec([{ match: /modelinstance/, code: 2, out: "INSTANCE FAILED" }]),
+		});
+		d2.subscribe("A", { topic: "sglang:i:slow:ready", check: "echo phase-check" });
+		d2.subscribe("A", { topic: "custom:other:done" }); // publish-fed, sits in the 10s window
+		d2.publish("C", "custom:other:done", { n: 1 });
+		await sleep(20);
+		d2.subscribe("A", { topic: "k8s:i:dead:ready", check: "kubectl get modelinstance -o jsonpath='{.status.phase}'", interval: 0.005, wake: "steer" });
+		await sleep(60);
+		const last = wakes[wakes.length - 1];
+		expect(last.count).toBe(2); // failed + the coalesced publish, flushed together now
+		expect(last.items.some((i) => i.verdict === "failed")).toBe(true);
+		d.stop(); d2.stop();
+	});
+
 	it("real shell check runs (end-to-end smoke with actual exec)", async () => {
 		const execCheck = (check: string) => new Promise<{ code: number; output: string }>((resolve) => {
 			execFile("/bin/sh", ["-c", check], { timeout: 5000 }, (err, stdout, stderr) => {
