@@ -25,6 +25,7 @@ Agent 需要等外部条件（推理服务就绪、MR 合并、CI 通过、ticke
 - 中心化单实例 daemon，不是每 session 一个
 - 判定器可插拔：允许 agent 指定脚本或命令，daemon 负责调度与结果解释
 - 参考并尽量复用 bg_run 的实现模式（output + metadata、通知契约）与 pi-poll 的 check 契约
+- 投递必须 durable：事件/订阅落盘，投递带 ack，未 ack 补投（2026-09-17 实测 bg_run 丢通知 7/58≈12%，metadata 却记 notified:True）；架构参考 k8s controller-runtime 对不可靠 listener 的补救思路（workqueue 重试/去重、level-trigger 状态、resync 补投），裁剪为单机最小子集，不照搬全套 informer/indexer 机械
 - MVP 判定器全都要：自定义命令/脚本 + HTTP + GitLab MR/CI/ticket；服务就绪类由前两类覆盖
 - MVP 需支持跨 session 事件订阅
 
