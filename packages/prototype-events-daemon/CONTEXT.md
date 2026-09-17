@@ -11,7 +11,7 @@ A durable mirror of one thing in an external system (or a local asset), identifi
 _Avoid_: resource, object, topic (topic is an internal routing key only)
 
 **EntityRef**:
-The identity of an entity: a source-system native identifier (GitLab/GitHub page URL, k8s REST URL, image transport ref, local path) under the ext/p/u scope prefixes. Agents never mint or parse these; key generators do.
+The identity of an entity: a source-system native identifier (GitLab/GitHub page URL, k8s REST URL, image transport ref, local path) under the key prefixes `ext/`/`p/`/`u/` (external / project / user scopes). Agents never mint or parse these; key generators do.
 _Avoid_: id, uuid, entity-id
 
 **Payload**:
