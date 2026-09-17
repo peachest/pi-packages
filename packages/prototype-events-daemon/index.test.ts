@@ -143,6 +143,26 @@ describe("pi-events-daemon API shape", () => {
 		d.stop(); d2.stop();
 	});
 
+	it("evidence over 2KB is truncated to a pointer; full text fetchable on demand", async () => {
+		const big = "x".repeat(3000) + " INNER-DETAIL-MARKER";
+		const d = new DaemonStub({ wake: () => {}, verifyDelivery: () => true, execCheck: fakeExec([{ match: /build/, code: 0, out: big }]) });
+		d.subscribe("A", { topic: "custom:build:job:done", check: "run build", interval: 0.005 });
+		await sleep(60);
+		const e = d.drain("A").events[0];
+		expect(e.evidence.length).toBe(2000);
+		expect(e.evidenceTruncated).toBe(true);
+		expect(e.evidenceRef).toBe(e.notificationId);
+		expect(d.evidence(e.notificationId)!.evidence).toContain("INNER-DETAIL-MARKER");
+		// small evidence: inline as-is, no pointer noise
+		const d2 = new DaemonStub({ wake: () => {}, verifyDelivery: () => true, execCheck: fakeExec([{ match: /ok/, code: 0, out: "fine" }]) });
+		d2.subscribe("A", { topic: "custom:t:done", check: "check ok", interval: 0.005 });
+		await sleep(40);
+		const e2 = d2.drain("A").events[0];
+		expect(e2.evidence).toBe("fine");
+		expect(e2.evidenceTruncated).toBeUndefined();
+		d.stop(); d2.stop();
+	});
+
 	it("real shell check runs (end-to-end smoke with actual exec)", async () => {
 		const execCheck = (check: string) => new Promise<{ code: number; output: string }>((resolve) => {
 			execFile("/bin/sh", ["-c", check], { timeout: 5000 }, (err, stdout, stderr) => {

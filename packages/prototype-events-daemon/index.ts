@@ -56,6 +56,8 @@ export interface DrainedEvent {
 	verdict: Verdict;
 	reason: string;                      // one-line human explanation
 	evidence: string;                    // checker stdout/stderr (agent-facing, no exit codes)
+	evidenceTruncated?: boolean;         // true → full text lives in store, fetch via events_evidence()
+	evidenceRef?: string;                // === notificationId when truncated; pointer, not inline payload
 	occurredAt: string;
 }
 
@@ -192,18 +194,35 @@ export class DaemonStub {
 	/** Single fetch path. Returns un-verified (pending) events for the session, at-least-once. */
 	drain(sessionId: string): { events: DrainedEvent[]; hasMore: boolean } {
 		const out: DrainedEvent[] = [];
+		// context-mode precedent (server.js INTENT_SEARCH_THRESHOLD): evidence over the
+		// inline threshold stays in the store; drain returns a windowed pointer, full text
+		// fetchable on demand. Real daemon: FTS5 table with event_id/session_id UNINDEXED cols.
+		const EVIDENCE_INLINE_LIMIT = 2000;
 		for (const e of this.events) {
 			for (const d of e.deliveries) {
 				if (d.sessionId === sessionId && !d.verified) {
+					const truncated = e.evidence.length > EVIDENCE_INLINE_LIMIT;
 					out.push({
 						notificationId: d.notificationId, eventId: e.eventId, topic: e.topic,
-						verdict: e.verdict, reason: e.reason, evidence: e.evidence,
+						verdict: e.verdict, reason: e.reason,
+						evidence: truncated ? e.evidence.slice(0, EVIDENCE_INLINE_LIMIT) : e.evidence,
+						...(truncated ? { evidenceTruncated: true, evidenceRef: d.notificationId } : {}),
 						occurredAt: new Date(e.occurredAt).toISOString(),
 					});
 				}
 			}
 		}
 		return { events: out, hasMore: false };
+	}
+
+	/** On-demand full evidence fetch (context-mode pattern: pointer → full text). */
+	evidence(notificationId: string): { evidence: string } | null {
+		for (const e of this.events) {
+			for (const d of e.deliveries) {
+				if (d.notificationId === notificationId) return { evidence: e.evidence };
+			}
+		}
+		return null;
 	}
 
 	/** Ack = stage-2 verification passed (transcript entry present). Un-verified acks are refused. */
