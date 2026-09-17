@@ -37,7 +37,7 @@ Module._load = function (request, parent, isMain) {
 	if (request === "vscode") return vscodeStub;
 	return origLoad.call(this, request, parent, isMain);
 };
-process.env.PREVIEW_BRIDGE_REGISTRY = registryFile;
+process.env.PREVIEW_BRIDGE_TEST_REGISTRY = registryFile;
 
 const requireBridge = Module.createRequire(path.join(here, "hyx-preview-bridge-0.0.1", "package.json"));
 const ext = requireBridge("./extension.js");
@@ -47,19 +47,27 @@ let port;
 
 before(async () => {
 	await ext.activate(context);
+	assert.ok(fs.existsSync(registryFile), "activate did not write registry — likely no free port in probe range");
 	const reg = JSON.parse(fs.readFileSync(registryFile, "utf8"));
-	port = reg.bridges.find((b) => b.pid === process.pid).port;
+	const me = reg.bridges.find((b) => b.pid === process.pid);
+	assert.ok(me, "own bridge entry present");
+	port = me.port;
 });
 
 after(() => {
-	context.subscriptions.forEach((d) => d.dispose());
-	const remaining = JSON.parse(fs.readFileSync(registryFile, "utf8"));
-	assert.ok(
-		!remaining.bridges.some((b) => b.pid === process.pid),
-		"registry entry removed after dispose"
-	);
-	fs.rmSync(registryFile, { force: true });
-	Module._load = origLoad;
+	try {
+		context.subscriptions.forEach((d) => d.dispose());
+		if (fs.existsSync(registryFile)) {
+			const remaining = JSON.parse(fs.readFileSync(registryFile, "utf8"));
+			assert.ok(
+				!remaining.bridges.some((b) => b.pid === process.pid),
+				"registry entry removed after dispose"
+			);
+		}
+	} finally {
+		fs.rmSync(registryFile, { force: true });
+		Module._load = origLoad;
+	}
 });
 
 // one request per connection; half-close (end) then await the reply —

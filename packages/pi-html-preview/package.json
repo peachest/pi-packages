@@ -1,37 +1,37 @@
 {
-  "name": "pi-html-preview",
-  "version": "0.1.0",
-  "private": true,
-  "description": "Pi extension: vscode_preview tool — open a file in VS Code Live Preview via the preview-bridge vscode extension (TCP → vscode.commands.executeCommand)",
-  "keywords": [
-    "pi-package",
-    "pi",
-    "preview",
-    "live-preview",
-    "vscode"
-  ],
-  "license": "MIT",
-  "author": "",
-  "type": "module",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/hyx/pi-mypackage.git",
-    "directory": "packages/pi-html-preview"
-  },
-  "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "*",
-    "typebox": "*"
-  },
-  "devDependencies": {
-    "@earendil-works/pi-coding-agent": "*",
-    "typebox": "*"
-  },
-  "pi": {
-    "extensions": [
-      "./index.ts"
-    ]
-  },
-  "scripts": {
-    "test": "vitest run && node --test vscode-bridge/protocol.test.mjs"
-  }
+	"name": "pi-html-preview",
+	"version": "0.1.0",
+	"private": true,
+	"description": "Pi extension: vscode_preview tool — open a file in VS Code Live Preview via the preview-bridge vscode extension (TCP → vscode.commands.executeCommand)",
+	"keywords": [
+		"pi-package",
+		"pi",
+		"preview",
+		"live-preview",
+		"vscode"
+	],
+	"license": "MIT",
+	"author": "",
+	"type": "module",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/hyx/pi-mypackage.git",
+		"directory": "packages/pi-html-preview"
+	},
+	"peerDependencies": {
+		"@earendil-works/pi-coding-agent": "*",
+		"typebox": "*"
+	},
+	"devDependencies": {
+		"@earendil-works/pi-coding-agent": "*",
+		"typebox": "*"
+	},
+	"pi": {
+		"extensions": [
+			"./index.ts"
+		]
+	},
+	"scripts": {
+		"test": "vitest run && node --test vscode-bridge/protocol.test.mjs"
+	}
 }

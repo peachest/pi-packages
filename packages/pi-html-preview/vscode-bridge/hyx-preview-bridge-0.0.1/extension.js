@@ -7,9 +7,12 @@ const path = require("path");
 // single source of truth for both runtimes: pi-html-preview/index.ts loads
 // the same file — drift is caught by the protocol tests on either side
 const protocol = require("./protocol.json");
+// precompiled once: bad pattern surfaces at require-time, not first connection
+const COMMAND_RE = new RegExp(protocol.commandPrefix);
 // test hook: hermetic protocol tests redirect the registry to a temp file
+// (TEST in the name — not honored as a generic path override in production)
 const REGISTRY =
-	process.env.PREVIEW_BRIDGE_REGISTRY || path.join(os.homedir(), protocol.registryPath);
+	process.env.PREVIEW_BRIDGE_TEST_REGISTRY || path.join(os.homedir(), protocol.registryPath);
 
 function loadRegistry() {
 	try {
@@ -69,7 +72,7 @@ function handleSocket(socket) {
 		}
 		// local-trust pipe, but narrow the surface: only Live Preview commands
 		// (start.* for previews, end for stopping the server)
-		if (!new RegExp(protocol.commandPrefix).test(msg.command)) {
+		if (!COMMAND_RE.test(msg.command)) {
 			socket.end(JSON.stringify({ ok: false, error: `command not allowed: ${msg.command}` }));
 			return;
 		}
