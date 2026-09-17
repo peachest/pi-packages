@@ -2,6 +2,7 @@
 origin: idea
 status: accepted
 created: 2026-09-17
+updated: 2026-09-17
 ---
 
 # Intent: pi-events-daemon
@@ -10,32 +11,47 @@ created: 2026-09-17
 
 Agent 需要等外部条件（推理服务就绪、MR 合并、CI 通过、ticket 关闭、长任务完成）才能继续。现有手段各有结构性缺口：
 
-- **bg_run** 只检测"进程退出"一种事件，其余条件必须手写轮询脚本包进去；任务 session-scoped（session 关闭即杀、通知不可达），只唤醒 launching session。
-- **pi-poll** 已把"shell 条件轮询"做好，但它是**前台阻塞**调用——等 30-60 分钟的服务启动会占死整个 turn，没有通知唤醒，也不能跨 session/跨项目。
+- **bg_run** 只检测"进程退出"一种事件，其余条件必须手写轮询脚本包进去；任务 session-scoped，只唤醒 launching session，且通知静默丢失（实测 12%）。
+- **pi-poll** 把"shell 条件轮询"做好了，但前台阻塞——长等待占死 turn，无通知唤醒，不能跨 session/跨项目。
 
-实测证据（speculative-training 3 个 session，65 次 bg_run）：29 次（45%）是纯"等待条件"任务，每个新实例手写一份 probe 脚本（`wait_glm51.sh` 等），同一等待最多 relaunch 5 轮。多 session 协作时，session A 关心的 MR/CI/ticket 事件无法被 session B 感知，进度盘点靠逐 session 调 reckon。
+实测证据：speculative-training 3 session 65 次 bg_run 中 45% 是纯"等待条件"任务；全量 6380 条长任务轨迹中前台轮询累计 13.9h；跨天弃置 30 例（含 63.5h smoke test 挂过夜）。
+
+**模型升维后新增的痛点（2026-09-17 细化）**：
+
+- **共享文档陈旧**：多 session 项目（如 speculative-training）的共享文档（INTENTS/CONSTRAINTS/CONTEXT/RESOURCE/ENV.md）由 AGENTS.md 手动 read，一个 session 更新后其他 session 持旧上下文继续工作而不自知。
+- **全局资产更新不可知**：AGENTS.md、~/.pi/agent/skills 会构造进 system prompt，更新后已开 session 无法感知，需要 TUI 通知提醒 reload。
+- **进度型事实无处可查**：包下载 %、wayfinder map 完成度（6/8）、CI job 通过比——不是枚举状态，现有订阅/查询都不覆盖。
 
 ## Proposed outcome
 
-一个中心化常驻事件 daemon（pi extension 提供 tool）：agent 声明式订阅"某条件变为真"——MR 合并、CI pipeline/job 终态、ticket 关闭、HTTP 200（sglang 实例就绪）、语料处理完成、任意自定义脚本或命令。daemon 按可插拔判定器轮询判定，触发时经 pi 机制唤醒订阅 session；同时支持主动查询当前状态。判定语义继承 pi-poll 的 check 契约，并升级为 k8s probe 式 pass/fail/waiting 三态。跨 session 发布/订阅：一个 session 发布的 MR/ticket 事件可被另一个 session 订阅。这是 pi-workflow 报告 §5.4"中心化 daemon"设想的落地，reckon 盘点可演进为其查询侧。
+**通用实体状态注册表 + k8s 式 list&watch**（pi extension + 中心常驻 daemon）：
+
+- **底层是状态机建模**：分支/MR/CI/ticket/环境……本质都是实体（entity），实体带状态，状态间有转换。**事件是状态转换的副产品**——实体从 open→merged、draft→ready 时自然产生事件（edge-trigger 决策的统一化表述）。
+- **轮询复杂性的封装**：状态属外部系统（GitLab 管理的分支/MR）时只能轮询获得，除非外部系统原生提供 list&watch（k8s 资源可直接调 SDK/kubectl -w；本地文件可用 fs watch 原生推送）。daemon 本质 = 为 pi session 提供通用的 k8s 式 list&watch 与事件通知机制。
+- **状态两类**：枚举（有限离散，MR open/closed）与进度（数值型：下载进度、map 6/8、job 通过比）。
+- **实体父子关系**：branch → MR → CI pipeline → jobs；wayfinder Map → tickets（Map 有 progress 状态）；uv env → 依赖包（各自安装进度）。组织为可展示的状态树。
+- **订阅两方式**：agent 主动调 tool 订阅；session 启动自动订阅（项目级：共享文档集；全局级：AGENTS.md/skills）。
+- **两作用域**：项目（当前项目 docs/ 更新）与全局用户（skills 更新）。
+- ** reckom 演进为 /reckon command**：daemon 注册到 pi 的命令，按当前 session id 启发式展示该 session 订阅的实体/事件状态（自动忽略未订阅实体与自动订阅），父子关系树形展示（分支-mr-ci-job 一棵、env-依赖包一棵）。
+- 投递与 daemon 形态沿承已定稿的 spec #26（两段式 ack、edge-trigger、batch 合流、dead-letter、跨 session）。
 
 ## Constraints
 
-- 通知必须能唤醒订阅的 pi session（复用 bg_run 的 durable notification + follow-up turn 模式）
-- 中心化单实例 daemon，不是每 session 一个
-- 判定器可插拔：允许 agent 指定脚本或命令，daemon 负责调度与结果解释
-- 参考并尽量复用 bg_run 的实现模式（output + metadata、通知契约）与 pi-poll 的 check 契约
-- 判定器契约（grilling 2026-09-17 定案）：三态骨架（pass/fail/waiting），check 原语仅 shell 命令一种（HTTP 用 `curl -sf` 表达，继承 pi-poll 决策）；exit code（0/2/其余）仅是判定器创作约定，agent 可见的所有返回面一律用语义命名（verdict + reason + 证据输出），禁止让 agent 解码数字码
-- 投递必须 durable：事件/订阅落盘，投递带 ack，未 ack 补投（2026-09-17 实测 bg_run 丢通知 7/58≈12%，metadata 却记 notified:True）；架构参考 k8s controller-runtime 对不可靠 listener 的补救思路（workqueue 重试/去重、level-trigger 状态、resync 补投），裁剪为单机最小子集，不照搬全套 informer/indexer 机械
-- MVP 判定器全都要：自定义命令/脚本 + HTTP + GitLab MR/CI/ticket；服务就绪类由前两类覆盖
+- 通知必须能唤醒订阅的 pi session；中心化单实例 daemon；判定器可插拔（shell 单原语）
+- 判定器契约：三态骨架（pass/fail/waiting），exit code 仅内部约定，agent 可见面一律语义命名
+- 投递 durable：写前落盘 + 两段式 ack（accepted→verified）+ 退避重试 + dead-letter
+- MVP 判定器：自定义命令/脚本 + HTTP + GitLab MR/CI/ticket + **本地文件监听（fs watch 原生推送，非轮询）**
 - MVP 需支持跨 session 事件订阅
+- **MVP 不做派生订阅**（订阅实体自动含子实体事件——噪声/风暴风险，post-MVP 讨论）
+- 复用模式（#28 研究）：pi-schedule run ledger/single-flight/catch_up_one、pi-cron headless export/loop guard、pi-webhook polite injection/reattach
 
 ## Open questions
 
-- 判定器接口契约：exit code / stdout 如何映射 pass/fail/waiting 三态？（sharp）
-- 跨 session 通知投递通道：pi extension 的事件机制 vs herdr peer 通信？（sharp）
-- daemon 进程形态与状态存储：怎么起、活多久、订阅存哪？（sharp）
-- 订阅生命周期：session 退出后订阅保留还是取消？（sharp）
-- GitLab 判定器：glab 轮询 vs webhook；repo/remote 解析与凭证？（sharp）
-- 与 pi-poll 的合并/共存：daemon 化后 pi-poll 前台场景保留还是吸收？（unsharp）
-- reckon 集成：daemon 作为跨项目状态事实源，盘点查询怎么接？（unsharp）
+- 进度型状态建模：数值状态存 states payload？转换事件如何定义（阈值触发/每次变化/采样率）？（sharp）
+- 实体父子关系：entityKey 层级语法 vs parent 字段；对 query 与 /reckon 展示的影响？（sharp）
+- 自动订阅机制：session 启动注册集来源（per-project 配置 / 全局默认）？共享文档默认集（INTENTS/CONSTRAINTS/CONTEXT/RESOURCE/ENV）是否内置？（sharp）
+- 作用域模型：topic 加 project/user 维度；跨项目可见性规则？（sharp）
+- 文件监听源：fs watch 原生推送 vs 轮询的双模 checker 抽象（push 源与 poll 源统一接口）？（sharp）
+- /reckon command：注册方式、session id 启发式过滤、树形 TUI 展示？（sharp）
+- 派生订阅（子实体事件随父订阅）与事件风暴治理（unsharp，post-MVP）
+- 全局 TUI notify 通道细节（pi extension api）（unsharp）
