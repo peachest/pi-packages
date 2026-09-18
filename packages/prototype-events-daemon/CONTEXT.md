@@ -46,12 +46,20 @@ A value object fully describing how to evaluate one condition against one entity
 _Avoid_: watcher, monitor, poller
 
 **Subscription**:
-The aggregate that owns one agent's standing interest in an entity: open/re-arm/close lifecycle, per-leg, replaceable by closing and opening a new one when the check changes.
+The aggregate that owns one agent's standing interest in an entity: open/re-arm/cancel lifecycle, per-leg, replaceable by closing and opening a new one when the check changes.
 _Avoid_: topic subscription, listener (registration is always through the daemon, never a pub/sub topic surface)
 
+**Runner slot**:
+The runtime executor for one fetch key (EntityRef, template) — holds the run ledger and a reference count; created by the first subscription, destroyed when the last closes; not durable (rebuilt on daemon restart from subscriptions).
+_Avoid_: worker, probe instance, runner pool
+
 **Delivery**:
-One notification's journey to one session: pending → accepted → verified (or dead-letter). Exactly one row per (notification, session) — I10. Its verification is the presence of the deterministic notificationId entry in the session transcript (I9).
-_Avoid_: message, push, notification (a notification fans out to many deliveries)
+One notification's journey to one session, as a single-row aggregate: pending → accepted (session online, retrying) → verified, or parked (session gone, waiting for SESSION_START drain) → verified, with failed / dead-letter exits. Exactly one row per (notification, session) — I10. Its verification is the presence of the deterministic notificationId entry in the session transcript (I9).
+_Avoid_: message, push
+
+**Notification**:
+A value object, not an aggregate: the pushed content for one matched event (deterministic notificationId + billboard view). One notification fans out into many Deliveries.
+_Avoid_: notice, alert
 
 ### Roles
 
