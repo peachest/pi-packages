@@ -48,7 +48,7 @@ daemon = 中介 broker + 状态登记处：每订阅者的边际成本从全量 
 - MVP 判定器：自定义命令/脚本 + HTTP + GitLab MR/CI/ticket + **本地文件监听（fs watch 原生推送，非轮询）**
 - MVP 需支持跨 session 事件订阅
 - **MVP 不做派生订阅**（订阅实体自动含子实体事件——噪声/风暴风险，post-MVP 讨论）
-- 事件来源标记（2026-09-18 推荐，待用户确认后正式裁定）：Transitioned 事件带 provenance: probe-derived | agent-asserted；publish（agent 断言）路径必标 agent-asserted，reckon 与通知消费方可见区分。agent 可断言的实体集不做硬限制（US-16 跨 session 事实传递是合法场景），信任决策归消费方
+- 事件来源标记（2026-09-18 裁定：**post-MVP**）：MVP 不实现 provenance 字段；publish 无标记可用，幻觉断言污染风险由消费方自行警惕，风险行进 spec 增量清单；正式方案（事件带 probe-derived | agent-asserted + 消费方可见 + 探测修正豁免状态机检查）post-MVP 再裁
 - 复用模式（#28 研究）：pi-schedule run ledger/single-flight/catch_up_one、pi-cron headless export/loop guard、pi-webhook polite injection/reattach
 
 ## Non-goals（2026-09-17 裁定）
@@ -79,6 +79,6 @@ daemon = 中介 broker + 状态登记处：每订阅者的边际成本从全量 
 - 自动订阅默认集：机制已裁定（origin: auto）；共享文档默认集（INTENTS/CONSTRAINTS/CONTEXT/RESOURCE/ENV）是否内置？（sharp）
 - 文件监听残留：fs-watch 已裁定为 ProbeSpec 实现形态；push 源与 poll 源在 checker 层的统一接口实现（待后续票）？（sharp）
 - /reckon command：注册方式、session id 启发式过滤、树形 TUI 展示？（sharp）
-- 事件来源标记（见 Constraints 推荐条）：provenance 字段定稿？（sharp，待用户确认）
+- 事件来源标记：已裁定 post-MVP（见 Constraints），正式方案与探测修正豁免规则届时再裁（unsharp，post-MVP）
 - 派生订阅（子实体事件随父订阅）与事件风暴治理（unsharp，post-MVP）
 - 全局 TUI notify 通道细节（pi extension api）（unsharp）

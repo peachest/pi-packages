@@ -19,7 +19,7 @@ The attributes that explain the entity's *current* state — never history, neve
 _Avoid_: metadata, data, body
 
 **State (enum)**:
-A member of the profile-defined closed set of states an entity moves through. Contrast with progress values, which are deliberately not states.
+A member of the profile-defined closed set of states an entity moves through. Null until the first verdict arrives — there is no synthetic "unprobed" pre-state. Contrast with progress values, which are deliberately not states, and with Delivery state, which is kernel-defined bookkeeping.
 _Avoid_: status (reserved for the `status()` query op), phase
 
 **Transition**:
@@ -42,7 +42,7 @@ _Avoid_: (the unqualified term "entity" covers this; say ephemeral only when the
 ### Probing and subscribing
 
 **ProbeSpec**:
-A value object fully describing how to evaluate one condition against one entity (check command, source, interval). Two subscriptions with equal ProbeSpecs share one runner (I5).
+A value object fully describing how to evaluate one condition against one entity (check command, source, interval). The check command text is one of its components; the checker is the execution primitive that runs it. Two subscriptions with equal ProbeSpecs share one runner (I5).
 _Avoid_: watcher, monitor, poller
 
 **Subscription**:
@@ -56,6 +56,10 @@ _Avoid_: worker, probe instance, runner pool
 **Delivery**:
 One notification's journey to one session, as a single-row aggregate: pending → accepted (session online, retrying) → verified, or parked (session gone, waiting for SESSION_START drain) → verified, with failed / dead-letter exits. Exactly one row per (notification, session) — I10. Its verification is the presence of the deterministic notificationId entry in the session transcript (I9).
 _Avoid_: message, push
+
+**Delivery state**:
+The kernel-defined fixed closed set of bookkeeping states a delivery moves through — pending | accepted | parked | verified | failed | dead-letter. Not profile-defined, and never produces events (only entity transitions do).
+_Avoid_: delivery status
 
 **Notification**:
 A value object, not an aggregate: the pushed content for one matched event (deterministic notificationId + billboard view). One notification fans out into many Deliveries.
