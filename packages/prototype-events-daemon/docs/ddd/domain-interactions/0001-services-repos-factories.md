@@ -26,7 +26,7 @@
 | 工厂 | 创建条件 | 初始状态 |
 |---|---|---|
 | Entity 首次观测 | key generator 解析 + 首个订阅或懒查询（B4） | **state=null** 直到首个 verdict（无 unprobed 前置态，裁定①-3）；读侧处理 null（谓词 null 期不命中） |
-| Ephemeral 实体 | subscribe(check)，key = sha1(check+cwd+interval)（B2） | born → 首个 verdict 前无状态；terminal→retired(7d 清理)，retired 后拒绝 publish |
+| Ephemeral 实体 | subscribe(check)，key = sha1(check + schedule + cwd)（B1 整合式，schedule 泛化后钉死） | born → 首个 verdict 前无状态；terminal→retired(7d 清理)，retired 后拒绝 publish |
 | Subscription | 模板实例化 + 意图 opts（on/once/flip/template） | 即激活，进槽 refcount++；同 session 同参重复 subscribe = 幂等返回既有；换参 = 关旧开新（checker 替换） |
 
 profile 冲突防护（#30 裁定）：EntityRegistered 记录 profile id，同 EntityRef 被不同 profile subscribe → 报错。

@@ -32,7 +32,7 @@ A transition where the state does not change but the content identity does — (
 The payload field whose change alone justifies an event: image digest, file content hash, config revision.
 
 **Ephemeral entity**:
-An entity born from one ad-hoc condition, with no external identity (key = daemon-minted sha1 of the check), retired after reaching a terminal state. Short-lived by design.
+An entity born from one ad-hoc condition, with no external identity (key = daemon-minted sha1 of check + schedule + cwd), retired after reaching a terminal state. Short-lived by design.
 _Avoid_: temporary entity, ad-hoc watch
 
 **Persistent entity**:
@@ -42,8 +42,12 @@ _Avoid_: (the unqualified term "entity" covers this; say ephemeral only when the
 ### Probing and subscribing
 
 **ProbeSpec**:
-A value object fully describing how to evaluate one condition against one entity (check command, source, interval). The check command text is one of its components; the checker is the execution primitive that runs it. Two subscriptions with equal ProbeSpecs share one runner (I5).
+A value object fully describing how to evaluate one condition against one entity (check command, source, schedule). The check command text is one of its components; the checker is the execution primitive that runs it. Two subscriptions with equal ProbeSpecs share one runner (I5).
 _Avoid_: watcher, monitor, poller
+
+**Schedule**:
+The time dimension of a ProbeSpec: `{ type: "interval", every: "60s" }` or `{ type: "cron", expr, tz? }` (crontab 5-field, evaluated at tick points, timezone optional defaulting to local). Part of the template asset — agents never set it in subscribe opts (B1); the type enum is the extension point for future cadence forms.
+_Avoid_: interval (only one schedule type), polling frequency
 
 **Subscription**:
 The aggregate that owns one agent's standing interest in an entity: open/re-arm/cancel lifecycle, per-leg, replaceable by closing and opening a new one when the check changes.
