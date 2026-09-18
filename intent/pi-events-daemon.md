@@ -13,6 +13,9 @@ Agent 需要等外部条件（推理服务就绪、MR 合并、CI 通过、ticke
 
 - **bg_run** 只检测"进程退出"一种事件，其余条件必须手写轮询脚本包进去；任务 session-scoped，只唤醒 launching session，且通知静默丢失（实测 12%）。
 - **pi-poll** 把"shell 条件轮询"做好了，但前台阻塞——长等待占死 turn，无通知唤醒，不能跨 session/跨项目。
+- **herdr + multi-agent-collab** 解决了 peer 间点对点对话，但广播一次状态变化 = 向 N 个 peer 各发一份全量 prompt（token O(N)，发布方须先知道所有 peer 编址）；自然语言消息无结构化事件语义、无幂等去重；peer 关闭即丢，无补投。现有工具是"会话通道"（message passing），缺的是"事件底座"（broker + 登记处）。
+
+**定位（2026-09-17 裁定，详见 #29）**：daemon = 中介 broker + 状态登记处——发布成本 O(1)，订阅方各收极小通知（notificationId + evidenceRef 指针）；离线 parked 补投；共享抓取（N 谓词一次 fetch）；非事件状态登记（/reckon 点查询）。让**等待**和**感知**不再消耗任何 session 的 token。
 
 实测证据：speculative-training 3 session 65 次 bg_run 中 45% 是纯"等待条件"任务；全量 6380 条长任务轨迹中前台轮询累计 13.9h；跨天弃置 30 例（含 63.5h smoke test 挂过夜）。
 
@@ -44,6 +47,17 @@ Agent 需要等外部条件（推理服务就绪、MR 合并、CI 通过、ticke
 - MVP 需支持跨 session 事件订阅
 - **MVP 不做派生订阅**（订阅实体自动含子实体事件——噪声/风暴风险，post-MVP 讨论）
 - 复用模式（#28 研究）：pi-schedule run ledger/single-flight/catch_up_one、pi-cron headless export/loop guard、pi-webhook polite injection/reattach
+
+## Non-goals（2026-09-17 裁定）
+
+- 不做安全边界/凭证存储（zero credential）
+- 不做编排/leader 派活（8 月实验已失败；daemon 只做感知不做指挥——与 multi-agent-collab 分界：collab 管"对话"，daemon 管"知道"；持续演进不排除未来纳入编排或与 bg_* 更深度集成，当前按此边界）
+- 不做通用消息队列（事件是实体转换的副产品，非 payload 传递服务；>2KB 走 evidenceRef）
+- 不执行副作用工作（checks are probes，ADR 0004）
+- 不替代 harness-v2 runtime lane（只做外挂 adapter，不侵入内核）
+- 不对源系统特判（全部经 profile 模板 + check 抽象）
+- 诊断/telemetry 后置，不进 MVP 目标
+- 会话存储扫描约束：MVP 扫 JSONL（v3 custom_message / v4 custom agent message 双形态 + lane 信封字段透传 + 撕裂尾行容错；SQLite 后端在役则改 SQL 查询）
 
 ## Open questions
 
