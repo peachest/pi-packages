@@ -20,7 +20,7 @@ _Avoid_: metadata, data, body
 
 **State (enum)**:
 A member of the profile-defined closed set of states an entity moves through. Null until the first verdict arrives — there is no synthetic "unprobed" pre-state. Contrast with progress values, which are deliberately not states, and with Delivery state, which is kernel-defined bookkeeping.
-_Avoid_: status (reserved for the `status()` query op), phase
+_Avoid_: status (collides with the `status()` registration op — a write op; reads go through `query`), phase
 
 **Transition**:
 A state change of an entity, committed in the same transaction as exactly one event (invariant I1).
