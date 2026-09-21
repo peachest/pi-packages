@@ -78,12 +78,26 @@ export function herdrTabRename(pi: ExtensionAPI, send: SendFn = (label) => renam
 
 	let lastLabel: string | undefined;
 
+	// session_start fires on startup, /new, /resume and /fork (the extension
+	// instance is reloaded and rebound on switch). Sync the current name, or
+	// clear the tab when the new session has none (e.g. /new), so the tab
+	// never keeps a previous session's name. Herdr accepts an empty label
+	// (verified against tab.rename over the socket).
+	pi.on("session_start", (_event, ctx) => {
+		if (ctx?.mode !== "tui") return;
+		const label = pi.getSessionName()?.trim() ?? "";
+		if (label === lastLabel) return;
+		lastLabel = label;
+		void send(label);
+	});
+
 	pi.on("session_info_changed", (event, ctx) => {
 		// TUI only: bg subagent / JSON-mode sessions manage their own names,
-		// never the user's Herdr tab.
+		// never the user's Herdr tab. An undefined name (cleared) also clears
+		// the tab label.
 		if (ctx?.mode !== "tui") return;
-		const label = event.name?.trim();
-		if (!label || label === lastLabel) return;
+		const label = event.name?.trim() ?? "";
+		if (label === lastLabel) return;
 		lastLabel = label;
 		void send(label);
 	});

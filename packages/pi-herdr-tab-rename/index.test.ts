@@ -37,16 +37,18 @@ describe("pi-herdr-tab-rename", () => {
 		expect(sent).toEqual(["Fix auth bug"]);
 	});
 
-	it("ignores non-tui sessions (bg subagents) and cleared names", async () => {
+	it("ignores non-tui sessions (bg subagents); cleared name clears the tab", async () => {
 		const { herdrTabRename } = await loadExtension();
 		const pi = createFakePi();
 		const sent: string[] = [];
 		herdrTabRename(pi as any, (label) => (sent.push(label), true));
 
 		pi.emit({ type: "session_info_changed", name: "subagent work" }, { mode: "json" });
+		expect(sent).toEqual([]);
+
 		pi.emit({ type: "session_info_changed", name: undefined }, { mode: "tui" });
 		pi.emit({ type: "session_info_changed", name: "  " }, { mode: "tui" });
-		expect(sent).toEqual([]);
+		expect(sent).toEqual([""]);
 	});
 
 	it("skips duplicate consecutive names", async () => {
