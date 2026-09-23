@@ -1,0 +1,37 @@
+{
+  "name": "pi-timekeeper",
+  "version": "0.1.0",
+  "description": "Codex-style time awareness for pi — pull-based date/time injection at run boundaries (before_agent_start), compact re-anchor, persistent state. Never wakes idle sessions.",
+  "keywords": [
+    "pi-package",
+    "time",
+    "date",
+    "timekeeper"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hyx/pi-mypackage.git",
+    "directory": "packages/pi-timekeeper"
+  },
+  "type": "module",
+  "main": "./index.ts",
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "scripts": {
+    "check": "tsc --noEmit",
+    "test": "vitest run",
+    "verify": "npm run check && npm run test"
+  },
+  "license": "MIT",
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    }
+  }
+}

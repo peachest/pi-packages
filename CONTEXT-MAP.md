@@ -1,6 +1,6 @@
 # Context Map
 
-This is a monorepo with 10 packages under `packages/*`. Each package has its own domain vocabulary. This file points to the per-package `CONTEXT.md` files.
+This is a monorepo with 22 packages under `packages/*`. Each package has its own domain vocabulary. This file points to the per-package `CONTEXT.md` files.
 
 ## Packages with CONTEXT.md
 
@@ -16,6 +16,7 @@ This is a monorepo with 10 packages under `packages/*`. Each package has its own
 | [pi-think-tool](packages/pi-think-tool/CONTEXT.md) | Think/Env/Consequence | 推理记录、环境采集、后果评估三工具 |
 | [pi-wishlist](packages/pi-wishlist/CONTEXT.md) | Wishlist | Pi Package 愿望单，后台更新检查和通知 |
 | [pi-skill-presets](packages/pi-skill-presets/CONTEXT.md) | Presets | Skill 分组与动态加载：prefix-cache-aware 的 transient injection + persistent entry 状态跟踪 |
+| [pi-timekeeper](packages/pi-timekeeper/CONTEXT.md) | Timekeeper | Codex 式时间感知：run 边界拉式注入时间锚，节流双条件 + 压缩重锚，绝不唤醒 idle |
 | [prototype-events-daemon](packages/prototype-events-daemon/CONTEXT.md) | Events daemon | 实体状态机基底：实体镜像外部系统，转换产出事件，订阅唤醒 session |
 
 ## Packages without CONTEXT.md yet
