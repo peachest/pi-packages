@@ -191,6 +191,14 @@ describe("restoreState", () => {
     expect(restoreState(entries)).toEqual({ lastDate: "2000-01-01", lastReminderAt: 1 });
   });
 
+  it("data: {} passes the guard — scan terminates, fields normalize, NO rescan (prototype semantics)", () => {
+    const entries = [
+      entry("timekeeper.state", { lastDate: "2000-01-01", lastReminderAt: 1 }),
+      entry("timekeeper.state", {}),
+    ];
+    expect(restoreState(entries)).toEqual({ lastDate: undefined, lastReminderAt: undefined });
+  });
+
   it("roundtrip: computeInjection result state survives the entry shape", () => {
     const r = computeInjection({}, NOW, DEFAULT_CONFIG);
     expect(r.injected).toBe(true);

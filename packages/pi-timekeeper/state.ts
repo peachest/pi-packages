@@ -19,6 +19,9 @@ export const DEFAULT_CONFIG: TKConfig = {
   reminderIntervalSeconds: 3600,
 };
 
+/** Wire key of the persisted state entry (single source of truth; index.ts imports this). */
+export const STATE_ENTRY = "timekeeper.state";
+
 export function configFromEnv(env: NodeJS.ProcessEnv = process.env): TKConfig {
   const enabled = env["TIMEKEEPER_REMINDER_ENABLED"];
   const interval = Number(env["TIMEKEEPER_INTERVAL_SECONDS"]);
@@ -98,7 +101,7 @@ export function restoreState(
 ): TKState {
   for (let i = entries.length - 1; i >= 0; i--) {
     const e = entries[i];
-    if (e && e.customType === "timekeeper.state" && e.data && typeof e.data === "object") {
+    if (e && e.customType === STATE_ENTRY && e.data && typeof e.data === "object") {
       const d = e.data as TKState;
       return {
         lastDate: typeof d.lastDate === "string" ? d.lastDate : undefined,

@@ -7,10 +7,10 @@ import {
   computeInjection,
   configFromEnv,
   restoreState,
+  STATE_ENTRY,
   type TKState,
 } from "./state.ts";
 
-const STATE_ENTRY = "timekeeper.state";
 const MESSAGE_CUSTOM_TYPE = "timekeeper.environment";
 
 export default function timekeeperExtension(pi: ExtensionAPI) {
