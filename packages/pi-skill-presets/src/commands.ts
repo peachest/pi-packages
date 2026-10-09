@@ -11,11 +11,11 @@
 import type { ExtensionCommandContext, ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { PresetState } from "./preset-state.ts";
 import type { PresetOpEntry } from "./types.ts";
+import { PRESET_OP_CUSTOM_TYPE } from "./types.ts";
 import { readPresetsConfig, getPresetSkills } from "./config.ts";
 import { showPresetDialog } from "./dialog.ts";
 
 /** The custom type for preset operation entries. */
-export const PRESET_OP_CUSTOM_TYPE = "preset-op";
 
 /**
  * Create command handlers with shared state.

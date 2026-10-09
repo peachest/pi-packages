@@ -1,3 +1,5 @@
+Packages are deep modules: see [packages/README.md](./packages/README.md) before adding or importing one.
+
 ## 安装
 
 安装本仓库下的包到 pi 时，必须用 `pi install ./packages/<name>`，禁止手动复制到 `~/.pi/agent/extensions/`（会绕过 settings 追踪产生漂移）。完整规范见 `docs/agents/install-packages.md`。

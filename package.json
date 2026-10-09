@@ -6,15 +6,17 @@
     "packages/*"
   ],
   "scripts": {
-    "check": "tsc --noEmit",
+    "check": "npm run lint:boundaries && tsc --noEmit",
     "test": "vitest run",
-    "postinstall": "node scripts/link-pi-tui.mjs"
+    "postinstall": "node scripts/link-pi-tui.mjs",
+    "lint:boundaries": "depcruise packages"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@stryker-mutator/core": "^10.0.0",
     "@stryker-mutator/vitest-runner": "^10.0.0",
     "@types/node": "^25.9.1",
+    "dependency-cruiser": "^18.5.0",
     "eslint": "^10.4.1",
     "typescript": "^5.5.0",
     "typescript-eslint": "^8.60.0",

@@ -34,3 +34,6 @@ export interface ResolvedActiveSet {
   /** Skills appearing in multiple loaded presets (deduplicated, informational). */
   duplicates: string[];
 }
+
+/** Custom entry type for preset operations (shared by commands and dialog). */
+export const PRESET_OP_CUSTOM_TYPE = "preset-op";

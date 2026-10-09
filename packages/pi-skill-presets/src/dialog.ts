@@ -29,7 +29,7 @@ import { loadSkills } from "@earendil-works/pi-coding-agent";
 import type { PresetState } from "./preset-state.ts";
 import type { PresetsConfig, PresetOpEntry } from "./types.ts";
 import { getPresetSkills, writePresetsConfig, getAgentDir } from "./config.ts";
-import { PRESET_OP_CUSTOM_TYPE } from "./commands.ts";
+import { PRESET_OP_CUSTOM_TYPE } from "./types.ts";
 
 type DialogMode = "browse" | "preset-edit" | "skill-list" | "new-preset" | "confirm";
 
