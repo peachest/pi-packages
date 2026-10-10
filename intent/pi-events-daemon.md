@@ -2,7 +2,7 @@
 origin: idea
 status: accepted
 created: 2026-09-17
-updated: 2026-09-18
+updated: 2026-10-10
 ---
 
 # Intent: pi-events-daemon
@@ -68,6 +68,19 @@ daemon = 中介 broker + 状态登记处：每订阅者的边际成本从全量 
 - **一致性**：parked → SESSION_START drain 窗口内订阅者永久退场 → 事件永不兑现。缓解：dead-letter + reckon 对账
 - **业务**：agent 习惯手写轮询，不主动 subscribe（行为假设，上线观测采纳率）
 - **交付**：范围蔓延——从"感知"滑向"编排"（Non-goals 第 2 条是最大引力，演进预留 bg_* 集成时须重新裁定边界）
+
+## 进展（2026-10-10）
+
+设计阶段闭环，待进入实现：
+
+- **v2 汇总 spec 冻结**：#31（单一权威来源，ready-for-agent）；定位裁定 #29、架构三方投票融合（12 模块 + 5 循环 + D1-D4 裁定）
+- **12 份模块 spec 发布**（#50-#61，均 ready-for-agent）：protocol/domain/store/kernel/profiles/prober/transcript-adapter/loops/fx/transport/daemon-main/extension，验收面 = 深模块审查（05）的 interface facts
+- **评审三轮**：review-spec 两轮（五路 doc-reviewer，逐轮修订同步）+ challenger 审计评审意见本身（四轴，可信度 78/100，9 项发现全收口：once/readyCheck/换参/on-transition 执行/投递铁律等归属洞补齐）——**放行 to-tickets**
+- **工程地基**：pi-mypackage 深模块边界强制已落地（dependency-cruiser 四规则，commit e7029f6），12 模块实现直接复制 packages/example 模板
+- **DDD 归档**：docs/ddd/ 七环节 + ADR 0001-0005 + CONTEXT.md 词汇表
+- **Companion 待办**：reckon skill 改造、pi-events-doctor 充实（schema 冻结后填 SQL）、academy orca 版（post-MVP）、fabric mesh 集成（post-MVP 候选）
+
+**下一步：/skill:to-tickets**（#31 × 12 模块 spec 切实现票，依赖序：五叶并行 → store → kernel/profiles → loops → 边界三票）。
 
 ## Open questions（2026-09-18 按 #29 裁定清账）
 
