@@ -57,6 +57,8 @@ export type SubscriptionRow = {
   thresholds?: { failureThreshold: number; successThreshold: number };
   closedAt?: number;
   closedReason?: "cancelled" | "replaced" | "ttl" | "once-passed" | "failed-terminal";
+  /** 票 26：两阶段订阅相位（readyCheck flip 判定；缺省 startup）。 */
+  phase?: "startup" | "flip";
 };
 
 export type DeliveryRowData = {

@@ -22,6 +22,7 @@ import {
 } from "../domain/types.ts";
 import {
   adoptThresholds,
+  checkForPhase,
   epochAccepts,
   intentToEvent,
   planTransition,
@@ -104,11 +105,12 @@ export type SubscribeResult =
   | { subscribed: true; subscriptionId: string; entityRef: EntityRef; state: string | null; validate?: SmokeValidate; warnings: readonly string[] }
   | { subscribed: false; validate: SmokeValidate };
 
-/** cancel（op 契约幂等：未知/已关 → {cancelled:false}；sessionId 给定时校验归属；loops 内部关闭路径不带 sessionId）。 */
+/** cancel（op 契约幂等：未知/已关 → {cancelled:false}；sessionId 给定时校验归属；loops 内部关闭路径不带 sessionId，
+ *  reason 覆盖全部关闭面：op 侧 cancelled/ttl + L0 verdict 侧 once-passed/failed-terminal（票 26））。 */
 export type CancelRequest = {
   subscriptionId: string;
   sessionId?: string;
-  reason?: "cancelled" | "ttl";
+  reason?: "cancelled" | "ttl" | "once-passed" | "failed-terminal";
   now: number;
 };
 
@@ -480,6 +482,35 @@ export class Kernel {
         tx.putSubscription({ ...row, closedAt: req.now, closedReason: req.reason ?? "cancelled" });
         this.refreshSlotRefCount(tx, row);
         return { cancelled: true };
+      }),
+    );
+  }
+
+  /**
+   * 两阶段订阅推进（票 26 L0 消费路径调用）：startup passed → phase=flip（仅一跳，幂等）。
+   * solo 槽（无其他活跃订阅）同步替换 ProbeSpec.check = readyCheck ?? check（flip 判定第二 check，
+   * 缺省沿用 check）；共享槽不换——first-creator fetch 共享（I5），混合相位 MVP 不支持。
+   */
+  flipSubscription(subscriptionId: string): { advanced: boolean } {
+    return this.withRetry(`flip ${subscriptionId}`, () =>
+      this.store.tx((tx) => {
+        const row = tx.getSubscription(subscriptionId);
+        if (!row || row.closedAt !== undefined) return { advanced: false };
+        if ((row.phase ?? "startup") !== "startup") return { advanced: false };
+        tx.putSubscription({ ...row, phase: "flip" });
+        if (row.template && row.check) {
+          const slotKey = runnerSlotKey({ type: row.entityRefType, key: row.entityRefKey }, row.template);
+          const others = this.store
+            .querySubscriptions({ entityRefType: row.entityRefType, entityRefKey: row.entityRefKey })
+            .filter(
+              (s) => s.closedAt === undefined && s.template === row.template && s.subscriptionId !== row.subscriptionId,
+            );
+          const spec = tx.getProbeSpec(slotKey);
+          if (others.length === 0 && spec) {
+            tx.putProbeSpec({ ...spec, check: checkForPhase({ check: row.check, readyCheck: row.readyCheck }, "flip") });
+          }
+        }
+        return { advanced: true };
       }),
     );
   }
