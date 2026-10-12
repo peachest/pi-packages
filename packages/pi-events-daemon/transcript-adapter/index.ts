@@ -26,8 +26,36 @@
  *   + "not-found"（撕裂尾行期间不产生假阴性：未落盘 ≠ 不存在）。
  * - 撕裂尾行（harness-v2：JSONL 无 fsync，尾行 = 未确认写入可截断）：仅最后一个非空行
  *   JSON.parse 失败视为撕裂、跳过；中段坏行是 corruption → unknown + corrupt-line。
+ *
+ * ## 双后端分流（票 20，#31 双后端 MVP 裁定 2026-10-10：v3 JSONL 与 harness-v2 SQLite 并存）
+ *
+ * - 逐 session 后端判别 = pi settings 会话存储信号 + transcript 文件头采样；判别时点 =
+ *   daemon 启动 / 新 session 注册（registerSession，结果按 sessionFile 缓存，重复注册重判；
+ *   未注册 ref 的 verify 惰性判别一次并缓存，语义与注册路径一致）。
+ * - 判别三路：①无 sqlite 信号 → JSONL 扫描（含文件未建的新会话常态，不算歧义）；
+ *   ②settings 会话存储 = sqlite 且 ref 带 sessionId 且头采样非 JSONL → SQLite 点查
+ *   （node:sqlite 只读，票 22 同款零依赖，sqlite-backend.ts；A 层 IO 禁令按名单生效，
+ *   sqlite 不在其列——票 20 在册裁定）；③settings=sqlite 但头采样命中 v3/v4 JSONL（信号矛盾）、
+ *   或 sqlite 信号不完整（ref 缺 sessionId，库内无法定域）→ 判别歧义 → 按 JSONL 扫描
+ *   （最保守路径）+ warning "ambiguous-backend"。
+ * - SQLite 形态 = harness-v2 代表性样本（entries/branch_entries，见 sqlite-backend.ts 与测试
+ *   fixture，待对齐 packages/session-backends/sqlite-node 定稿）。SQL 点查与 JSONL 扫描共享
+ *   同一抽取/聚合面（decide），保证两后端 verify 等价；lane 信封不透传（herdr 派发信封为
+ *   JSONL content 形态，SQLite lane 列语义待对齐）。
+ *
+ * ## C1 启动自检 + 双层降级（票 21，#31 C1 正典语义）
+ *
+ * - 全局降级（模式级）：selfCheck() 对全部已注册 session 的 transcript 后端做可读性自测
+ *   （JSONL：可读+可扫描；SQLite：库可开+点查可执行；ENOENT = 新会话未落盘，不算故障）。
+ *   失败 → 全局降级标志置位：推送即视为 accepted、不再 verify——verify 拒推 verdict
+ *   （unknown + "degraded"），重复投递由 billboard notificationId 去重；降级原因经
+ *   degradeReason() 携带 warning（doctor/reckon 暴露降级态的数据源）。恢复路径 = 再次
+ *   selfCheck() 成功即清除降级、verify 回正常。
+ * - 单条兜底（条目级）：单条 transcript 无法唯一确定 verdict → unknown + 原因码正常返回
+ *   （票 19 语义），与全局降级相区分：一个是全局模式，一个是单条兜底。
  */
 import type { Fs } from "../fx/index.ts";
+import { queryNotificationEntries, type SqliteEntryRow } from "./sqlite-backend.ts";
 
 /** 通知条目 customType 标记——写入方（pi-events extension 包）与读取方共用此唯一拼写。 */
 export const NOTIFICATION_CUSTOM_TYPE = "pi-events.notification";
@@ -39,6 +67,8 @@ export const NOTIFICATION_CUSTOM_TYPE = "pi-events.notification";
  */
 export interface SessionRef {
   sessionFile: string;
+  /** harness-v2 SQLite 库内 session 标识（SQL 点查按 session 分域；JSONL 后端忽略）。待对齐：harness-v2 session id 形态。 */
+  sessionId?: string;
 }
 
 /**
@@ -50,20 +80,31 @@ export type AdapterVerdict = "passed" | "failed" | "waiting" | "unknown";
 /** transcript 形态代（文件头采样 / 命中条目判别）。 */
 export type TranscriptFormat = "v3" | "v4";
 
-/** locate 结果：路径 + 文件头采样形态判别（#31 逐 session 后端探测的最小面）。 */
+/** 逐 session 后端（#31 双后端 MVP：v3/v4 JSONL 与 harness-v2 SQLite 并存分流）。 */
+export type SessionBackend = "jsonl" | "sqlite";
+
+/** registerSession 判别结果。判别歧义 → backend 恒 "jsonl"（最保守路径）+ warning（#31）。 */
+export interface BackendDetection {
+  backend: SessionBackend;
+  /** 判别歧义标记：settings↔文件头信号矛盾，或 sqlite 信号不完整（ref 缺 sessionId）。 */
+  warning?: "ambiguous-backend";
+}
+
+/** locate 结果：路径 + 文件头采样形态判别。仅 JSONL 形态采样提示（SQLite 库文件 → unknown）；后端判别归 registerSession。 */
 export interface LocateResult {
   path: string;
   /** 头行缺失/无法判别 → "unknown"（按 JSONL 扫描最保守路径处理，#31；调用方记 warning）。 */
   format: TranscriptFormat | "unknown";
 }
 
-/** unknown/waiting 的原因码（C1：降级带原因，调用方可分类处理）。 */
+/** unknown/waiting 的原因码（C1：降级带原因，调用方可分类处理；degraded = 票 21 全局降级模式级）。 */
 export type VerifyReason =
   | "not-found"
   | "unreadable"
   | "corrupt-line"
   | "verdict-missing"
-  | "conflicting-verdicts";
+  | "conflicting-verdicts"
+  | "degraded";
 
 /** verify 结果——verdict + 通知条目携带的 evidence 指针 + 形态标记（票 19 验收形状）。 */
 export interface VerifyResult {
@@ -78,11 +119,31 @@ export interface VerifyResult {
   reason?: VerifyReason;
 }
 
+/** selfCheck 结果：ok=false 的 reason 为降级 warning 事件载荷。 */
+export interface SelfCheckResult {
+  ok: boolean;
+  /** 自检失败原因（`<sessionFile>: <failure>` 形态；doctor/reckon 暴露降级态的数据源）。 */
+  reason?: string;
+}
+
+export interface TranscriptAdapterOptions {
+  /** pi settings 路径（会话存储配置读取源，经同一 fx Fs 读取）。缺省 = 无 settings 信号，仅文件头采样判别；组合根接线时传入真实路径（待接线票）。 */
+  settingsPath?: string;
+}
+
 export interface TranscriptAdapter {
   /** 会话定位：读 transcript 并采样文件头判形态。文件不可读（未创建/已删）→ null。 */
   locate(sessionRef: SessionRef): Promise<LocateResult | null>;
   /** I9 点查：notificationId 在目标 transcript 的判定。永远正常返回，不抛异常（C1）。 */
   verify(sessionRef: SessionRef, notificationId: string): Promise<VerifyResult>;
+  /** 票 20：逐 session 后端判别 + 注册（daemon 启动 / 新 session 注册时各调一次，#31）。重复注册重判。 */
+  registerSession(sessionRef: SessionRef): Promise<BackendDetection>;
+  /** 票 21 C1：启动自检——对全部已注册 session 的 transcript 后端做可读性自测；失败置全局降级，成功清除（恢复路径）。 */
+  selfCheck(): Promise<SelfCheckResult>;
+  /** C1 全局降级标志：true = 推送即视为 accepted、不再 verify（调用方直通；verify 亦拒推 verdict）。 */
+  isDegraded(): boolean;
+  /** 降级原因（warning 事件载荷；未降级 undefined）。 */
+  degradeReason(): string | undefined;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -129,8 +190,7 @@ function hitOfV3(record: Record<string, unknown>): NotificationHit {
   };
 }
 
-function hitOfV4(record: Record<string, unknown>): NotificationHit {
-  const message = record.message as Record<string, unknown>;
+function hitOfV4Message(message: Record<string, unknown>): NotificationHit {
   const details = message.details;
   const lane = Array.isArray(message.content)
     ? message.content.find((item): item is { sessionId: string } => isRecord(item) && typeof item.sessionId === "string")
@@ -145,11 +205,211 @@ function hitOfV4(record: Record<string, unknown>): NotificationHit {
   };
 }
 
+function hitOfV4(record: Record<string, unknown>): NotificationHit {
+  return hitOfV4Message(record.message as Record<string, unknown>);
+}
+
 function firstMeaningfulLine(content: string): string | undefined {
   return content.split("\n").find((line) => line.trim() !== "");
 }
 
-function createTranscriptAdapter(fs: Fs): TranscriptAdapter {
+/** 文件头采样形态判别（locate 与后端判别共用；content 已读到，不碰 fs）。 */
+function sampleHead(content: string): TranscriptFormat | "unknown" {
+  const first = firstMeaningfulLine(content);
+  if (first === undefined) return "unknown";
+  try {
+    const header: unknown = JSON.parse(first);
+    if (isRecord(header)) {
+      if (isHeaderV4(header)) return "v4";
+      if (isHeaderV3(header)) return "v3";
+    }
+  } catch {
+    // 头行本身撕裂/非 JSON → unknown（最保守路径）
+  }
+  return "unknown";
+}
+
+/** JSONL 扫描（撕裂尾行容错）→ 命中条目集；中段坏行 → corrupt。 */
+function scanJsonl(content: string): { hits: NotificationHit[] } | { corrupt: true } {
+  const lines = content.split("\n");
+  let lastMeaningful = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].trim() !== "") lastMeaningful = i;
+  }
+
+  const hits: NotificationHit[] = [];
+
+  for (let i = 0; i <= lastMeaningful; i++) {
+    const line = lines[i];
+    if (line.trim() === "") continue;
+    let entry: unknown;
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      // 撕裂容错：仅最后一个非空行解析失败 = 未确认写入，跳过只影响该行；
+      // 中段坏行是 corruption（harness-v2 原义）→ 保守降级。
+      if (i === lastMeaningful) break;
+      return { corrupt: true };
+    }
+    if (!isRecord(entry)) continue;
+    if (isNotificationV3(entry)) hits.push(hitOfV3(entry));
+    else if (isNotificationV4(entry)) hits.push(hitOfV4(entry));
+  }
+  return { hits };
+}
+
+/** 命中条目 → verdict 裁决（两后端共享的聚合面——等价面保证，票 20）。 */
+function decide(hits: NotificationHit[], notificationId: string): VerifyResult {
+  const matched = hits.filter((h) => h.notificationId === notificationId);
+  if (matched.length === 0) return { verdict: "waiting", reason: "not-found" };
+
+  if (matched.some((h) => typeof h.verdict !== "string" || !VERDICTS.includes(h.verdict))) {
+    return { verdict: "unknown", reason: "verdict-missing" };
+  }
+  const distinct = [...new Set(matched.map((h) => h.verdict as string))];
+  if (distinct.length > 1) return { verdict: "unknown", reason: "conflicting-verdicts" };
+
+  const winner = matched[matched.length - 1]; // 多条同 verdict：取最新（文件序 / seq 序）
+  return {
+    verdict: winner.verdict as Exclude<AdapterVerdict, "unknown">,
+    ...(typeof winner.evidenceRef === "string" ? { evidenceRef: winner.evidenceRef } : {}),
+    format: winner.format, // 形态标记按命中路径归类（header 仅 locate 提示，不参与 verify 归类）
+    ...(winner.lane !== undefined ? { lane: winner.lane } : {}),
+  };
+}
+
+/** SQLite 点查行 → 命中条目（payload = v4 custom agent message；与 JSONL 共用字段路径抽取）。 */
+function scanSqlite(rows: SqliteEntryRow[]): { hits: NotificationHit[] } | { corrupt: true } {
+  const hits: NotificationHit[] = [];
+  const seenSeqs = new Set<number>();
+  for (const row of rows) {
+    if (seenSeqs.has(row.seq)) continue; // 同条目多 branch 复制行去重（harness-v2 branch 复制语义）
+    seenSeqs.add(row.seq);
+    let payload: unknown;
+    try {
+      payload = JSON.parse(row.payload);
+    } catch {
+      return { corrupt: true }; // 库内坏 payload = corruption（SQL 后端无撕裂尾行形态）
+    }
+    if (
+      isRecord(payload) &&
+      payload.role === "custom" &&
+      payload.customType === NOTIFICATION_CUSTOM_TYPE
+    ) {
+      hits.push(hitOfV4Message(payload));
+    }
+  }
+  return { hits };
+}
+
+function isEnoent(err: unknown): boolean {
+  return isRecord(err) && err.code === "ENOENT";
+}
+
+function errText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+/** pi settings 会话存储信号（key 待对齐：harness-v2 settings 未定稿，代表形态）；settings 不可读/坏 JSON = 无信号。 */
+function settingsSignalsSqlite(raw: string): boolean {
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return isRecord(parsed) && isRecord(parsed.sessionStorage) && parsed.sessionStorage.backend === "sqlite";
+  } catch {
+    return false;
+  }
+}
+
+function createTranscriptAdapter(fs: Fs, opts?: TranscriptAdapterOptions): TranscriptAdapter {
+  const settingsPath = opts?.settingsPath;
+
+  /** 后端判别（#31）：pi settings 会话存储信号 + transcript 文件头采样 → 三路分流。 */
+  async function detectBackend(sessionRef: SessionRef): Promise<BackendDetection> {
+    let settingsSqlite = false;
+    if (settingsPath !== undefined) {
+      try {
+        settingsSqlite = settingsSignalsSqlite(await fs.readFile(settingsPath));
+      } catch {
+        // settings 不可读 = 无信号 → 走文件头采样/默认 JSONL（最保守）
+      }
+    }
+    let head: TranscriptFormat | "unknown";
+    try {
+      head = sampleHead(await fs.readFile(sessionRef.sessionFile));
+    } catch {
+      head = "unknown"; // 文件未建/不可读：无头信号
+    }
+    if (settingsSqlite) {
+      if (head !== "unknown") return { backend: "jsonl", warning: "ambiguous-backend" }; // settings↔JSONL 头矛盾
+      if (sessionRef.sessionId === undefined) return { backend: "jsonl", warning: "ambiguous-backend" }; // sqlite 信号不完整：库内无法定域
+      return { backend: "sqlite" };
+    }
+    return { backend: "jsonl" }; // 无 sqlite 信号：JSONL 扫描最保守（头 unknown 含新会话未落盘常态，不算歧义）
+  }
+
+  // 判别结果按 sessionFile 缓存（注册时点判别，票 20；重复注册重判）。
+  const backendByFile = new Map<string, BackendDetection>();
+  const refByFile = new Map<string, SessionRef>(); // 已注册 ref（selfCheck 自检面）
+
+  async function backendFor(sessionRef: SessionRef): Promise<BackendDetection> {
+    const cached = backendByFile.get(sessionRef.sessionFile);
+    if (cached !== undefined) return cached;
+    const detection = await detectBackend(sessionRef); // 未注册 ref：惰性判别一次并缓存
+    backendByFile.set(sessionRef.sessionFile, detection);
+    return detection;
+  }
+
+  async function verifyInternal(sessionRef: SessionRef, notificationId: string): Promise<VerifyResult> {
+    const detection = await backendFor(sessionRef);
+    if (detection.backend === "sqlite") {
+      if (sessionRef.sessionId === undefined) return { verdict: "unknown", reason: "unreadable" }; // 注册判别已保证；防御不一致 ref
+      let rows: SqliteEntryRow[];
+      try {
+        rows = queryNotificationEntries(sessionRef.sessionFile, sessionRef.sessionId, NOTIFICATION_CUSTOM_TYPE);
+      } catch {
+        return { verdict: "unknown", reason: "unreadable" }; // 缺库/权限/锁 → unreadable（C1 正常返回值）
+      }
+      const outcome = scanSqlite(rows);
+      return "corrupt" in outcome ? { verdict: "unknown", reason: "corrupt-line" } : decide(outcome.hits, notificationId);
+    }
+
+    let content: string;
+    try {
+      content = await fs.readFile(sessionRef.sessionFile);
+    } catch {
+      return { verdict: "unknown", reason: "unreadable" };
+    }
+    const outcome = scanJsonl(content);
+    return "corrupt" in outcome ? { verdict: "unknown", reason: "corrupt-line" } : decide(outcome.hits, notificationId);
+  }
+
+  let degraded = false;
+  let degradeReasonValue: string | undefined;
+
+  /** 自检探针：单 session 后端可读性自测 → "ok" 或失败原因。ENOENT = 新会话未落盘，非后端故障。 */
+  async function probe(sessionRef: SessionRef): Promise<"ok" | string> {
+    const detection = await backendFor(sessionRef);
+    if (detection.backend === "sqlite") {
+      if (sessionRef.sessionId === undefined) return "session-unscoped";
+      let rows: SqliteEntryRow[];
+      try {
+        rows = queryNotificationEntries(sessionRef.sessionFile, sessionRef.sessionId, NOTIFICATION_CUSTOM_TYPE);
+      } catch (err) {
+        return `unreadable(${errText(err)})`;
+      }
+      const outcome = scanSqlite(rows);
+      return "corrupt" in outcome ? "corrupt-line" : "ok";
+    }
+    let content: string;
+    try {
+      content = await fs.readFile(sessionRef.sessionFile);
+    } catch (err) {
+      return isEnoent(err) ? "ok" : `unreadable(${errText(err)})`;
+    }
+    const outcome = scanJsonl(content);
+    return "corrupt" in outcome ? "corrupt-line" : "ok";
+  }
+
   return {
     async locate(sessionRef: SessionRef): Promise<LocateResult | null> {
       let content: string;
@@ -158,74 +418,41 @@ function createTranscriptAdapter(fs: Fs): TranscriptAdapter {
       } catch {
         return null; // ENOENT 等：locate 失败路径（会话未创建/已删）
       }
-      const first = firstMeaningfulLine(content);
-      if (first !== undefined) {
-        try {
-          const header: unknown = JSON.parse(first);
-          if (isRecord(header)) {
-            if (isHeaderV4(header)) return { path: sessionRef.sessionFile, format: "v4" };
-            if (isHeaderV3(header)) return { path: sessionRef.sessionFile, format: "v3" };
-          }
-        } catch {
-          // 头行本身撕裂/非 JSON → unknown（最保守路径）
-        }
-      }
-      return { path: sessionRef.sessionFile, format: "unknown" };
+      return { path: sessionRef.sessionFile, format: sampleHead(content) };
     },
 
     async verify(sessionRef: SessionRef, notificationId: string): Promise<VerifyResult> {
-      let content: string;
-      try {
-        content = await fs.readFile(sessionRef.sessionFile);
-      } catch {
-        return { verdict: "unknown", reason: "unreadable" };
-      }
+      if (degraded) return { verdict: "unknown", reason: "degraded" }; // C1 全局降级：不再推导 verdict（推送即视为 accepted，权威基面）
+      return verifyInternal(sessionRef, notificationId);
+    },
 
-      const lines = content.split("\n");
-      let lastMeaningful = -1;
-      for (let i = 0; i < lines.length; i++) {
-        if (lines[i].trim() !== "") lastMeaningful = i;
-      }
+    async registerSession(sessionRef: SessionRef): Promise<BackendDetection> {
+      const detection = await detectBackend(sessionRef); // 注册时点重判（重复注册重判，票 20）
+      backendByFile.set(sessionRef.sessionFile, detection);
+      refByFile.set(sessionRef.sessionFile, sessionRef);
+      return detection;
+    },
 
-      let corrupt = false; // 中段坏行（≠ 撕裂尾行）→ 整文件不可信，保守降级
-      const hits: NotificationHit[] = [];
-
-      for (let i = 0; i <= lastMeaningful; i++) {
-        const line = lines[i];
-        if (line.trim() === "") continue;
-        let entry: unknown;
-        try {
-          entry = JSON.parse(line);
-        } catch {
-          // 撕裂容错：仅最后一个非空行解析失败 = 未确认写入，跳过只影响该行；
-          // 中段坏行是 corruption（harness-v2 原义）→ 保守降级。
-          if (i === lastMeaningful) break;
-          corrupt = true;
-          break;
+    async selfCheck(): Promise<SelfCheckResult> {
+      for (const sessionRef of refByFile.values()) {
+        const failure = await probe(sessionRef);
+        if (failure !== "ok") {
+          degraded = true;
+          degradeReasonValue = `${sessionRef.sessionFile}: ${failure}`;
+          return { ok: false, reason: degradeReasonValue };
         }
-        if (!isRecord(entry)) continue;
-        if (isNotificationV3(entry)) hits.push(hitOfV3(entry));
-        else if (isNotificationV4(entry)) hits.push(hitOfV4(entry));
       }
+      degraded = false; // 恢复路径：再次自检成功即清除降级（票 21）
+      degradeReasonValue = undefined;
+      return { ok: true };
+    },
 
-      if (corrupt) return { verdict: "unknown", reason: "corrupt-line" };
+    isDegraded(): boolean {
+      return degraded;
+    },
 
-      const matched = hits.filter((h) => h.notificationId === notificationId);
-      if (matched.length === 0) return { verdict: "waiting", reason: "not-found" };
-
-      if (matched.some((h) => typeof h.verdict !== "string" || !VERDICTS.includes(h.verdict))) {
-        return { verdict: "unknown", reason: "verdict-missing" };
-      }
-      const distinct = [...new Set(matched.map((h) => h.verdict as string))];
-      if (distinct.length > 1) return { verdict: "unknown", reason: "conflicting-verdicts" };
-
-      const winner = matched[matched.length - 1]; // 多条同 verdict：取最新（文件序）
-      return {
-        verdict: winner.verdict as Exclude<AdapterVerdict, "unknown">,
-        ...(typeof winner.evidenceRef === "string" ? { evidenceRef: winner.evidenceRef } : {}),
-        format: winner.format, // 形态标记按命中路径归类（header 仅 locate 提示，不参与 verify 归类）
-        ...(winner.lane !== undefined ? { lane: winner.lane } : {}),
-      };
+    degradeReason(): string | undefined {
+      return degradeReasonValue;
     },
   };
 }

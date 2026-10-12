@@ -1,6 +1,10 @@
-import { describe, expect, it } from "vitest";
-import { FakeFs } from "../fx/index.ts";
-import { createTranscriptAdapter } from "./index.ts";
+import { afterAll, describe, expect, it } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
+import { FakeFs, type Fs } from "../fx.ts";
+import { createTranscriptAdapter } from "../transcript-adapter.ts";
 
 /**
  * 票 19 B 层 fixture——代表性样本，字段表随 harness-v2 对齐（#31 授权实现票固化；残留风险正典 #31）。
@@ -256,5 +260,126 @@ describe("票 19 组 1——locate(sessionRef)→transcript 路径 + 文件头�
 
   it("locate 失败路径：文件不存在（ENOENT）→ null", async () => {
     expect(await createTranscriptAdapter(new FakeFs({})).locate(REF)).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 票 20——逐 session 双后端分流（#31 双后端 MVP 裁定 2026-10-10：v3 JSONL 与 harness-v2 SQLite 并存）
+// ---------------------------------------------------------------------------
+
+const SETTINGS_PATH = "/tmp/fake-pi-settings.json";
+// 待对齐：harness-v2 会话存储 settings key 未定稿，此为代表形态（fixture 自造）。
+const SETTINGS_SQLITE = JSON.stringify({ sessionStorage: { backend: "sqlite" } });
+
+const tmpDirs: string[] = [];
+function tmpDbPath(): string {
+  const dir = mkdtempSync(join(tmpdir(), "eda-tadapter-"));
+  tmpDirs.push(dir);
+  return join(dir, "sessions.db");
+}
+afterAll(() => {
+  for (const d of tmpDirs) rmSync(d, { recursive: true, force: true });
+});
+
+/** 真实 SQLite fixture 库（harness-v2 形态代表性样本，待对齐：schema 以 packages/session-backends/sqlite-node 定稿为准）。 */
+function makeHarnessV2Db(
+  dbPath: string,
+  sessionId: string,
+  notifications: Array<{ seq: number; id: string; notificationId?: string; verdict?: string; evidenceRef?: string }>,
+): void {
+  const db = new DatabaseSync(dbPath);
+  db.exec(`
+    CREATE TABLE session_sequences (session_id TEXT PRIMARY KEY, next_seq INTEGER NOT NULL);
+    CREATE TABLE entries (
+      session_id TEXT NOT NULL, seq INTEGER NOT NULL, id TEXT NOT NULL, parent_id TEXT,
+      type TEXT NOT NULL, timestamp TEXT, payload TEXT NOT NULL, PRIMARY KEY (session_id, seq)
+    );
+    CREATE TABLE branch_entries (
+      session_id TEXT NOT NULL, branch_id TEXT NOT NULL, entry_id TEXT NOT NULL,
+      entry_seq INTEGER NOT NULL, entry_type TEXT, custom_type TEXT
+    );
+    CREATE TABLE branch_tips (session_id TEXT NOT NULL, branch_id TEXT NOT NULL, tip_id TEXT NOT NULL, PRIMARY KEY (session_id, branch_id));
+  `);
+  db.prepare("INSERT INTO session_sequences VALUES (?, 100)").run(sessionId);
+  const putEntry = db.prepare("INSERT INTO entries VALUES (?, ?, ?, NULL, 'message', '2026-10-12T00:00:00.000Z', ?)");
+  const putBranch = db.prepare("INSERT INTO branch_entries VALUES (?, 'B1', ?, ?, 'message', ?)");
+  for (const n of notifications) {
+    const details: Record<string, string> = {};
+    if (n.notificationId !== undefined) details.notificationId = n.notificationId;
+    if (n.verdict !== undefined) details.verdict = n.verdict;
+    if (n.evidenceRef !== undefined) details.evidenceRef = n.evidenceRef;
+    putEntry.run(
+      sessionId,
+      n.seq,
+      n.id,
+      JSON.stringify({ role: "custom", customType: "pi-events.notification", content: `billboard: ${n.notificationId ?? ""}`, display: true, details }),
+    );
+    putBranch.run(sessionId, n.id, n.seq, n.notificationId !== undefined ? "pi-events.notification" : null);
+  }
+  db.close();
+}
+
+describe("票 20 组 7——逐 session 后端判别（registerSession：pi settings + 文件头采样，#31）", () => {
+  it("JSONL 命中：无 settings 信号 + v4 头 → backend jsonl 无 warning，verify 走 JSONL 扫描", async () => {
+    const fs = new FakeFs({ [REF.sessionFile]: `${V4_HEADER}\n${v4NotificationLine("n-1", "passed", "ev-1")}\n` });
+    const a = createTranscriptAdapter(fs);
+    expect(await a.registerSession(REF)).toEqual({ backend: "jsonl" });
+    expect(await a.verify(REF, "n-1")).toEqual({ verdict: "passed", evidenceRef: "ev-1", format: "v4" });
+  });
+
+  it("SQLite 命中：settings=sqlite + sessionId + 非 JSONL 头（库文件）→ backend sqlite，verify 走 SQL 点查", async () => {
+    const dbPath = tmpDbPath();
+    makeHarnessV2Db(dbPath, "s-1", [{ seq: 1, id: "e1", notificationId: "n-9", verdict: "failed", evidenceRef: "ev-9" }]);
+    const fs = new FakeFs({ [SETTINGS_PATH]: SETTINGS_SQLITE });
+    const a = createTranscriptAdapter(fs, { settingsPath: SETTINGS_PATH });
+    const ref = { sessionFile: dbPath, sessionId: "s-1" };
+    expect(await a.registerSession(ref)).toEqual({ backend: "sqlite" });
+    expect(await a.verify(ref, "n-9")).toEqual({ verdict: "failed", evidenceRef: "ev-9", format: "v4" });
+  });
+
+  it("歧义→JSONL+warning：settings=sqlite 但文件头为 v4 JSONL（信号矛盾）→ 保守回退 JSONL 扫描", async () => {
+    const fs = new FakeFs({
+      [SETTINGS_PATH]: SETTINGS_SQLITE,
+      [REF.sessionFile]: `${V4_HEADER}\n${v4NotificationLine("n-2", "waiting")}\n`,
+    });
+    const a = createTranscriptAdapter(fs, { settingsPath: SETTINGS_PATH });
+    expect(await a.registerSession(REF)).toEqual({ backend: "jsonl", warning: "ambiguous-backend" });
+    expect(await a.verify(REF, "n-2")).toEqual({ verdict: "waiting", format: "v4" });
+  });
+
+  it("歧义→JSONL+warning：settings=sqlite 但 ref 缺 sessionId（sqlite 信号不完整，库内无法定域）", async () => {
+    const fs = new FakeFs({ [SETTINGS_PATH]: SETTINGS_SQLITE });
+    const a = createTranscriptAdapter(fs, { settingsPath: SETTINGS_PATH });
+    expect(await a.registerSession({ sessionFile: "/tmp/some-session.db" })).toEqual({
+      backend: "jsonl",
+      warning: "ambiguous-backend",
+    });
+  });
+});
+
+describe("票 20 组 8——两后端等价面（同一 notificationId 经 JSONL 与 SQLite verify 结果一致）", () => {
+  it("同逻辑条目双后端 verify 深相等（verdict/evidenceRef/format）", async () => {
+    const jsonlAdapter = createTranscriptAdapter(
+      new FakeFs({ [REF.sessionFile]: `${V4_HEADER}\n${v4NotificationLine("n-eq", "passed", "ev-eq")}\n` }),
+    );
+    const dbPath = tmpDbPath();
+    makeHarnessV2Db(dbPath, "s-eq", [{ seq: 7, id: "e7", notificationId: "n-eq", verdict: "passed", evidenceRef: "ev-eq" }]);
+    const sqliteAdapter = createTranscriptAdapter(new FakeFs({ [SETTINGS_PATH]: SETTINGS_SQLITE }), { settingsPath: SETTINGS_PATH });
+    const ref = { sessionFile: dbPath, sessionId: "s-eq" };
+    expect(await sqliteAdapter.registerSession(ref)).toEqual({ backend: "sqlite" });
+    expect(await sqliteAdapter.verify(ref, "n-eq")).toEqual(await jsonlAdapter.verify(REF, "n-eq"));
+  });
+});
+
+describe("票 20 组 9——注册路径（新 session 注册触发判别并缓存路由）", () => {
+  it("注册后 settings 信号改变不影响已注册 session 的路由（判别在注册时点）", async () => {
+    const dbPath = tmpDbPath();
+    makeHarnessV2Db(dbPath, "s-1", [{ seq: 1, id: "e1", notificationId: "n-9", verdict: "passed" }]);
+    const fs = new FakeFs({ [SETTINGS_PATH]: SETTINGS_SQLITE });
+    const a = createTranscriptAdapter(fs, { settingsPath: SETTINGS_PATH });
+    const ref = { sessionFile: dbPath, sessionId: "s-1" };
+    expect(await a.registerSession(ref)).toEqual({ backend: "sqlite" });
+    fs.files.delete(SETTINGS_PATH); // settings 消失
+    expect(await a.verify(ref, "n-9")).toEqual({ verdict: "passed", format: "v4" });
   });
 });
