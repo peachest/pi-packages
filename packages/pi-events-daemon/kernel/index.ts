@@ -139,10 +139,10 @@ export class Kernel {
    * Intent 串行消费（崩溃重放的幂等入口）：按 intent 自带双轨序消费，不重新编号——
    * 同 id 同内容 skipped / 同 id 异内容 corruption / 未达序 appended（I1 原子单元）。
    * 成功后游标推进到已消费尾（max），后续 transition 从重放尾续接。
-   * 校验归属入口方法（transition/migrateState 已验）；重放路径消费的是已验意图。
+   * 封闭集校验在 consumeTx 追加路径（F2）：相同历史事件直接 skipped 豁免——
+   * 状态改名后重启重放不得被新状态集阻断；新追加仍执法。
    */
   consumeIntent(intent: TransitionIntent): ConsumeOutcome {
-    requireStateIn(this.states, intent.to);
     const outcome = this.withRetry(`intent ${intent.eventId}`, () =>
       this.store.tx((tx) => this.consumeTx(tx, intent)),
     );
@@ -203,8 +203,11 @@ export class Kernel {
           `corruption: event ${intent.eventId} exists with different content (deterministic replay violated / multi-writer)`,
         );
       }
+      // F2：相同历史事件直接跳过，不做封闭集校验（状态改名后重放豁免）
       return { kind: "skipped" };
     }
+    // F2：封闭集执法只落在追加路径（from 侧不校验——migrateState 的历史旧名态合法）
+    requireStateIn(this.states, intent.to);
     const event = intentToEvent(intent);
     tx.putEvent(toEventRow(event));
     const entity = tx.getEntity(intent.entityRef.type, intent.entityRef.key);

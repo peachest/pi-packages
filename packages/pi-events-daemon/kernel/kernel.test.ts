@@ -271,4 +271,24 @@ describe("组 4：评审修复回归——提交成功后推进游标（F1）/ �
     // 游标未被失败烧掉：下一 transition 续接 seq 2
     expect(kernel.transition(REF, "waiting", at(2))).toEqual({ eventSeq: 2, from: "failed", to: "waiting" });
   });
+
+  it("F2 改名后重放历史事件：skipped 豁免封闭集校验；迁移事件重放 + 新追加仍执法", () => {
+    const store = createMemoryStore();
+    seedEntity(store, null);
+    // 历史：alpha 态事件 + alpha→beta 显式迁移（旧状态集 {alpha, beta}）；
+    // to=alpha 经 intent 消费面构造（Transitioned.to 是普通 string，非 Verdict 联合）
+    const replay = (seq: number, from: string | null, to: string, when: string) =>
+      // planTransition 自增：传序前值，产出 decisionOrder/eventSeq = seq 的同 id intent
+      planTransition({ decisionOrder: seq - 1, eventSeq: seq - 1 }, { entityRef: REF, from, to, occurredAt: when }).intent;
+    const oldKernel = new Kernel(store, new Set(["alpha", "beta"]), 0);
+    oldKernel.consumeIntent(replay(1, null, "alpha", at(1)));
+    oldKernel.migrateState(REF, { from: "alpha", to: "beta" }, at(2));
+    // profile 改名生效：新状态集只含 beta（alpha 移除），重启恢复后全量重放历史 intent
+    const restored = new Kernel(store, new Set(["beta"]), 2);
+    expect(restored.consumeIntent(replay(1, null, "alpha", at(1)))).toEqual({ kind: "skipped" }); // 修复前：抛 outside closed set
+    expect(restored.consumeIntent(replay(2, "alpha", "beta", at(2)))).toEqual({ kind: "skipped" }); // 迁移事件重放
+    expect(store.outboxBatch(10)).toHaveLength(2); // 重放零新写入
+    // 新追加仍受封闭集执法（重放豁免不等于全面豁免）
+    expect(() => restored.consumeIntent(replay(3, "beta", "alpha", at(3)))).toThrow(/outside profile closed set/);
+  });
 });
