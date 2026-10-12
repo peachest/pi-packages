@@ -91,6 +91,7 @@ export type RunLedgerRow = {
 
 /** 查询过滤器（形状最小化，字段语义见票面）。 */
 export type EntityFilter = { type?: string; parentType?: string; parentKey?: string; retired?: boolean };
+export type SubscriptionFilter = { entityRefType?: string; entityRefKey?: string; sessionId?: string; origin?: SubscriptionRow["origin"] };
 export type NotificationFilter = { entityRefType?: string; entityRefKey?: string; sessionId?: string; sinceEventSeq?: number };
 export type DeliveryFilter = { sessionId?: string; state?: DeliveryRowData["state"] | readonly DeliveryRowData["state"][] };
 
@@ -134,8 +135,11 @@ export interface Store {
   putOutbox(row: OutboxRow): void;
   // 查询（fake 语义钉死：evidenceSearch 朴素子串匹配、notifications/deadLetters/queryEntities 按 filter 字段直过滤）
   queryEntities(filter: EntityFilter): EntityRow[];
+  querySubscriptions(filter: SubscriptionFilter): SubscriptionRow[];
   outboxBatch(limit: number): OutboxRow[];
   pendingDeliveries(filter: DeliveryFilter): DeliveryRowData[];
+  /** drain D2a 输入面：parked 行读取（与 pendingDeliveries/deadLetters 同构直过滤；票 11 最小增补）。 */
+  parkedDeliveries(filter: DeliveryFilter): DeliveryRowData[];
   evidenceSearch(fts5Query: string): EvidenceRow[];
   notifications(filter: NotificationFilter): NotificationRow[];
   deadLetters(filter: DeliveryFilter): DeliveryRowData[];
@@ -312,6 +316,15 @@ export class MemoryStore implements Store {
     );
   }
 
+  querySubscriptions(filter: SubscriptionFilter): SubscriptionRow[] {
+    return [...this.tables.subscriptions.values() as IterableIterator<SubscriptionRow>].filter((s) =>
+      (filter.entityRefType === undefined || s.entityRefType === filter.entityRefType) &&
+      (filter.entityRefKey === undefined || s.entityRefKey === filter.entityRefKey) &&
+      (filter.sessionId === undefined || s.sessionId === filter.sessionId) &&
+      (filter.origin === undefined || s.origin === filter.origin),
+    );
+  }
+
   outboxBatch(limit: number): OutboxRow[] {
     return [...this.tables.outbox.values() as IterableIterator<OutboxRow>].slice(0, limit);
   }
@@ -325,6 +338,12 @@ export class MemoryStore implements Store {
   deadLetters(filter: DeliveryFilter): DeliveryRowData[] {
     return [...this.tables.deliveries.values() as IterableIterator<DeliveryRowData>].filter((d) =>
       this.matchDelivery(d, filter) && d.state === "dead-letter",
+    );
+  }
+
+  parkedDeliveries(filter: DeliveryFilter): DeliveryRowData[] {
+    return [...this.tables.deliveries.values() as IterableIterator<DeliveryRowData>].filter((d) =>
+      this.matchDelivery(d, filter) && d.state === "parked",
     );
   }
 

@@ -311,3 +311,390 @@ describe("组 4：评审修复回归——提交成功后推进游标（F1）/ �
     expect(postRename.transition(REF, "failed", at(2))).toEqual({ eventSeq: 2, from: "passed", to: "failed" });
   });
 });
+
+// ==================== 票 11：fanOut 编址 + query/evidence/validate/templates/drain ====================
+// B 层（链 B 里程碑）：Store 内存 fake 注入 + fake registry（静态面数据，I-01）。零具体 profile 名。
+
+import type { SubscriptionRow } from "../store/index.ts";
+
+const TPL = "fixture-tpl";
+const EVT1 = deterministicEventId(REF, 1);
+const sess = (id: string, scope: "project" | "user" = "project") => ({ sessionId: id, scope });
+const sub = (over: Partial<SubscriptionRow>): SubscriptionRow => ({
+  subscriptionId: "sub-x",
+  sessionId: "session-x",
+  entityRefType: REF.type,
+  entityRefKey: REF.key,
+  template: TPL,
+  origin: "session",
+  scope: "project",
+  createdAt: 1,
+  ...over,
+});
+
+/** fanOut 前置：实体 + 一次 transition（outbox 行即 fanOut 输入，I1 1:1）。 */
+function seedTransitioned(store: MemStore, kernel: Kernel) {
+  seedEntity(store, "passed");
+  const r = kernel.transition(REF, "failed", at(1));
+  if (!r) throw new Error("fixture: transition produced no event");
+  return r;
+}
+
+describe("票 11 组 1：fanOut origin 编址三分支（#31 正典）", () => {
+  it("origin=session 在线 → pending 直投行（写前持久化，I10/I12 载体）", () => {
+    const store = createMemoryStore();
+    const kernel = new Kernel(store, VERDICT_STATES, 0, { ownerEpoch: 7 });
+    seedTransitioned(store, kernel);
+    store.putSubscription(sub({ subscriptionId: "sub-a", sessionId: "session-a" }));
+    const res = kernel.fanOut(EVT1, { activeSessions: [sess("session-a")] });
+    expect(res).toEqual({ notificationId: EVT1, eventSeq: 1, delivered: ["session-a"], parked: [] });
+    expect(store.getDelivery(EVT1, "session-a")).toEqual({
+      notificationId: EVT1,
+      sessionId: "session-a",
+      state: "pending",
+      recordEpoch: 7,
+    });
+  });
+
+  it("origin=session 离线 → parked（E1：session-closed，只等 drain）", () => {
+    const store = createMemoryStore();
+    const kernel = new Kernel(store, VERDICT_STATES, 0);
+    seedTransitioned(store, kernel);
+    store.putSubscription(sub({ subscriptionId: "sub-a", sessionId: "session-a" }));
+    const res = kernel.fanOut(EVT1, { activeSessions: [sess("other")] });
+    expect(res).toEqual({ notificationId: EVT1, eventSeq: 1, delivered: [], parked: ["session-a"] });
+    expect(store.getDelivery(EVT1, "session-a")?.state).toBe("parked");
+  });
+
+  it("origin=auto → scope 内活跃 session 直投，离线不发（不留行）；他 scope 不中", () => {
+    const store = createMemoryStore();
+    const kernel = new Kernel(store, VERDICT_STATES, 0);
+    seedTransitioned(store, kernel);
+    store.putSubscription(sub({ subscriptionId: "sub-auto", sessionId: "irrelevant", origin: "auto", scope: "project" }));
+    const res = kernel.fanOut(EVT1, {
+      activeSessions: [sess("proj-1"), sess("proj-2"), sess("user-1", "user")],
+    });
+    expect(res.delivered.sort()).toEqual(["proj-1", "proj-2"]);
+    expect(res.parked).toEqual([]);
+    expect(store.pendingDeliveries({}).map((d) => d.sessionId).sort()).toEqual(["proj-1", "proj-2"]);
+    expect(store.getDelivery(EVT1, "user-1")).toBeUndefined();
+  });
+
+  it("origin=auto 零活跃 session / 无匹配订阅 → delivery 行不发（billboard 兜底归 query）", () => {
+    const store = createMemoryStore();
+    const kernel = new Kernel(store, VERDICT_STATES, 0);
+    seedTransitioned(store, kernel);
+    store.putSubscription(sub({ subscriptionId: "sub-auto", origin: "auto" }));
+    expect(kernel.fanOut(EVT1, { activeSessions: [] })).toEqual({
+      notificationId: EVT1,
+      eventSeq: 1,
+      delivered: [],
+      parked: [],
+    });
+    // 无匹配订阅：实体没有订阅 → 零行（fresh store，隔离上段 auto 订阅）
+    const store2 = createMemoryStore();
+    const kernel2 = new Kernel(store2, VERDICT_STATES, 0);
+    seedTransitioned(store2, kernel2);
+    store2.putSubscription(sub({ subscriptionId: "sub-other-entity", entityRefKey: "external/other" }));
+    expect(kernel2.fanOut(EVT1, { activeSessions: [sess("proj-1")] }).delivered).toEqual([]);
+    expect(store2.pendingDeliveries({})).toEqual([]);
+  });
+
+  it("I10 幂等：同 notification 重复 fanOut 不产生第二行；notification 行 + billboard 截断指针", () => {
+    const store = createMemoryStore();
+    const kernel = new Kernel(store, VERDICT_STATES, 0);
+    seedEntity(store, "passed");
+    // 带 evidenceRef 的事件（probe 路径形状）：直写事件 + outbox 行（B 层 fixture）
+    store.appendEventIfMissing({
+      eventId: EVT1,
+      eventSeq: 1,
+      entityRefType: REF.type,
+      entityRefKey: REF.key,
+      from: "passed",
+      to: "failed",
+      occurredAt: at(1),
+      evidenceRef: "ev-full",
+    });
+    store.putOutbox({ notificationId: EVT1, eventSeq: 1 });
+    store.putEvidence({ evidenceRef: "ev-full", content: "x".repeat(3000), recordedAt: 1 });
+    store.putSubscription(sub({ subscriptionId: "sub-a", sessionId: "session-a" }));
+
+    kernel.fanOut(EVT1, { activeSessions: [sess("session-a")] });
+    const second = kernel.fanOut(EVT1, { activeSessions: [sess("session-a")] });
+    expect(second.delivered).toEqual([]); // 既有行跳过（I10）
+    expect(store.pendingDeliveries({})).toHaveLength(1);
+
+    const [notification] = store.notifications({});
+    expect(notification).toMatchObject({ notificationId: EVT1, eventSeq: 1 });
+    const billboard = JSON.parse(notification.billboardJson);
+    expect(billboard.entityRef).toEqual(REF);
+    expect(billboard.verdict).toBe("failed");
+    expect(billboard.evidence).toHaveLength(2048); // >2KB 截断（UTF-8 字节口径）
+    expect(billboard.evidenceRef).toBe(EVT1); // 截断指针 = notificationId（evidence op 据此解引用）
+  });
+});
+
+describe("票 11 组 2：drain 只出 parked（D2a），dead-letter 零进入", () => {
+  it("SESSION_START 语义：parked 行 sourceSessionId == 连接 session → 重投（parked→accepted，drain-redeliver 正典边）", () => {
+    const store = createMemoryStore();
+    const kernel = new Kernel(store, VERDICT_STATES, 0);
+    seedTransitioned(store, kernel);
+    store.putSubscription(sub({ subscriptionId: "sub-a", sessionId: "session-a" }));
+    kernel.fanOut(EVT1, { activeSessions: [] }); // 离线 → parked
+    expect(store.getDelivery(EVT1, "session-a")?.state).toBe("parked");
+
+    const res = kernel.drain({ sessionId: "session-a", now: 5_000 });
+    expect(res.drained).toEqual([{ notificationId: EVT1, sessionId: "session-a" }]);
+    expect(store.getDelivery(EVT1, "session-a")?.state).toBe("accepted"); // 两段式：accepted=在线重试态
+  });
+
+  it("D2a：dead-letter 零进入——drain 不迁移 dead-letter，只读摘要", () => {
+    const store = createMemoryStore();
+    const kernel = new Kernel(store, VERDICT_STATES, 0);
+    seedTransitioned(store, kernel);
+    store.putDelivery({ notificationId: EVT1, sessionId: "session-a", state: "dead-letter", recordEpoch: 1 });
+    const res = kernel.drain({ sessionId: "session-a", now: 5_000 });
+    expect(res.drained).toEqual([]);
+    expect(store.getDelivery(EVT1, "session-a")?.state).toBe("dead-letter"); // 终态无出边
+    expect(res.deadLetterSummary).toEqual({ count: 1, oldestAgeMs: 5_000 - Date.parse(at(1)) });
+  });
+
+  it("sessionId 过滤：他 session 的 parked 不动；无 sessionId = 全量 parked；零 dead-letter → oldestAgeMs null", () => {
+    const store = createMemoryStore();
+    const kernel = new Kernel(store, VERDICT_STATES, 0);
+    seedTransitioned(store, kernel);
+    store.putSubscription(sub({ subscriptionId: "sub-a", sessionId: "session-a" }));
+    store.putSubscription(sub({ subscriptionId: "sub-b", sessionId: "session-b" }));
+    kernel.fanOut(EVT1, { activeSessions: [] }); // 两行 parked
+    const res = kernel.drain({ sessionId: "session-b", now: 5_000 });
+    expect(res.drained).toEqual([{ notificationId: EVT1, sessionId: "session-b" }]);
+    expect(store.getDelivery(EVT1, "session-a")?.state).toBe("parked"); // 不动
+    expect(res.deadLetterSummary).toEqual({ count: 0, oldestAgeMs: null });
+    // 全量 drain 兜走剩余
+    expect(kernel.drain({ now: 6_000 }).drained).toEqual([{ notificationId: EVT1, sessionId: "session-a" }]);
+  });
+
+  it("I12 epoch fence：drain 只重投本 epoch 的 parked 行——异 epoch 行不转换不返回（留给正确 epoch 的 daemon）", () => {
+    const store = createMemoryStore();
+    const kernel = new Kernel(store, VERDICT_STATES, 0, { ownerEpoch: 7 });
+    seedTransitioned(store, kernel);
+    // epoch 8 的 daemon 接管后写入的 parked 行；ownerEpoch 7 的僵尸 kernel 不得重投
+    store.putDelivery({ notificationId: EVT1, sessionId: "session-a", state: "parked", recordEpoch: 8 });
+    store.putDelivery({ notificationId: EVT1, sessionId: "session-b", state: "parked", recordEpoch: 7 });
+    const res = kernel.drain({});
+    expect(res.drained).toEqual([{ notificationId: EVT1, sessionId: "session-b" }]); // recordEpoch 7 正常出队
+    expect(store.getDelivery(EVT1, "session-a")).toMatchObject({ state: "parked", recordEpoch: 8 }); // 不转换不动
+  });
+});
+
+describe("票 11 组 3：query——listChildren 单层 + per-entity backlog/deadLetters + B4 懒重探", () => {
+  it("端到端 B 层（链 B 里程碑）：publish→transition→query 返回新状态与 eventSeq", () => {
+    const store = createMemoryStore();
+    const kernel = new Kernel(store, VERDICT_STATES, 0);
+    seedEntity(store, "passed");
+    expect(kernel.transition(REF, "failed", at(1))).toMatchObject({ eventSeq: 1 });
+    expect(kernel.query({ entityRef: REF })).toEqual({
+      entities: [
+        {
+          entityRef: REF,
+          state: "failed",
+          payload: null,
+          eventSeq: 1,
+          lastProbedAt: null,
+          backlog: 0,
+        },
+      ],
+      deadLetters: [],
+    });
+  });
+
+  it("listChildren 单层展开：parent 挂 children 一步；孙辈不上挂（无级联）", () => {
+    const store = createMemoryStore();
+    const kernel = new Kernel(store, VERDICT_STATES, 0);
+    seedEntity(store, "passed");
+    store.putEntity({ type: REF.type, key: "external/child", state: "waiting", parentType: REF.type, parentKey: REF.key });
+    store.putEntity({ type: REF.type, key: "external/grandchild", state: "waiting", parentType: REF.type, parentKey: "external/child" });
+    const res = kernel.query({ entityRef: REF });
+    expect(res.entities).toHaveLength(1);
+    expect(res.entities[0].children?.map((c) => c.entityRef.key)).toEqual(["external/child"]);
+    expect(res.entities[0].children?.[0].children).toBeUndefined(); // 单层
+  });
+
+  it("per-entity backlog/deadLetters：pending 行计数进 backlog；dead-letter 行进清单（经事件 join 归实体）", () => {
+    const store = createMemoryStore();
+    const kernel = new Kernel(store, VERDICT_STATES, 0);
+    seedTransitioned(store, kernel);
+    store.putDelivery({ notificationId: EVT1, sessionId: "session-a", state: "pending", recordEpoch: 1 });
+    store.putDelivery({ notificationId: EVT1, sessionId: "session-b", state: "dead-letter", recordEpoch: 1 });
+    const res = kernel.query({ entityRef: REF });
+    expect(res.entities[0].backlog).toBe(1);
+    expect(res.deadLetters).toEqual([{ notificationId: EVT1, sessionId: "session-b", entityRef: REF }]);
+  });
+
+  it("B4 懒重探触发条件：refcount 0 且 lastProbedAt 超阈 → reprobeRequested；活跃/新鲜/无 ctx 不标", () => {
+    const store = createMemoryStore();
+    const kernel = new Kernel(store, VERDICT_STATES, 0);
+    seedEntity(store, "passed");
+    const probe = {
+      now: 100_000,
+      reprobeAfterMs: 60_000,
+      runtime: [
+        { entityRef: REF, refcount: 0, lastProbedAt: 10_000 }, // 0 + 超阈 → 标记
+      ],
+    };
+    expect(kernel.query({ entityRef: REF }, probe).entities[0].reprobeRequested).toBe(true);
+
+    // refcount > 0：probe 未停，不标
+    expect(
+      kernel.query({ entityRef: REF }, { ...probe, runtime: [{ entityRef: REF, refcount: 2, lastProbedAt: 10_000 }] })
+        .entities[0].reprobeRequested,
+    ).toBeUndefined();
+    // 新鲜 lastProbedAt：未超阈，不标（单次语义：重探执行方记录 lastProbedAt 后条件自清）
+    expect(
+      kernel.query({ entityRef: REF }, { ...probe, runtime: [{ entityRef: REF, refcount: 0, lastProbedAt: 90_000 }] })
+        .entities[0].reprobeRequested,
+    ).toBeUndefined();
+    // 无 probe ctx：读侧归一，不标（lastProbedAt 亦为 null）
+    const bare = kernel.query({ entityRef: REF });
+    expect(bare.entities[0].reprobeRequested).toBeUndefined();
+    expect(bare.entities[0].lastProbedAt).toBeNull();
+  });
+
+  it("query 无关系大清单 O(N)：parent→children 索引一次构建——5 万实体全量正常返回（性能回归锚：O(N²) 全表扫必撞 vitest 5s 超时）", () => {
+    const store = createMemoryStore();
+    const kernel = new Kernel(store, VERDICT_STATES, 0);
+    const N = 50_000;
+    // 单事务批量造数：内存 store 每 tx 全表 staging 拷贝，逐行 putEntity 会把夹具自身变 O(N²)
+    store.tx((tx) => {
+      for (let i = 0; i < N; i++) tx.putEntity({ type: REF.type, key: `bulk/${i}`, state: "passed" });
+    });
+    const res = kernel.query({});
+    expect(res.entities).toHaveLength(N);
+    expect(res.entities.every((e) => e.children === undefined)).toBe(true); // 无关系 → 零 children 挂载
+  });
+});
+
+// --- 票 11 fake registry（静态面数据注入，I-01：零 profile import、零具体 profile 名）---
+const REGISTRY = [
+  {
+    profileId: "fixture-profile",
+    templates: [
+      {
+        name: "fixture-tpl",
+        entityType: "fixture:widget",
+        states: ["passed", "failed", "waiting"],
+        params: ["target"],
+        usage: "fixture usage",
+      },
+      { name: "fixture-tpl-b", entityType: "fixture:gadget", states: ["passed", "failed"], usage: "b" },
+    ],
+    sideEffectPatterns: ["fixture-destructive"],
+  },
+] as const;
+const kernelWithRegistry = (store: MemStore) => new Kernel(store, VERDICT_STATES, 0, { registry: REGISTRY });
+
+describe("票 11 组 4：evidence FTS5 点查 + validate 三类错误 + templates 注册表清单", () => {
+  it("evidence 点查：直接 ref 命中（truncated 按 2KB 内联上限判定）；未找到拒绝", () => {
+    const store = createMemoryStore();
+    const kernel = kernelWithRegistry(store);
+    store.putEvidence({ evidenceRef: "ev-short", content: "probe ok", recordedAt: 1 });
+    store.putEvidence({ evidenceRef: "ev-big", content: "y".repeat(3000), recordedAt: 2 });
+    expect(kernel.evidence("ev-short")).toEqual({ content: "probe ok", truncated: false });
+    expect(kernel.evidence("ev-big").truncated).toBe(true);
+    expect(() => kernel.evidence("ev-missing")).toThrow(/ev-missing/);
+  });
+
+  it("evidence 经 billboard 截断指针解引用：ref=notificationId → 事件 evidenceRef → 全文（指针不被截断吞掉）", () => {
+    const store = createMemoryStore();
+    const kernel = kernelWithRegistry(store);
+    store.appendEventIfMissing({
+      eventId: EVT1,
+      eventSeq: 1,
+      entityRefType: REF.type,
+      entityRefKey: REF.key,
+      from: "passed",
+      to: "failed",
+      occurredAt: at(1),
+      evidenceRef: "ev-full",
+    });
+    store.putEvidence({ evidenceRef: "ev-full", content: "z".repeat(3000), recordedAt: 1 });
+    expect(kernel.evidence(EVT1)).toEqual({ content: "z".repeat(3000), truncated: true });
+  });
+
+  it("validate 三类错误：profile/template 未找到（列可用选项）/缺必填参数/ad-hoc 缺 check 声明", () => {
+    const store = createMemoryStore();
+    const kernel = kernelWithRegistry(store);
+    expect(kernel.validate({ profile: "nope", check: "true" })).toMatchObject({
+      ok: false,
+      error: "profile-not-found",
+    });
+    expect((kernel.validate({ profile: "nope", check: "true" }) as { reason: string }).reason).toContain("fixture-profile");
+    expect(kernel.validate({ profile: "fixture-profile", template: "nope-tpl" })).toMatchObject({
+      ok: false,
+      error: "profile-not-found",
+    });
+    expect(kernel.validate({ profile: "fixture-profile", template: "fixture-tpl" })).toMatchObject({
+      ok: false,
+      error: "invalid-params",
+    });
+    expect(kernel.validate({ profile: "fixture-profile" })).toMatchObject({
+      ok: false,
+      error: "checker-declaration",
+    });
+  });
+
+  it("validate ADR 0004：已知副作用 pattern 命中 → warning 不阻断（ok:true）；干净 check 零 warning", () => {
+    const store = createMemoryStore();
+    const kernel = kernelWithRegistry(store);
+    expect(kernel.validate({ profile: "fixture-profile", check: "fixture-destructive-cmd --force" })).toEqual({
+      ok: true,
+      warnings: [expect.stringContaining("fixture-destructive")],
+    });
+    expect(kernel.validate({ profile: "fixture-profile", check: "curl -sf http://x/health" })).toEqual({
+      ok: true,
+      warnings: [],
+    });
+  });
+
+  it("templates：注册表注入内容的元数据清单（profileId 附带）+ profile 过滤 + 未知 profile 拒绝", () => {
+    const store = createMemoryStore();
+    const kernel = kernelWithRegistry(store);
+    expect(kernel.templates()).toEqual({
+      templates: [
+        { profileId: "fixture-profile", name: "fixture-tpl", entityType: "fixture:widget", states: ["passed", "failed", "waiting"], params: ["target"], usage: "fixture usage" },
+        { profileId: "fixture-profile", name: "fixture-tpl-b", entityType: "fixture:gadget", states: ["passed", "failed"], usage: "b" },
+      ],
+    });
+    expect(kernel.templates("fixture-profile").templates).toHaveLength(2);
+    expect(() => kernel.templates("nope")).toThrow(/fixture-profile/);
+  });
+
+  it("validate 歧义声明拒绝：template 与 check 同时提供 → checker-declaration（二选一，warnings 不再从 check 推导）", () => {
+    const store = createMemoryStore();
+    const kernel = kernelWithRegistry(store);
+    const res = kernel.validate({
+      profile: "fixture-profile",
+      template: "fixture-tpl",
+      params: { target: "x" },
+      check: "fixture-destructive-cmd",
+    });
+    expect(res).toMatchObject({ ok: false, error: "checker-declaration" });
+    expect((res as { reason: string }).reason).toContain("二选一");
+  });
+
+  it("validate 必填参数不吃原型链：params ['constructor'] + {} → invalid-params（own-property 判定，票 04 同修法）", () => {
+    const store = createMemoryStore();
+    const registry = [
+      {
+        profileId: "proto-profile",
+        templates: [
+          { name: "proto-tpl", entityType: "fixture:widget", states: ["passed", "failed"], params: ["constructor"], usage: "u" },
+        ],
+      },
+    ] as const;
+    const kernel = new Kernel(store, VERDICT_STATES, 0, { registry });
+    const res = kernel.validate({ profile: "proto-profile", template: "proto-tpl", params: {} });
+    expect(res).toMatchObject({ ok: false, error: "invalid-params" });
+    expect((res as { reason: string }).reason).toContain("constructor");
+  });
+});
