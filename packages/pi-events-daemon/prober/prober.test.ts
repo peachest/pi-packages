@@ -211,6 +211,55 @@ describe("票 16 — completion queue 回流顺序与提交序一致", () => {
   });
 });
 
+describe("票 16 — B2② no_proxy 全局注入 / B2③ token 脱敏", () => {
+  it("noProxy 注入 exec env（no_proxy + NO_PROXY 大小写双形，内网 checker 免代理）", () => {
+    const exec = new DeferredExec();
+    new prober.Prober({ exec, clock: new fx.FakeClock(), onResult: () => undefined, noProxy: "gl.corp,.internal" }).probe({
+      slotKey: "s",
+      check: "curl -sf http://gl.corp/api/health",
+    });
+    expect(exec.calls[0].opts?.env).toEqual({ no_proxy: "gl.corp,.internal", NO_PROXY: "gl.corp,.internal" });
+  });
+
+  it("未配 noProxy → 不传 env（fx 叠加语义不空转）", () => {
+    const exec = new DeferredExec();
+    new prober.Prober({ exec, clock: new fx.FakeClock(), onResult: () => undefined }).probe({ slotKey: "s", check: "true" });
+    expect(exec.calls[0].opts?.env).toBeUndefined();
+  });
+
+  it("stdout 命中 glpat token → 掩码 ***，明文不出模块（B2③ 执行点）", async () => {
+    const exec = new fx.FakeExec();
+    exec.enqueue({ exitCode: 0, stdout: "curl ok, used glpat-AbCdEf123456 confidentially" });
+    const results: prober.ProbeResult[] = [];
+    new prober.Prober({ exec, clock: new fx.FakeClock(), onResult: (r) => results.push(r) }).probe({ slotKey: "s", check: "x" });
+    await tick();
+    expect(results[0].evidence).toBe("curl ok, used *** confidentially");
+  });
+
+  it("Bearer 头与赋值形机密同款掩码；stdout+stderr 合流后一并脱敏", async () => {
+    const exec = new fx.FakeExec();
+    exec.enqueue({ exitCode: 3, stdout: "Bearer abc123.XYZ sent", stderr: "password=hunter2 rejected" });
+    const results: prober.ProbeResult[] = [];
+    new prober.Prober({ exec, clock: new fx.FakeClock(), onResult: (r) => results.push(r) }).probe({ slotKey: "s", check: "x" });
+    await tick();
+    expect(results[0].evidence).toBe("*** sent\n*** rejected");
+  });
+
+  it("自定义 tokenPatterns 替换内置集", async () => {
+    const exec = new fx.FakeExec();
+    exec.enqueue({ exitCode: 0, stdout: "glpat-AbCdEf123456 sk-zebra-99" });
+    const results: prober.ProbeResult[] = [];
+    new prober.Prober({
+      exec,
+      clock: new fx.FakeClock(),
+      onResult: (r) => results.push(r),
+      tokenPatterns: [/sk-[\w-]+/g],
+    }).probe({ slotKey: "s", check: "x" });
+    await tick();
+    expect(results[0].evidence).toBe("glpat-AbCdEf123456 ***");
+  });
+});
+
 describe("票 16 — 真 spawn 冒烟（真执行器 adapter 存在性证明，fx-ports-real 先例不跳过）", () => {
   it("ShellExec + SystemClock 全链：exit 0 → passed / exit 2 → failed", async () => {
     const results: prober.ProbeResult[] = [];
