@@ -89,13 +89,13 @@ describe("PresetState.resolveSkills", () => {
     ]);
   });
 
-  it("includes all active set skills (default preset is not excluded in v2)", () => {
+  it("includes all explicitly loaded preset skills (default or not)", () => {
     const state = new PresetState();
-    state.load("engineer"); // default preset, now included in v2
+    state.load("engineer");
     state.load("ddd");
 
     const result = state.resolveSkills(config);
-    // In v2, default preset is in active set, so its skills ARE included
+    // Explicit loads always contribute their skills, whatever their name.
     expect(result.skillNames).toContain("wayfinder");
     expect(result.skillNames).toContain("tdd");
     expect(result.skillNames).toContain("domain-modeling");
@@ -114,5 +114,49 @@ describe("PresetState.resolveSkills", () => {
     const result = state.resolveSkills(config);
     expect(result.missingPresets).toContain("nonexistent");
     expect(result.skillNames).toEqual([]);
+  });
+
+  // v3 default-identity semantics (ocr-F1): the default preset is NOT stored
+  // in the active set; its skills are unioned per call via defaultName.
+  it("unions the default preset's skills with the active set (defaultName)", () => {
+    const state = new PresetState();
+    state.load("ddd");
+
+    const result = state.resolveSkills(config, "engineer");
+    expect(result.skillNames.sort()).toEqual([
+      "domain-modeling",
+      "implement",
+      "tdd",
+      "ubiquitous-language",
+      "wayfinder",
+    ]);
+  });
+
+  it("dedups skills shared by default and active presets", () => {
+    const state = new PresetState();
+    state.load("go"); // shares "domain-modeling" with the default "engineer"
+
+    const result = state.resolveSkills(config, "engineer");
+    const names = result.skillNames;
+    expect(names).toContain("domain-modeling");
+    expect(names.filter((n) => n === "domain-modeling")).toHaveLength(1);
+  });
+
+  it("reports a default preset missing from config in missingPresets", () => {
+    const state = new PresetState();
+    state.load("ddd");
+
+    const result = state.resolveSkills(config, "ghost");
+    expect(result.missingPresets).toContain("ghost");
+    // Active-set skills still resolve despite the missing default.
+    expect(result.skillNames).toContain("domain-modeling");
+  });
+
+  it("without defaultName resolves only the active set (no implicit default)", () => {
+    const state = new PresetState();
+    state.load("ddd");
+
+    const result = state.resolveSkills(config);
+    expect(result.skillNames).not.toContain("wayfinder");
   });
 });

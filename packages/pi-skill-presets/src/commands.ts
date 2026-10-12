@@ -14,22 +14,9 @@ import type { PresetOpEntry } from "./types.ts";
 import { PRESET_OP_CUSTOM_TYPE } from "./types.ts";
 import { readPresetsConfig, getPresetSkills } from "./config.ts";
 import { showPresetDialog } from "./dialog.ts";
+import { findBadRefs } from "./bad-refs.ts";
 import { recordNotify } from "./notify.ts";
 import type { PresetsConfig } from "./types.ts";
-
-/**
- * Skills of a preset that are absent from the platform's discovered skill set
- * (ctx.getSystemPromptOptions().skills). Single criterion by design: a missing
- * name is reported as "missing or disabled" without distinguishing the cause.
- */
-function findBadRefs(
-  ctx: ExtensionCommandContext,
-  config: PresetsConfig,
-  presetName: string,
-): string[] {
-  const platform = new Set((ctx.getSystemPromptOptions().skills ?? []).map((s) => s!.name));
-  return (getPresetSkills(config, presetName) ?? []).filter((s) => !platform.has(s));
-}
 
 /**
  * Create command handlers with shared state.
@@ -38,14 +25,16 @@ function findBadRefs(
  * @param state - The preset state (active set)
  * @param getCwd - Function to get current cwd
  * @param getDefaultPreset - Function to get default preset name
+ * @param consumeReplayWarning - Called with the names just warned, so the
+ *   replay path does not re-warn them (per-name dedup, ocr-F2).
  */
 export function createCommands(
   pi: ExtensionAPI,
   state: PresetState,
   getCwd: () => string,
   getDefaultPreset: () => string | undefined,
-  /** Optional: marks a pending replay warning as consumed (#65 B3). */
-  consumeReplayWarning?: () => void,
+  /** Optional: records per-name replay-warning dedup (#65 B3, ocr-F2). */
+  consumeReplayWarning?: (names: string[]) => void,
 ) {
   /** /preset — TUI dialog */
   async function presetCommand(_args: string, ctx: ExtensionCommandContext): Promise<void> {
@@ -75,7 +64,10 @@ export function createCommands(
       return;
     }
 
-    const badRefs = findBadRefs(ctx, config, name);
+    const badRefs = findBadRefs(
+      (ctx.getSystemPromptOptions().skills ?? []).map((s) => s!.name),
+      getPresetSkills(config, name) ?? [],
+    );
 
     if (state.has(name)) {
       // Repeat load of a bad preset warns again (no cross-action dedup).
@@ -85,7 +77,7 @@ export function createCommands(
           `Preset "${name}" is already loaded, but these skills are unavailable (missing or disabled): ${badRefs.join(", ")}`,
           "warning",
         );
-        consumeReplayWarning?.();
+        consumeReplayWarning?.(badRefs);
       }
       ctx.ui.notify(`Preset "${name}" is already loaded.`, "info");
       return;
@@ -97,9 +89,9 @@ export function createCommands(
         `Preset "${name}" loaded, but these skills are unavailable (missing or disabled): ${badRefs.join(", ")}`,
         "warning",
       );
-      // This load consumed the warning opportunity — the next turn must not
-      // repeat the same bad-reference warning via the replay path.
-      consumeReplayWarning?.();
+      // This load consumed the warning opportunity — the warned names must
+      // not be repeated by the replay path.
+      consumeReplayWarning?.(badRefs);
     }
 
     doLoad(pi, ctx, state, name);

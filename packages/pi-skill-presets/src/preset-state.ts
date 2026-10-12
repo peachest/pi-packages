@@ -8,7 +8,8 @@
 import type { PresetOpEntry, ResolvedActiveSet, PresetsConfig } from "./types.ts";
 import { getPresetSkills } from "./config.ts";
 
-/** In-memory active set: names of loaded presets. */
+/** In-memory active set: names of loaded presets (explicit loads only — the
+ * default preset is NOT auto-added; its skills are unioned in resolveSkills). */
 export class PresetState {
   private activePresets = new Set<string>();
 
@@ -57,27 +58,35 @@ export class PresetState {
   /**
    * Resolve the active set to a deduplicated list of skill names.
    *
-   * v3 semantics: the default preset is always part of the active set, so its
-   * skills are included without special-casing. A loaded preset name absent
-   * from config is reported in missingPresets (preset-level); skill-level bad
-   * references (listed names absent from pi's discovery) are computed by the
-   * caller against the discovered skill set, not here.
+   * v3 semantics: the active set holds ONLY explicitly loaded presets — the
+   * default preset is not stored in it. Instead, the default's skills are
+   * unioned in here on every call (allowed = default ∪ active, computed
+   * fresh each turn), so changing settings.json's default mid-session takes
+   * effect immediately without stale default names lingering in the set.
+   * A default or loaded preset name absent from config is reported in
+   * missingPresets (preset-level); skill-level bad references (listed names
+   * absent from pi's discovery) are computed by the caller against the
+   * discovered skill set, not here.
    *
    * @param config - Presets configuration
+   * @param defaultName - Current default preset name from config, if any
    */
-  resolveSkills(config: PresetsConfig): ResolvedActiveSet {
+  resolveSkills(config: PresetsConfig, defaultName?: string): ResolvedActiveSet {
     const skillSet = new Set<string>();
     const missingPresets: string[] = [];
 
-    for (const presetName of this.activePresets) {
+    const mergePreset = (presetName: string) => {
       const skills = getPresetSkills(config, presetName);
       if (!skills) {
         missingPresets.push(presetName);
-        continue;
+        return;
       }
 
       for (const skill of skills) skillSet.add(skill);
-    }
+    };
+
+    if (defaultName !== undefined) mergePreset(defaultName);
+    for (const presetName of this.activePresets) mergePreset(presetName);
 
     return {
       skillNames: [...skillSet],

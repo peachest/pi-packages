@@ -262,6 +262,57 @@ suite(`preset-diff integration (gateway up=${gatewayUp}, model ${PINNED_MODEL_ID
   );
 
   it(
+    "default switch mid-session removes old default skills (H1 regression, ocr F1)",
+    async () => {
+      const skillRoot = makeTempDir("t66-skills-");
+      makeSkill(skillRoot, "alpha", "fixture skill one");
+      makeSkill(skillRoot, "beta", "fixture skill two");
+      makeSkill(skillRoot, "gamma", "fixture skill three");
+
+      let agentDir = "";
+      const session = await createTestSession({
+        settings: PRESET_SETTINGS, // default = base → alpha only
+        skillRoot,
+        onCreated: (p) => {
+          agentDir = p.agentDir;
+        },
+      });
+
+      await session.prompt(PROMPT);
+      const before = systemSectionMessages(session);
+      expect(before[before.length - 1].text("skills")).toContain("<name>alpha</name>");
+
+      // Mid-session: default switches base → extra. The default is never in
+      // the explicit active set, so the old default's skills must disappear
+      // on the next turn (no stale base residue).
+      writeFileSync(
+        join(agentDir, "settings.json"),
+        JSON.stringify(
+          {
+            presets: {
+              default: "extra",
+              definitions: {
+                base: { skills: ["alpha"] },
+                extra: { skills: ["beta", "gamma"] },
+              },
+            },
+          },
+          null,
+          2,
+        ),
+      );
+      await session.prompt(PROMPT);
+
+      const after = systemSectionMessages(session);
+      const skills = after[after.length - 1].text("skills");
+      expect(skills).toContain("<name>beta</name>");
+      expect(skills).toContain("<name>gamma</name>");
+      expect(skills).not.toContain("<name>alpha</name>");
+    },
+    180_000,
+  );
+
+  it(
     "multi-preset same-name skill is deduplicated in the section",
     async () => {
       const skillRoot = makeTempDir("t62-skills-");

@@ -24,11 +24,12 @@ import {
   visibleWidth,
 } from "@earendil-works/pi-tui";
 import type { TUI } from "@earendil-works/pi-tui";
-import type { ExtensionContext, ExtensionAPI, Theme, Skill } from "@earendil-works/pi-coding-agent";
+import type { ExtensionContext, ExtensionCommandContext, ExtensionAPI, Theme, Skill } from "@earendil-works/pi-coding-agent";
 import { loadSkills } from "@earendil-works/pi-coding-agent";
 import type { PresetState } from "./preset-state.ts";
 import type { PresetsConfig, PresetOpEntry } from "./types.ts";
 import { getPresetSkills, writePresetsConfig, getAgentDir } from "./config.ts";
+import { findBadRefs } from "./bad-refs.ts";
 import { PRESET_OP_CUSTOM_TYPE } from "./types.ts";
 
 type DialogMode = "browse" | "preset-edit" | "skill-list" | "new-preset" | "confirm";
@@ -272,9 +273,11 @@ class PresetDialog extends Container {
 
         const prefix = isSelected ? this.theme.fg("accent", "→ ") : "  ";
         const namePart = name;
-        const status = loaded
-          ? " " + this.theme.fg("success", "[loaded]")
-          : " " + this.theme.fg("dim", "[─]");
+        const status = isDefault
+          ? " " + this.theme.fg("accent", "[always-on]")
+          : loaded
+            ? " " + this.theme.fg("success", "[loaded]")
+            : " " + this.theme.fg("dim", "[─]");
         const star = isDefault ? " " + this.theme.fg("accent", "★") : "";
         const skills = getPresetSkills(this.config, name) ?? [];
         const count = this.theme.fg("dim", ` (${skills.length})`);
@@ -590,12 +593,13 @@ class PresetDialog extends Container {
   // --- Actions ---
 
   private togglePreset(name: string): void {
+    if (name === this.defaultPreset) {
+      // Default preset is always-on: it is not a member of the explicit
+      // active set, so it can be neither offloaded nor usefully re-loaded.
+      this.ctx.ui.notify(`Preset "${name}" is the default preset and cannot be offloaded.`, "warning");
+      return;
+    }
     if (this.state.has(name)) {
-      if (name === this.defaultPreset) {
-        // Default preset is always in the active set — no off option.
-        this.ctx.ui.notify(`Preset "${name}" is the default preset and cannot be offloaded.`, "warning");
-        return;
-      }
       this.state.offload(name);
       this.pi.appendEntry<PresetOpEntry>(PRESET_OP_CUSTOM_TYPE, {
         action: "offload",
@@ -603,15 +607,32 @@ class PresetDialog extends Container {
         timestamp: Date.now(),
       });
       this.ctx.ui.notify(`Offloaded preset "${name}".`, "info");
-    } else {
-      this.state.load(name);
-      this.pi.appendEntry<PresetOpEntry>(PRESET_OP_CUSTOM_TYPE, {
-        action: "load",
-        preset: name,
-        timestamp: Date.now(),
-      });
-      this.ctx.ui.notify(`Loaded preset "${name}".`, "info");
+      return;
     }
+    // Align with /preset-load: warn on bad references, still load. The
+    // platform skill list comes from this dialog's own command context
+    // (optional at runtime even though only commands normally open it);
+    // absent that, skip the check.
+    const platformOptions = (this.ctx as ExtensionCommandContext).getSystemPromptOptions?.();
+    if (platformOptions) {
+      const badRefs = findBadRefs(
+        (platformOptions.skills ?? []).map((s) => s!.name),
+        getPresetSkills(this.config, name) ?? [],
+      );
+      if (badRefs.length > 0) {
+        this.ctx.ui.notify(
+          `Preset "${name}" loaded, but these skills are unavailable (missing or disabled): ${badRefs.join(", ")}`,
+          "warning",
+        );
+      }
+    }
+    this.state.load(name);
+    this.pi.appendEntry<PresetOpEntry>(PRESET_OP_CUSTOM_TYPE, {
+      action: "load",
+      preset: name,
+      timestamp: Date.now(),
+    });
+    this.ctx.ui.notify(`Loaded preset "${name}".`, "info");
   }
 
   private addSkillToPreset(presetName: string, skillName: string): void {

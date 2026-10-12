@@ -43,11 +43,20 @@ function findGatewayProvider(): { baseUrl: string; apiKey?: string } | undefined
   try {
     raw = JSON.parse(readFileSync(join(REAL_AGENT_DIR, "models.json"), "utf-8"));
   } catch {
+    console.warn("[preset-harness] models.json missing or unparsable — treating as no available models");
+    return undefined;
+  }
+  // Structure defense: a parseable file can still be a non-object (null,
+  // array) or lack a providers map — treat as unparsable instead of throwing.
+  const providersMap = (
+    raw as { providers?: unknown } | null | undefined
+  )?.providers;
+  if (!providersMap || typeof providersMap !== "object" || Array.isArray(providersMap)) {
+    console.warn("[preset-harness] models.json has no usable providers map — treating as no available models");
     return undefined;
   }
   const providers = Object.values(
-    (raw as { providers?: Record<string, { baseUrl?: string; apiKey?: string; models?: Array<{ id?: string }> }> })
-      .providers ?? {},
+    providersMap as Record<string, { baseUrl?: string; apiKey?: string; models?: Array<{ id?: string }> }>,
   );
   const hosting = providers.find((p) =>
     (p.models ?? []).some((m) => m.id === PINNED_MODEL_ID),
@@ -73,8 +82,12 @@ async function gatewayReachable(): Promise<boolean> {
       headers,
       signal: AbortSignal.timeout(3000),
     });
-    return res.ok;
+    // Any HTTP response — including 401/403 — proves the gateway is up and
+    // routable. Do NOT assume the gateway serves /v1/models without auth:
+    // auth rejection is reachability, not unreachability.
+    return true;
   } catch {
+    // Only fetch failures (connection refused, DNS, timeout) mean unreachable.
     return false;
   }
 }

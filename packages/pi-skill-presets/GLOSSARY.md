@@ -15,12 +15,12 @@ _Avoid_: group, bundle, pack
 _Avoid_: capability, ability
 
 **Active set**:
-当前已 load 且未 offload 的 **preset 名称集合**（`Set<string>`）。default preset 始终在内。session_start / session_tree 时从当前 leaf 路径的 persistent entries 路径感知回放重建。
-_Avoid_: loaded skills, current preset, skills collection
+当前已显式 load 且未 offload 的 **preset 名称集合**（`Set<string>`）。**不包含 default preset**——default 不存于 active set，其技能由 `resolveSkills` 每轮以 `defaultName` 参数现算并入（ocr-F1）。session_start / session_tree 时从当前 leaf 路径的 persistent entries 路径感知回放重建。
+_Avoid_: loaded skills, current preset, skills collection, default-holding set
 
 **Allowed 并集**:
-default preset 的技能 ∪ active set 中其他 preset 的技能，去重后的技能名称集合。`before_agent_start` 变异的收敛目标：最终列表是该并集与 pi 已发现技能的交集。
-_Avoid_: filter list, whitelist
+default preset 的技能 ∪ active set 中各 preset 的技能，去重后的技能名称集合，**每轮从当前 `config.default` 现算**（非存储态，ocr-F1）——中途改 default 立即生效，旧 default 不残留。`before_agent_start` 变异的收敛目标：最终列表是该并集与 pi 已发现技能的交集。
+_Avoid_: filter list, whitelist, stored union
 
 **每轮无状态变异**:
 `before_agent_start` 每轮重新读 presets 配置、按当前 active set 解析 allowed 并集，与 `event.systemPromptOptions.skills`（pi 已发现的技能）按名称求交集、按 pi 发现顺序去重后写回，返回 `undefined`。无跨轮缓存、无一次性 flag，同一输入下每轮结果相同。
@@ -43,8 +43,8 @@ _Avoid_: enable, activate, apply
 _Avoid_: disable, deactivate, remove
 
 **Default preset**:
-始终在 active set 中的 preset，路径感知回放时自动加入。其技能经 allowed 并集进入 `systemPromptOptions.skills`。本包不写 `settings.skills`。
-_Avoid_: base preset, always-on preset
+`config.default` 指定的 always-on preset，不存于 active set，不可 offload；其技能每轮经 allowed 并集现算进入 `systemPromptOptions.skills`。本包不写 `settings.skills`。
+_Avoid_: base preset, active-set member
 
 **路径感知回放**:
 恢复 active set 时用 `sessionManager.buildContextEntries()` 从当前 leaf 沿 session 树遍历收集 preset-op entries——被放弃分支上的 load/offload 不参与回放。compaction 感知；对线性 session 等价于全量 entries。
@@ -65,10 +65,10 @@ _Avoid_: prompt cache, KV cache
 ## Relationships
 
 - **Preset → Skill**: 一个 preset 包含多个 skill 引用（按名称）。
-- **Active set → Preset**: Active set 是 preset 名称的集合，包含 default preset。session_start / session_tree 时从当前 leaf 路径的 persistent entries 路径感知回放重建。
+- **Active set → Preset**: Active set 是**显式 load** 的 preset 名称集合，不包含 default preset（ocr-F1）。session_start / session_tree 时从当前 leaf 路径的 persistent entries 路径感知回放重建。
 - **Persistent entry → Load/Offload**: 每次 load/offload 都写入一条 persistent entry（customType `preset-op`），记录操作类型（`action: 'load' | 'offload'`）、preset 名称、时间戳。
-- **session_start / session_tree → 路径感知回放 → Active set**: 两个事件共用同一重建逻辑：清空 active set → 加入 default preset → `buildContextEntries()` 从当前 leaf 遍历收集 entries → 按时间顺序回放 load/offload。
+- **session_start / session_tree → 路径感知回放 → Active set**: 两个事件共用同一重建逻辑：清空 active set（不加入 default）→ `buildContextEntries()` 从当前 leaf 遍历收集 entries → 按时间顺序回放 load/offload；同时清空 per-name 警告去重名单（ocr-F2）。
 - **before_agent_start → 每轮无状态变异 → pi 原生 section diff/patch**: `before_agent_start` 每轮读配置 → 解析 allowed 并集 → 与 `event.systemPromptOptions.skills` 求交集并按 pi 发现顺序去重 → 写回 `event.systemPromptOptions.skills` → 返回 `undefined`，由 pi 对 skills section 做原生 diff/patch 渲染。零配置时直通（返回 `undefined`，不写回）。
-- **坏引用 → warning 而非阻塞**: preset 引用了 pi 未发现的技能（missing 或被 skill-manager disable）不阻塞 load；session_start / session_tree 回放后首个变异轮统一 warning 一次，显式 load 动作当场 warning。
+- **坏引用 → warning 而非阻塞**: preset 引用了 pi 未发现的技能（missing 或被 skill-manager disable）不阻塞 load；session_start / session_tree 回放后首个变异轮统一 warning，且**按技能名去重**——已被显式 load 警告过的名字不再重复警告，全新 missing 名仍会触发（ocr-F2）；显式 load 动作（命令与 dialog 一致，ocr-F3）当场 warning。
 - **本包 ↔ settings.json / skill-manager 边界**: 本包不写 `settings.skills`，也读不到 skill-manager 内部状态；被 skill-manager disable 的技能不在 pi 的发现结果中，天然被交集剔除，只体现为坏引用 warning。
 - **Compaction / 树导航 → 路径感知回放**: compaction 与树导航不破坏恢复正确性——`buildContextEntries()` 从当前 leaf 遍历，只回放当前路径上的 entries。
