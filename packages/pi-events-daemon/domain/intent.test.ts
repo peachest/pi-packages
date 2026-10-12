@@ -389,3 +389,107 @@ describe("once / readyCheck 判定真值表", () => {
     expect(checkForPhase(noReady, "flip")).toBe("curl -sf localhost:8080/healthz");
   });
 });
+
+import {
+  adoptThresholds,
+  restoreSlotThresholds,
+  runnerSlotKey,
+  rebuildRunLedger,
+  type ThresholdConfig,
+  type RunLedger,
+} from "./intent.ts";
+
+describe("槽级阈值先建者定（一个实体一个状态机，不因敏感度不同分裂）", () => {
+  it("首建者：空槽采纳后来者阈值，无 warning", () => {
+    const cfg: ThresholdConfig = { failureThreshold: 3, successThreshold: 2 };
+    expect(adoptThresholds(null, cfg)).toEqual({ thresholds: cfg, warning: null });
+  });
+
+  it("后续订阅阈值相同 → 沿用，无 warning", () => {
+    const slot: ThresholdConfig = { failureThreshold: 3, successThreshold: 2 };
+    expect(adoptThresholds(slot, { failureThreshold: 3, successThreshold: 2 })).toEqual({ thresholds: slot, warning: null });
+  });
+
+  it("后续订阅阈值不同 → warning + 沿用槽现值（先建者定）", () => {
+    const slot: ThresholdConfig = { failureThreshold: 3, successThreshold: 2 };
+    const got = adoptThresholds(slot, { failureThreshold: 1, successThreshold: 1 });
+    expect(got.thresholds).toEqual(slot);
+    expect(got.warning).not.toBeNull();
+  });
+
+  it("跨重启恢复：槽阈值随首个重建订阅的创建序恢复（与列表顺序无关）", () => {
+    const earliest: ThresholdConfig = { failureThreshold: 3, successThreshold: 2 };
+    const subs = [
+      { createdAt: 300, thresholds: { failureThreshold: 9, successThreshold: 9 } as ThresholdConfig },
+      { createdAt: 100, thresholds: earliest },
+      { createdAt: 200, thresholds: { failureThreshold: 5, successThreshold: 5 } as ThresholdConfig },
+    ];
+    expect(restoreSlotThresholds(subs)).toEqual(earliest);
+  });
+
+  it("跨重启恢复：空订阅列表 → 默认 1/1；同 createdAt 平局取列表先者", () => {
+    expect(restoreSlotThresholds([])).toEqual(DEFAULT_THRESHOLDS);
+    const tie: ThresholdConfig = { failureThreshold: 4, successThreshold: 4 };
+    expect(
+      restoreSlotThresholds([
+        { createdAt: 100, thresholds: tie },
+        { createdAt: 100, thresholds: { failureThreshold: 7, successThreshold: 7 } },
+      ]),
+    ).toEqual(tie);
+  });
+});
+
+describe("I5：谓词不进槽键——N 个不同 on 谓词共享同一次抓取", () => {
+  const sub = (on: string, template = "gitlab:ci", key = "external/mr-1") => ({
+    entityRef: ref("gitlab:mr", `external/https://gitlab.example/a/b/-/merge_requests/${key.slice(-1)}`),
+    template,
+    on,
+  });
+
+  it("同 (EntityRef, 模板)、不同 on → 同一槽键（共享一次抓取）", () => {
+    const a = sub("state == running");
+    const b = sub("verdict == failed");
+    expect(runnerSlotKey(a.entityRef, a.template)).toBe(runnerSlotKey(b.entityRef, b.template));
+  });
+
+  it("模板不同 → 不同槽；实体不同 → 不同槽（谓词变化不拆槽，模板/实体才拆）", () => {
+    const a = sub("state == running", "gitlab:ci");
+    const b = sub("state == running", "gitlab:mr");
+    const c = sub("state == running", "gitlab:ci", "external/mr-2");
+    expect(runnerSlotKey(a.entityRef, a.template)).not.toBe(runnerSlotKey(b.entityRef, b.template));
+    expect(runnerSlotKey(a.entityRef, a.template)).not.toBe(runnerSlotKey(c.entityRef, c.template));
+  });
+
+  it("同参重复 subscribe 幂等共享：全同 ProbeSpec 亦同槽", () => {
+    const a = sub("state == running");
+    expect(runnerSlotKey(a.entityRef, a.template)).toBe(runnerSlotKey({ ...a.entityRef }, a.template));
+  });
+});
+
+describe("RunLedger 归零重探（R1 A5：runtime 簿记非真相源，重启全槽立即重探）", () => {
+  const crashed: RunLedger = {
+    inFlight: true,
+    lastVerdict: "failed",
+    nextDueAt: 9_999,
+    consecutiveFails: 5,
+    lastEvidenceRef: "evd:old",
+  };
+
+  it("任意槽态输入 → 归零输出 + 立即重探标记（nextDueAt = now）", () => {
+    const now = 1_000_000;
+    const rebuilt = rebuildRunLedger(crashed, now);
+    expect(rebuilt).toEqual({
+      inFlight: false,
+      lastVerdict: null,
+      nextDueAt: now,
+      consecutiveFails: 0,
+      lastEvidenceRef: null,
+    });
+  });
+
+  it("归零 lastVerdict ⇒ 重启后首个 fresh verdict 视为到达（拿最新事实），阈值计数同样从零起", () => {
+    const rebuilt = rebuildRunLedger(crashed, 1);
+    // 首个 failed 在默认阈值下即翻转——不被崩溃前的 failed 压制
+    expect(observeVerdict({ consecutiveFails: rebuilt.consecutiveFails, consecutivePasses: 0, settled: rebuilt.lastVerdict }, "failed").flipped).toBe(true);
+  });
+});

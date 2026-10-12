@@ -240,6 +240,62 @@ export function checkForPhase(spec: { check: string; readyCheck?: string }, phas
   return phase === "flip" ? (spec.readyCheck ?? spec.check) : spec.check;
 }
 
+// --- 槽级纯计算：阈值先建者定 / I5 谓词不进槽键 / RunLedger 归零重探 ---
+
+/**
+ * 订阅加入槽时的阈值归属：空槽采纳（先建者定）；同值沿用；异值 → warning + 沿用槽现值
+ * （一个实体一个状态机，不因敏感度不同分裂，#31 R2 裁定）。
+ */
+export function adoptThresholds(
+  slot: ThresholdConfig | null,
+  incoming: ThresholdConfig,
+): { thresholds: ThresholdConfig; warning: string | null } {
+  if (!slot) return { thresholds: incoming, warning: null };
+  if (slot.failureThreshold === incoming.failureThreshold && slot.successThreshold === incoming.successThreshold) {
+    return { thresholds: slot, warning: null };
+  }
+  return { thresholds: slot, warning: "thresholds differ from slot — keeping slot's existing values (first-creator-wins)" };
+}
+
+/**
+ * 重启重建：槽阈值随首个重建订阅的创建序恢复（先建者定原则跨重启延续）；
+ * 平局取列表先者；空列表回落默认 1/1。
+ */
+export function restoreSlotThresholds(
+  subs: ReadonlyArray<{ createdAt: number; thresholds: ThresholdConfig }>,
+): ThresholdConfig {
+  let best: { createdAt: number; thresholds: ThresholdConfig } | undefined;
+  for (const s of subs) {
+    if (!best || s.createdAt < best.createdAt) best = s;
+  }
+  return best ? best.thresholds : DEFAULT_THRESHOLDS;
+}
+
+/**
+ * I5：槽键 = (EntityRef, 模板)，谓词（on）不参与——N 个不同 on 谓词共享同一次抓取；
+ * 模板/实体不同才拆槽。谓词不在签名里即结构上不可能进键。
+ */
+export function runnerSlotKey(ref: EntityRef, template: string): string {
+  return `slot:${ref.type}:${ref.key}#${template}`;
+}
+
+/** RunLedger（槽 runtime 簿记，非聚合、非真相源——A2/A5）。 */
+export interface RunLedger {
+  inFlight: boolean;
+  lastVerdict: Verdict | null;
+  nextDueAt: number | null;
+  consecutiveFails: number;
+  lastEvidenceRef: string | null;
+}
+
+/**
+ * 归零重探（R1 A5）：重启后全槽立即重探一次（拿最新事实）。任意槽态输入 →
+ * 计数归零 + lastVerdict 清空（重启后首个 fresh verdict 视为到达）+ nextDueAt=now 重探标记。
+ */
+export function rebuildRunLedger(_ledger: RunLedger, now: number): RunLedger {
+  return { inFlight: false, lastVerdict: null, nextDueAt: now, consecutiveFails: 0, lastEvidenceRef: null };
+}
+
 /** 实体状态 = 其转换事件的纯归约（按 eventSeq 写入序取末次 to；无事件即 null，无 unprobed 前置态）。 */
 export function reduceState(log: readonly Transitioned[], ref: EntityRef): string | null {
   let latest: Transitioned | undefined;
