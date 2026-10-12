@@ -8,6 +8,8 @@
  */
 
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
 import type { AgentSession, SessionEntry } from "@earendil-works/pi-coding-agent";
 import {
   PINNED_MODEL_ID,
@@ -176,6 +178,50 @@ suite(`command semantics integration (gateway up=${gatewayUp}, model ${PINNED_MO
       await session.prompt(PROMPT);
       const warningsAfterTurn2 = notificationsOf("warning").filter((m) => m.includes("ghost"));
       expect(warningsAfterTurn2).toHaveLength(1);
+    },
+    180_000,
+  );
+
+  it(
+    "config change introducing a new missing skill warns incrementally (ocr N4)",
+    async () => {
+      let agentDir = "";
+      const session = await createTestSession({
+        settings: {
+          presets: { default: "base", definitions: { base: { skills: ["alpha"] } } },
+        },
+        agentDirSkills: true,
+        onCreated: (p) => {
+          agentDir = p.agentDir;
+        },
+      });
+
+      await session.prompt(PROMPT);
+      expect(notificationsOf("warning")).toHaveLength(0);
+
+      // Mid-session: default switches to a preset referencing a NEW missing
+      // name — the incremental per-name check must warn on the next turn.
+      writeFileSync(
+        join(agentDir, "settings.json"),
+        JSON.stringify({
+          presets: {
+            default: "base2",
+            definitions: {
+              base: { skills: ["alpha"] },
+              base2: { skills: ["alpha", "ghost2"] },
+            },
+          },
+        }),
+      );
+      await session.prompt(PROMPT);
+
+      const warnings = notificationsOf("warning");
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toContain("ghost2");
+
+      // Per-name dedup: the same missing name is not re-warned next turn.
+      await session.prompt(PROMPT);
+      expect(notificationsOf("warning")).toHaveLength(1);
     },
     180_000,
   );

@@ -69,6 +69,6 @@ _Avoid_: prompt cache, KV cache
 - **Persistent entry → Load/Offload**: 每次 load/offload 都写入一条 persistent entry（customType `preset-op`），记录操作类型（`action: 'load' | 'offload'`）、preset 名称、时间戳。
 - **session_start / session_tree → 路径感知回放 → Active set**: 两个事件共用同一重建逻辑：清空 active set（不加入 default）→ `buildContextEntries()` 从当前 leaf 遍历收集 entries → 按时间顺序回放 load/offload；同时清空 per-name 警告去重名单（ocr-F2）。
 - **before_agent_start → 每轮无状态变异 → pi 原生 section diff/patch**: `before_agent_start` 每轮读配置 → 解析 allowed 并集 → 与 `event.systemPromptOptions.skills` 求交集并按 pi 发现顺序去重 → 写回 `event.systemPromptOptions.skills` → 返回 `undefined`，由 pi 对 skills section 做原生 diff/patch 渲染。零配置时直通（返回 `undefined`，不写回）。
-- **坏引用 → warning 而非阻塞**: preset 引用了 pi 未发现的技能（missing 或被 skill-manager disable）不阻塞 load；session_start / session_tree 回放后首个变异轮统一 warning，且**按技能名去重**——已被显式 load 警告过的名字不再重复警告，全新 missing 名仍会触发（ocr-F2）；显式 load 动作（命令与 dialog 一致，ocr-F3）当场 warning。
+- **坏引用 → warning 而非阻塞**: preset 引用了 pi 未发现的技能（missing 或被 skill-manager disable）不阻塞 load；每个变异轮做**按技能名增量去重**——missing 名单过滤本回放周期已警告名单，新出现的 missing 名（含中途 config 变更新增）即警告；session_start / session_tree 清空名单开启新回放周期，重新全部警告一次（ocr-F2、N4）；显式 load 动作（命令与 dialog 一致，ocr-F3、N3）当场 warning 并记入已警告名单。
 - **本包 ↔ settings.json / skill-manager 边界**: 本包不写 `settings.skills`，也读不到 skill-manager 内部状态；被 skill-manager disable 的技能不在 pi 的发现结果中，天然被交集剔除，只体现为坏引用 warning。
 - **Compaction / 树导航 → 路径感知回放**: compaction 与树导航不破坏恢复正确性——`buildContextEntries()` 从当前 leaf 遍历，只回放当前路径上的 entries。

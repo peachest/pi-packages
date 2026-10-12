@@ -20,6 +20,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
 import type { Model, Api } from "@earendil-works/pi-ai";
+import { pickGatewayFromRaw } from "./gateway-pick.ts";
 import skillPresetsExtension from "../../index.ts";
 
 // Pinned per spec #40 Testing Decisions (charting ruling 2026-09-20). When the
@@ -46,27 +47,13 @@ function findGatewayProvider(): { baseUrl: string; apiKey?: string } | undefined
     console.warn("[preset-harness] models.json missing or unparsable — treating as no available models");
     return undefined;
   }
-  // Structure defense: a parseable file can still be a non-object (null,
-  // array) or lack a providers map — treat as unparsable instead of throwing.
-  const providersMap = (
-    raw as { providers?: unknown } | null | undefined
-  )?.providers;
-  if (!providersMap || typeof providersMap !== "object" || Array.isArray(providersMap)) {
+  // Structure defense (ocr N1): a parseable file can still have any nested
+  // shape — pickGatewayFromRaw validates every level and never throws.
+  const picked = pickGatewayFromRaw(raw, PINNED_MODEL_ID);
+  if (!picked) {
     console.warn("[preset-harness] models.json has no usable providers map — treating as no available models");
-    return undefined;
   }
-  const providers = Object.values(
-    providersMap as Record<string, { baseUrl?: string; apiKey?: string; models?: Array<{ id?: string }> }>,
-  );
-  const hosting = providers.find((p) =>
-    (p.models ?? []).some((m) => m.id === PINNED_MODEL_ID),
-  );
-  const fallback = providers.find(
-    (p) => typeof p.baseUrl === "string" && p.baseUrl.startsWith("http"),
-  );
-  const picked = hosting ?? fallback;
-  if (!picked?.baseUrl) return undefined;
-  return { baseUrl: picked.baseUrl, apiKey: picked.apiKey };
+  return picked;
 }
 
 const gateway = findGatewayProvider();

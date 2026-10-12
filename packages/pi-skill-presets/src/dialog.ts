@@ -59,7 +59,8 @@ export async function showPresetDialog(
   pi: ExtensionAPI,
   state: PresetState,
   config: PresetsConfig,
-  defaultPreset?: string,
+  getDefaultPreset?: () => string | undefined,
+  consumeReplayWarning?: (names: string[]) => void,
 ): Promise<void> {
   if (!ctx.hasUI) {
     ctx.ui.notify("/preset requires interactive mode", "warning");
@@ -67,7 +68,17 @@ export async function showPresetDialog(
   }
 
   await ctx.ui.custom<void>((tui, theme, _kb, done) => {
-    return new PresetDialog(ctx, pi, state, config, theme, tui, done, defaultPreset);
+    return new PresetDialog(
+      ctx,
+      pi,
+      state,
+      config,
+      theme,
+      tui,
+      done,
+      getDefaultPreset ?? (() => undefined),
+      consumeReplayWarning,
+    );
   }, {
     overlay: true,
     overlayOptions: {
@@ -148,7 +159,8 @@ class PresetDialog extends Container {
   private readonly done: (result: void) => void;
   private readonly state: PresetState;
   private config: PresetsConfig;
-  private readonly defaultPreset?: string;
+  private readonly getDefaultPreset: () => string | undefined;
+  private readonly consumeReplayWarning?: (names: string[]) => void;
   private readonly cwd: string;
 
   // Navigation state
@@ -170,7 +182,8 @@ class PresetDialog extends Container {
     theme: Theme,
     tui: TUI,
     done: (result: void) => void,
-    defaultPreset: string | undefined,
+    getDefaultPreset: () => string | undefined,
+    consumeReplayWarning?: (names: string[]) => void,
   ) {
     super();
     this.ctx = ctx;
@@ -180,7 +193,8 @@ class PresetDialog extends Container {
     this.theme = theme;
     this.tui = tui;
     this.done = done;
-    this.defaultPreset = defaultPreset;
+    this.getDefaultPreset = getDefaultPreset;
+    this.consumeReplayWarning = consumeReplayWarning;
     this.cwd = ctx.cwd;
 
     this.nameInput.onSubmit = () => this.confirmNewPreset();
@@ -194,6 +208,12 @@ class PresetDialog extends Container {
 
   private get presetNames(): string[] {
     return Object.keys(this.config.definitions);
+  }
+
+  // Live read (ocr N2): the default can change in settings.json while the
+  // dialog is open; every default comparison uses the current value.
+  private get defaultPreset(): string | undefined {
+    return this.getDefaultPreset();
   }
 
   private saveConfig(): void {
@@ -624,6 +644,9 @@ class PresetDialog extends Container {
           `Preset "${name}" loaded, but these skills are unavailable (missing or disabled): ${badRefs.join(", ")}`,
           "warning",
         );
+        // Aligned with /preset-load (ocr N3): the warned names are recorded
+        // so the replay path does not repeat them.
+        this.consumeReplayWarning?.(badRefs);
       }
     }
     this.state.load(name);

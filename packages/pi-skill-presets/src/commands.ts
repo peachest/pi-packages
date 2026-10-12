@@ -24,9 +24,12 @@ import type { PresetsConfig } from "./types.ts";
  * @param pi - The ExtensionAPI instance (for appendEntry)
  * @param state - The preset state (active set)
  * @param getCwd - Function to get current cwd
- * @param getDefaultPreset - Function to get default preset name
+ * @param getDefaultPreset - Function returning the default preset name; MUST
+ *   read config.default at call time (ocr N2) so interactions see the current
+ *   value instead of a turn-boundary cached one.
  * @param consumeReplayWarning - Called with the names just warned, so the
- *   replay path does not re-warn them (per-name dedup, ocr-F2).
+ *   replay path does not re-warn them (per-name dedup, ocr-F2). Passed through
+ *   to the dialog as well (ocr N3).
  */
 export function createCommands(
   pi: ExtensionAPI,
@@ -40,8 +43,9 @@ export function createCommands(
   async function presetCommand(_args: string, ctx: ExtensionCommandContext): Promise<void> {
     const cwd = getCwd();
     const config = readPresetsConfig(cwd);
-    const defaultPreset = getDefaultPreset();
-    await showPresetDialog(ctx, pi, state, config, defaultPreset);
+    // getDefaultPreset is a live getter — the dialog re-reads the default at
+    // each interaction point, so a settings.json change mid-dialog applies.
+    await showPresetDialog(ctx, pi, state, config, getDefaultPreset, consumeReplayWarning);
   }
 
   /** /preset-load <name> */

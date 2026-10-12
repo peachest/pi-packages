@@ -68,7 +68,7 @@ describe("dialog load bad-reference warning (ocr-F3)", () => {
     const state = new PresetState();
     const { pi, entries } = makeFakePi();
     const fake = makeFakeDialogCtx(["domain-modeling"]);
-    await showPresetDialog(fake.ctx, pi, state, config, undefined);
+    await showPresetDialog(fake.ctx, pi, state, config);
 
     const dialog = fake.capture() as { togglePreset: (name: string) => void };
     expect(dialog).toBeTruthy();
@@ -86,7 +86,7 @@ describe("dialog load bad-reference warning (ocr-F3)", () => {
     const state = new PresetState();
     const { pi } = makeFakePi();
     const fake = makeFakeDialogCtx(["domain-modeling", "ghost-skill"]);
-    await showPresetDialog(fake.ctx, pi, state, config, undefined);
+    await showPresetDialog(fake.ctx, pi, state, config);
 
     const dialog = fake.capture() as { togglePreset: (name: string) => void };
     dialog.togglePreset("ddd");
@@ -99,7 +99,7 @@ describe("dialog load bad-reference warning (ocr-F3)", () => {
     const state = new PresetState();
     const { pi, entries } = makeFakePi();
     const fake = makeFakeDialogCtx([]);
-    await showPresetDialog(fake.ctx, pi, state, { ...config, default: "ddd" }, "ddd");
+    await showPresetDialog(fake.ctx, pi, state, { ...config, default: "ddd" }, () => "ddd");
 
     const dialog = fake.capture() as { togglePreset: (name: string) => void };
     dialog.togglePreset("ddd");
@@ -109,5 +109,39 @@ describe("dialog load bad-reference warning (ocr-F3)", () => {
     expect(entries).toHaveLength(0);
     const warn = fake.notifications.find((n) => n.type === "warning");
     expect(warn?.msg).toContain("cannot be offloaded");
+  });
+
+  it("records warned names via consumeReplayWarning (ocr N3)", async () => {
+    const state = new PresetState();
+    const { pi } = makeFakePi();
+    const fake = makeFakeDialogCtx(["domain-modeling"]);
+    const warned: string[][] = [];
+    await showPresetDialog(fake.ctx, pi, state, config, () => undefined, (names) => {
+      warned.push(names);
+    });
+
+    const dialog = fake.capture() as { togglePreset: (name: string) => void };
+    dialog.togglePreset("ddd");
+
+    expect(warned).toEqual([["ghost-skill"]]);
+    expect(state.has("ddd")).toBe(true);
+  });
+
+  it("uses a live getter for the default preset (ocr N2)", async () => {
+    const state = new PresetState();
+    const { pi, entries } = makeFakePi();
+    const fake = makeFakeDialogCtx([]);
+    // Default changes mid-dialog: the getter is re-read at toggle time.
+    let current: string | undefined = undefined;
+    await showPresetDialog(fake.ctx, pi, state, { ...config, default: "ddd" }, () => current);
+    const dialog = fake.capture() as { togglePreset: (name: string) => void };
+
+    dialog.togglePreset("ddd"); // not yet default → loads
+    expect(state.has("ddd")).toBe(true);
+
+    current = "ddd"; // config changed mid-interaction
+    dialog.togglePreset("ddd"); // now default → rejected, no offload
+    expect(state.has("ddd")).toBe(true);
+    expect(entries.filter((e) => e.action === "offload")).toHaveLength(0);
   });
 });
