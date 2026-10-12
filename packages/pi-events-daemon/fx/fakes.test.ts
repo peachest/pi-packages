@@ -180,6 +180,34 @@ describe("票 18 FakeFs：watch 同步扩展（登记/同步通知/close 生效�
     ffs.change("/t/wm", "3");
     expect(events).toBe(1);
   });
+
+  it("回归：重复 close 不误删无关监听器——A 双重 close 后 B 仍收到通知（对齐原生 FSWatcher 幂等 close）", () => {
+    const ffs = new FakeFs({ "/t/wm": "0" });
+    let a = 0;
+    let b = 0;
+    const handleA = ffs.watch("/t/wm", () => a++);
+    const handleB = ffs.watch("/t/wm", () => b++);
+    handleA.close();
+    handleA.close(); // 第二次 close：不得经 splice(-1,1) 删掉 B
+    ffs.change("/t/wm", "1");
+    expect(a).toBe(0);
+    expect(b).toBe(1);
+  });
+
+  it("回归：分发期间关闭另一监听器，被关者不再触发——A 回调内 close B，同一 change 对 B 不再调 onEvent", () => {
+    const ffs = new FakeFs({ "/t/wm": "0" });
+    const fired: string[] = [];
+    let handleB: { close(): void };
+    ffs.watch("/t/wm", () => {
+      fired.push("a");
+      handleB.close(); // 回调内清理竞争监听器（真实取消路径）
+    });
+    handleB = ffs.watch("/t/wm", () => fired.push("b"));
+    ffs.change("/t/wm", "1");
+    expect(fired).toEqual(["a"]); // 已关的 B 本轮不得再触发（不得用调用前快照盲发）
+    ffs.change("/t/wm", "2");
+    expect(fired).toEqual(["a", "a"]); // 后续 change 也不恢复 B
+  });
 });
 
 describe("票 13 四 fake 经公共面注入各自端口（每端口恰好两 adapter：real + fake）", () => {

@@ -82,10 +82,10 @@ export class FakePusher implements Pusher {
   }
 }
 
-/** FakeFs——内存树（fx.md 钉死：内存树 + 撕裂尾行 fixture）：files 即 fixture 写入口，撕裂尾行 = 无尾换行的截断字符串。watch 同步扩展（票 18）：watch 登记、change 写入并同步通知该 path 监听者（同步 = 无定时器确定性）；files 直改不通知，change 是唯一事件注入面。 */
+/** FakeFs——内存树（fx.md 钉死：内存树 + 撕裂尾行 fixture）：files 即 fixture 写入口，撕裂尾行 = 无尾换行的截断字符串。watch 同步扩展（票 18）：watch 登记、change 写入并同步通知该 path 监听者（同步 = 无定时器确定性）；close 幂等（重复 close 不经 splice(-1,1) 误删无关监听器）；change 分发逐项检查活跃（closed 标记）——回调内关掉的监听器本轮及后续均不再触发，对齐原生 FSWatcher；files 直改不通知，change 是唯一事件注入面。 */
 export class FakeFs implements Fs {
   readonly files: Map<string, string>;
-  private readonly watchers: { path: string; onEvent: () => void }[] = [];
+  private readonly watchers: { path: string; onEvent: () => void; closed: boolean }[] = [];
 
   constructor(files?: Record<string, string>) {
     this.files = new Map(Object.entries(files ?? {}));
@@ -99,15 +99,21 @@ export class FakeFs implements Fs {
       : Promise.resolve(content);
   }
 
-  /** 变更注入：写 content（缺省 = touch 保持现值）并同步通知该 path 的 watch 监听者。 */
+  /** 变更注入：写 content（缺省 = touch 保持现值）并同步通知该 path 的 watch 监听者（快照遍历 + 逐项活跃检查：分发中被关闭者不再触发）。 */
   change(path: string, content?: string): void {
     if (content !== undefined) this.files.set(path, content);
-    for (const w of [...this.watchers]) if (w.path === path) w.onEvent();
+    for (const w of [...this.watchers]) if (w.path === path && !w.closed) w.onEvent();
   }
 
   watch(path: string, onEvent: () => void): { close(): void } {
-    const w = { path, onEvent };
+    const w = { path, onEvent, closed: false };
     this.watchers.push(w);
-    return { close: () => this.watchers.splice(this.watchers.indexOf(w), 1) };
+    return {
+      close: () => {
+        if (w.closed) return; // 幂等：二次 close 不删（splice(-1,1) 会误删尾部无关监听器）
+        w.closed = true;
+        this.watchers.splice(this.watchers.indexOf(w), 1);
+      },
+    };
   }
 }
