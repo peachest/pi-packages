@@ -321,3 +321,52 @@ describe("confirm-mode recovery (ocr R6M2)", () => {
     expect(config.definitions.base).toBeUndefined();
   });
 });
+
+describe("saveConfig fresh-read failure (ocr R7M)", () => {
+  it("corrupted external settings.json (legal JSON null): notify error + edit rolled back + nothing written", async () => {
+    const realWrite = await vi.importActual<typeof import("../src/config.ts")>(
+      "../src/config.ts",
+    ).then((m) => m.writePresetsConfig);
+
+    const cwd = mkdtempSync(join(tmpdir(), "preset-dialog-readfail-"));
+    const agentDir = mkdtempSync(join(tmpdir(), "preset-dialog-agent2-"));
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    mkdirSync(join(cwd, ".pi"), { recursive: true });
+    writeFileSync(
+      join(cwd, ".pi", "settings.json"),
+      JSON.stringify({ presets: { definitions: { base: { skills: ["one"] } } } }, null, 2),
+    );
+
+    const config = readPresetsConfig(cwd);
+    const notifyLog: RecordedNotify[] = [];
+    const dialog = await buildDialog(cwd, config, { notifyLog });
+    const d = dialog as unknown as {
+      addSkillToPreset: (preset: string, skill: string) => void;
+    };
+    expect(d).toBeTruthy();
+
+    // External corruption AFTER the dialog opened: settings.json still parses,
+    // but a top-level `null` makes extractPresets throw a TypeError on the
+    // fresh read inside saveConfig. The real write would succeed if reached.
+    writeFileSync(join(agentDir, "settings.json"), "null");
+    writeMock.mockImplementation(realWrite);
+
+    d.addSkillToPreset("base", "two");
+
+    // Same failure path as a write failure: user notified, edit rolled back.
+    expect(notifyLog.some((n) => n.level === "error" && n.message.includes("base"))).toBe(true);
+    expect(config.definitions.base.skills).toEqual(["one"]);
+    // Nothing written: the corrupted content is untouched.
+    expect(readFileSync(join(agentDir, "settings.json"), "utf-8")).toBe("null");
+
+    // Recovering the settings and retrying the original action succeeds.
+    writeFileSync(
+      join(agentDir, "settings.json"),
+      JSON.stringify({ presets: { definitions: { base: { skills: ["one"] } } } }, null, 2),
+    );
+    d.addSkillToPreset("base", "two");
+    expect(config.definitions.base.skills).toEqual(["one", "two"]);
+    const written = JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf-8"));
+    expect(written.presets.definitions.base.skills).toEqual(["one", "two"]);
+  });
+});

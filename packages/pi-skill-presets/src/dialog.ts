@@ -226,28 +226,29 @@ class PresetDialog extends Container {
     // the stale snapshot whole would clobber it. Only the definitions this
     // dialog actually touched (added, edited, deleted) are applied — the fresh
     // default and all externally-modified/untouched definitions survive.
-    const fresh = readPresetsConfig(this.cwd);
-    const defs = { ...fresh.definitions };
-    for (const name of Object.keys(this.originalDefinitions)) {
-      if (!this.config.definitions[name]) delete defs[name]; // deleted in dialog
-    }
-    for (const [name, def] of Object.entries(this.config.definitions)) {
-      const original = this.originalDefinitions[name];
-      if (!original || JSON.stringify(original) !== JSON.stringify(def)) {
-        defs[name] = def; // added or edited in dialog
-      }
-    }
-    fresh.definitions = defs;
-    // Write first, refresh state after (ocr R5M4): if the write throws, the
-    // error propagates to the caller and this.config/originalDefinitions
-    // still hold the pre-save edits, so a retry re-merges and re-writes them.
-    // Refreshing the baseline before the write would silently drop the edits
-    // on a failed save.
-    // Catch the failure (ocr R6M1): notify the user with the preset name and
-    // reason, then report failure to the caller — which rolls back its local
-    // edit so retrying the original action re-attempts the write instead of
-    // hitting an already-exists / already-added guard.
+    // Catch read + merge + write failures (ocr R6M1/R7M): the fresh read can
+    // throw too — e.g. settings.json externally overwritten with legal JSON
+    // `null` makes readPresetsConfig/extractPresets throw a TypeError — so the
+    // whole read-merge-write sequence shares one failure path: notify the user
+    // with the preset name and reason, then report failure to the caller —
+    // which rolls back its local edit so retrying the original action
+    // re-attempts the save instead of hitting an already-exists /
+    // already-added guard. this.config/originalDefinitions still hold the
+    // pre-save edits, so a retry re-merges and re-writes them (ocr R5M4).
+    let fresh: PresetsConfig;
     try {
+      fresh = readPresetsConfig(this.cwd);
+      const defs = { ...fresh.definitions };
+      for (const name of Object.keys(this.originalDefinitions)) {
+        if (!this.config.definitions[name]) delete defs[name]; // deleted in dialog
+      }
+      for (const [name, def] of Object.entries(this.config.definitions)) {
+        const original = this.originalDefinitions[name];
+        if (!original || JSON.stringify(original) !== JSON.stringify(def)) {
+          defs[name] = def; // added or edited in dialog
+        }
+      }
+      fresh.definitions = defs;
       writePresetsConfig(fresh, "global");
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
