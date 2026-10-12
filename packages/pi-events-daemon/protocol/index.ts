@@ -281,3 +281,10 @@ function isRequestId(v: unknown): v is RequestId {
 function isOpName(method: string): method is OpName {
   return (OP_NAMES as readonly string[]).includes(method);
 }
+
+// ---------------------------------------------------------------------------
+// D1a 校验分层：手写最小校验器（required/enum/type/正则 子集）。
+// schemas/ 三契约文件的 daemon 侧消费口（I-01 profile 注册表校验）；
+// 完整 JSON Schema 校验归 extension/CLI 侧。
+// ---------------------------------------------------------------------------
+export * from "./validate.ts";
