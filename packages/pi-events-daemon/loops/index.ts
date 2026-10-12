@@ -32,7 +32,7 @@ export interface LoopsCtx {
   exec: Exec;
   pusher: Pusher;
   fs: Fs;
-  /** 真相源：L0 唯一写者的持久化面 */
+  /** 真相源：L0 唯一写者的持久化面（提交回调挂这里） */
   store: Store;
   /** I-01：封闭状态集（数据，profiles 装载产物） */
   states: ReadonlySet<string>;
@@ -49,22 +49,36 @@ export interface LoopsHandle {
   readonly cache: LoopsCache;
   /** 逐请求捕获的消费错误（kernel 越界 dead-letter 抛出在此可见；队列不死，消费继续）。 */
   readonly errors: readonly unknown[];
-  /** 停机：L0 队列关闭（幂等）。 */
+  /** 停机：L0 队列关闭、提交回调脱钩（幂等）。 */
   stop(): void;
+}
+
+/**
+ * 决策轨恢复（R1 双轨前提，loops 侧落地）：mutation line 的持久形态 = 事件流——单写者纪律下
+ * 每个已提交决策恰一事件（I1：transition+事件+outbox 行同事务原子），decisionOrder 内嵌于
+ * 确定性 event id 尾段 `#N`（deterministicEventId）。outbox 行与 transition 1:1（与 kernel
+ * recoverEventSeq 同源同法，事件流直查归 store 接口后续票精化），max = mutation line 位点，重放不重新编号。
+ */
+function recoverDecisionOrderTail(store: Store): number {
+  let tail = 0;
+  for (const row of store.outboxBatch(Number.MAX_SAFE_INTEGER)) {
+    const order = Number(row.notificationId.slice(row.notificationId.lastIndexOf("#") + 1));
+    if (Number.isInteger(order) && order > tail) tail = order;
+  }
+  return tail;
 }
 
 /** startLoops——loops 模块唯一入口：装配 L0（唯一写者）；L1-L4 后续票在此挂入。 */
 export function startLoops(ctx: LoopsCtx): LoopsHandle {
-  const kernel = new Kernel(ctx.store, ctx.states, 0, {
+  const kernel = new Kernel(ctx.store, ctx.states, recoverDecisionOrderTail(ctx.store), {
     ownerEpoch: ctx.ownerEpoch,
     registry: ctx.registry,
   });
 
-  let stopped = false;
-
   // 缓存：唯一写点 = 提交回调（store 契约：提交成功后按提交序同步触发，fake/SQLite 两实现一致）。
   // 全量重投影 = 接口忠实形态（回调只给表名，无行级增量；行级下推归 store 接口后续票）。
   const states = new Map<string, string | null>();
+  let stopped = false;
   ctx.store.onWrite((tables) => {
     if (stopped || !tables.includes("entities")) return;
     states.clear();
@@ -109,7 +123,7 @@ export function startLoops(ctx: LoopsCtx): LoopsHandle {
   return {
     submit(req: MutationRequest): void {
       if (stopped) throw new Error("loops stopped: L0 queue closed");
-    queue.push(req);
+      queue.push(req);
       drain();
     },
     cache: { states },
