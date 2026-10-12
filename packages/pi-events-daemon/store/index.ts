@@ -147,8 +147,9 @@ export interface Store {
   getRunLedger(slotKey: string): RunLedgerRow | undefined;
   putRunLedger(row: RunLedgerRow): void;
   listRunLedger(): RunLedgerRow[];
-  // update_hook 等价回调注册：提交成功后按提交序同步触发（真实现=SQLite update_hook）
-  onWrite(cb: (tables: readonly string[]) => void): void;
+  // update_hook 等价回调注册：提交成功后按提交序同步触发（真实现=SQLite update_hook）；
+  // 返回取消订阅函数（幂等，票 25 Finding 2：stop 不累积监听器）
+  onWrite(cb: (tables: readonly string[]) => void): () => void;
   // 第五停点注入（fake only）：注入回调，真实现为 no-op。X1="tx"，X2="outbox" 触发点。
   injectCrash?(point: "tx" | "outbox"): void;
 }
@@ -183,8 +184,12 @@ export class MemoryStore implements Store {
   private notifyQueue: string[][] = [];
   private dispatching = false;
 
-  onWrite(cb: (tables: readonly string[]) => void): void {
+  onWrite(cb: (tables: readonly string[]) => void): () => void {
     this.writeListeners.push(cb);
+    return () => {
+      const i = this.writeListeners.indexOf(cb);
+      if (i >= 0) this.writeListeners.splice(i, 1);
+    };
   }
 
   /** 第五停点（fake only，真实现 no-op）：下一次对应点触发崩溃模拟。 */
@@ -270,7 +275,8 @@ export class MemoryStore implements Store {
     try {
       while (this.notifyQueue.length > 0) {
         const batch = this.notifyQueue.shift()!;
-        for (const cb of this.writeListeners) cb(batch);
+        // 快照分发：监听器内取消订阅（含自解除）不影响本批已入快照的分发，后续提交不再触发
+        for (const cb of [...this.writeListeners]) cb(batch);
       }
     } finally {
       this.dispatching = false;

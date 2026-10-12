@@ -231,6 +231,18 @@ function dualSuite(label: string, make: () => Store & { close?(): void }): void 
       s.close?.();
     });
 
+    it("onWrite 返回取消订阅：解除后不再触发、重复解除幂等（票 25 Finding 2：stop 不累积监听器）", () => {
+      const s = make();
+      const log: string[] = [];
+      const offA = s.onWrite(() => log.push("A"));
+      s.onWrite(() => log.push("B"));
+      offA();
+      offA(); // 幂等：重复解除不抛
+      s.tx((tx) => { tx.putEntity({ type: "a", key: "1", state: null }); });
+      expect(log).toEqual(["B"]); // 已解除的监听器不触发（不累积）
+      s.close?.();
+    });
+
     it("notifications：非单调 eventSeq 下增量仍按插入序返回（下推后语义与 fake 对齐）", () => {
       const s = make();
       s.tx((tx) => {
