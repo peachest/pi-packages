@@ -266,6 +266,30 @@ describe("票 16 — B2② no_proxy 全局注入 / B2③ token 脱敏", () => {
   });
 });
 
+describe("票 17 — 脱敏双防线执行点补钉（多 token 同现）+ 阈值计数移交（prober 只上报原始 verdict）", () => {
+  it("多 token 同现：同一段输出内 glpat/Bearer/赋值形机密逐一掩码（出现即掩码，无遗漏）", async () => {
+    const exec = new fx.FakeExec();
+    exec.enqueue({ exitCode: 0, stdout: "used glpat-AbCdEf123456, sent Bearer abc123.XYZ, password=hunter2 ok" });
+    const results: prober.ProbeResult[] = [];
+    new prober.Prober({ exec, clock: new fx.FakeClock(), onResult: (r) => results.push(r) }).probe({ slotKey: "s", check: "x" });
+    await tick();
+    expect(results[0].evidence).toBe("used ***, sent ***, *** ok");
+  });
+
+  it("阈值计数移交语义：连续 3 次 exit 2 逐次上报原始 failed——prober 无阈值抑制/无翻转评估（failureThreshold 评估归 domain，触发归 loops）", async () => {
+    const exec = new fx.FakeExec();
+    exec.enqueue({ exitCode: 2 }, { exitCode: 2 }, { exitCode: 2 });
+    const results: prober.ProbeResult[] = [];
+    const p = new prober.Prober({ exec, clock: new fx.FakeClock(), onResult: (r) => results.push(r) });
+    p.probe({ slotKey: "s", check: "x" });
+    p.probe({ slotKey: "s", check: "x" });
+    p.probe({ slotKey: "s", check: "x" });
+    await tick();
+    expect(results.map((r) => r.verdict)).toEqual(["failed", "failed", "failed"]);
+    expect(results.map((r) => r.reason)).toEqual(["exit 2", "exit 2", "exit 2"]);
+  });
+});
+
 describe("票 16 修复 — ocr 评审 Finding 1：rejection reason 同套掩码", () => {
   it("exec 拒绝携带凭据 → reason 掩码，明文不出模块（拒绝路径与 evidence 同一规则）", async () => {
     const exec = new fx.FakeExec();
