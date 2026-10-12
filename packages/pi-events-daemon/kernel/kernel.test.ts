@@ -311,3 +311,125 @@ describe("组 4：评审修复回归——提交成功后推进游标（F1）/ �
     expect(postRename.transition(REF, "failed", at(2))).toEqual({ eventSeq: 2, from: "passed", to: "failed" });
   });
 });
+
+// ==================== 票 11：fanOut 编址 + query/evidence/validate/templates/drain ====================
+// B 层（链 B 里程碑）：Store 内存 fake 注入 + fake registry（静态面数据，I-01）。零具体 profile 名。
+
+import type { SubscriptionRow } from "../store/index.ts";
+
+const TPL = "fixture-tpl";
+const EVT1 = deterministicEventId(REF, 1);
+const sess = (id: string, scope: "project" | "user" = "project") => ({ sessionId: id, scope });
+const sub = (over: Partial<SubscriptionRow>): SubscriptionRow => ({
+  subscriptionId: "sub-x",
+  sessionId: "session-x",
+  entityRefType: REF.type,
+  entityRefKey: REF.key,
+  template: TPL,
+  origin: "session",
+  scope: "project",
+  createdAt: 1,
+  ...over,
+});
+
+/** fanOut 前置：实体 + 一次 transition（outbox 行即 fanOut 输入，I1 1:1）。 */
+function seedTransitioned(store: MemStore, kernel: Kernel) {
+  seedEntity(store, "passed");
+  const r = kernel.transition(REF, "failed", at(1));
+  if (!r) throw new Error("fixture: transition produced no event");
+  return r;
+}
+
+describe("票 11 组 1：fanOut origin 编址三分支（#31 正典）", () => {
+  it("origin=session 在线 → pending 直投行（写前持久化，I10/I12 载体）", () => {
+    const store = createMemoryStore();
+    const kernel = new Kernel(store, VERDICT_STATES, 0, { ownerEpoch: 7 });
+    seedTransitioned(store, kernel);
+    store.putSubscription(sub({ subscriptionId: "sub-a", sessionId: "session-a" }));
+    const res = kernel.fanOut(EVT1, { activeSessions: [sess("session-a")] });
+    expect(res).toEqual({ notificationId: EVT1, eventSeq: 1, delivered: ["session-a"], parked: [] });
+    expect(store.getDelivery(EVT1, "session-a")).toEqual({
+      notificationId: EVT1,
+      sessionId: "session-a",
+      state: "pending",
+      recordEpoch: 7,
+    });
+  });
+
+  it("origin=session 离线 → parked（E1：session-closed，只等 drain）", () => {
+    const store = createMemoryStore();
+    const kernel = new Kernel(store, VERDICT_STATES, 0);
+    seedTransitioned(store, kernel);
+    store.putSubscription(sub({ subscriptionId: "sub-a", sessionId: "session-a" }));
+    const res = kernel.fanOut(EVT1, { activeSessions: [sess("other")] });
+    expect(res).toEqual({ notificationId: EVT1, eventSeq: 1, delivered: [], parked: ["session-a"] });
+    expect(store.getDelivery(EVT1, "session-a")?.state).toBe("parked");
+  });
+
+  it("origin=auto → scope 内活跃 session 直投，离线不发（不留行）；他 scope 不中", () => {
+    const store = createMemoryStore();
+    const kernel = new Kernel(store, VERDICT_STATES, 0);
+    seedTransitioned(store, kernel);
+    store.putSubscription(sub({ subscriptionId: "sub-auto", sessionId: "irrelevant", origin: "auto", scope: "project" }));
+    const res = kernel.fanOut(EVT1, {
+      activeSessions: [sess("proj-1"), sess("proj-2"), sess("user-1", "user")],
+    });
+    expect(res.delivered.sort()).toEqual(["proj-1", "proj-2"]);
+    expect(res.parked).toEqual([]);
+    expect(store.pendingDeliveries({}).map((d) => d.sessionId).sort()).toEqual(["proj-1", "proj-2"]);
+    expect(store.getDelivery(EVT1, "user-1")).toBeUndefined();
+  });
+
+  it("origin=auto 零活跃 session / 无匹配订阅 → delivery 行不发（billboard 兜底归 query）", () => {
+    const store = createMemoryStore();
+    const kernel = new Kernel(store, VERDICT_STATES, 0);
+    seedTransitioned(store, kernel);
+    store.putSubscription(sub({ subscriptionId: "sub-auto", origin: "auto" }));
+    expect(kernel.fanOut(EVT1, { activeSessions: [] })).toEqual({
+      notificationId: EVT1,
+      eventSeq: 1,
+      delivered: [],
+      parked: [],
+    });
+    // 无匹配订阅：实体没有订阅 → 零行（fresh store，隔离上段 auto 订阅）
+    const store2 = createMemoryStore();
+    const kernel2 = new Kernel(store2, VERDICT_STATES, 0);
+    seedTransitioned(store2, kernel2);
+    store2.putSubscription(sub({ subscriptionId: "sub-other-entity", entityRefKey: "external/other" }));
+    expect(kernel2.fanOut(EVT1, { activeSessions: [sess("proj-1")] }).delivered).toEqual([]);
+    expect(store2.pendingDeliveries({})).toEqual([]);
+  });
+
+  it("I10 幂等：同 notification 重复 fanOut 不产生第二行；notification 行 + billboard 截断指针", () => {
+    const store = createMemoryStore();
+    const kernel = new Kernel(store, VERDICT_STATES, 0);
+    seedEntity(store, "passed");
+    // 带 evidenceRef 的事件（probe 路径形状）：直写事件 + outbox 行（B 层 fixture）
+    store.appendEventIfMissing({
+      eventId: EVT1,
+      eventSeq: 1,
+      entityRefType: REF.type,
+      entityRefKey: REF.key,
+      from: "passed",
+      to: "failed",
+      occurredAt: at(1),
+      evidenceRef: "ev-full",
+    });
+    store.putOutbox({ notificationId: EVT1, eventSeq: 1 });
+    store.putEvidence({ evidenceRef: "ev-full", content: "x".repeat(3000), recordedAt: 1 });
+    store.putSubscription(sub({ subscriptionId: "sub-a", sessionId: "session-a" }));
+
+    kernel.fanOut(EVT1, { activeSessions: [sess("session-a")] });
+    const second = kernel.fanOut(EVT1, { activeSessions: [sess("session-a")] });
+    expect(second.delivered).toEqual([]); // 既有行跳过（I10）
+    expect(store.pendingDeliveries({})).toHaveLength(1);
+
+    const [notification] = store.notifications({});
+    expect(notification).toMatchObject({ notificationId: EVT1, eventSeq: 1 });
+    const billboard = JSON.parse(notification.billboardJson);
+    expect(billboard.entityRef).toEqual(REF);
+    expect(billboard.verdict).toBe("failed");
+    expect(billboard.evidence).toHaveLength(2048); // >2KB 截断（UTF-8 字节口径）
+    expect(billboard.evidenceRef).toBe(EVT1); // 截断指针 = notificationId（evidence op 据此解引用）
+  });
+});

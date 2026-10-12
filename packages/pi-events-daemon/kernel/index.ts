@@ -22,6 +22,13 @@ import {
 } from "../domain/types.ts";
 import { intentToEvent, planTransition, requireStateIn } from "../domain/intent.ts";
 import type { IntentSequences } from "../domain/intent.ts";
+import {
+  type SubscriptionAddressing,
+  type SubscriptionScope,
+  deliveryTargets,
+  makeBillboard,
+  transitionDelivery,
+} from "../domain/delivery.ts";
 import type { EventRow, Store, TxView } from "../store/index.ts";
 
 /** Intent 消费重试上界（spec 自定裁量：#31 仅"有限重试"未定数值，round-2 备注 → 3 次）。 */
@@ -40,6 +47,37 @@ export class IntentCorruption extends Error {
     this.name = "IntentCorruption";
   }
 }
+
+/**
+ * profile 注册表条目（I-01：profile 静态面作为数据声明注入，kernel 零 profile import）。
+ * 票 11 消费面：templates 清单 / validate 三类错误 + ADR 0004 副作用 pattern；状态集仍走构造注入 states。
+ */
+export interface ProfileRegistryEntry {
+  profileId: string;
+  templates: ReadonlyArray<{
+    name: string;
+    entityType: string;
+    states: readonly string[];
+    params?: readonly string[];
+    schedule?: unknown;
+    usage?: string;
+  }>;
+  /** 已知副作用 pattern（子串匹配）：validate 命中出 warning 不阻断（ADR 0004 checks-are-probes）。 */
+  sideEffectPatterns?: readonly string[];
+}
+
+/** fanOut 运行时 deps：活跃 session 是 socket runtime（transport 持有），经调用注入（kernel 不碰 socket）。 */
+export type FanOutDeps = {
+  activeSessions: ReadonlyArray<{ sessionId: string; scope: SubscriptionScope }>;
+};
+
+export type FanOutResult = {
+  notificationId: string;
+  eventSeq: number;
+  /** pending 直投行目标（活跃）；parked = session 已关（E1），只等 drain。 */
+  delivered: string[];
+  parked: string[];
+};
 
 /** eventSeq 事件流尾恢复（首版）：outbox 行与 transition 1:1，取 eventSeq 最大值；空库 = 0。 */
 function recoverEventSeq(store: Store): number {
@@ -88,6 +126,10 @@ function sameContent(stored: EventRow, intent: TransitionIntent): boolean {
  */
 export class Kernel {
   private sequences: IntentSequences;
+  /** I12：本 daemon 实例世代（daemon-main 组合根传入；0 = 未接线）。 */
+  private readonly ownerEpoch: number;
+  /** I-01 profile 注册表（静态面数据；票 11 消费于 validate/templates）。 */
+  private readonly registry: ReadonlyArray<ProfileRegistryEntry>;
 
   constructor(
     private readonly store: Store,
@@ -95,8 +137,11 @@ export class Kernel {
     private readonly states: ReadonlySet<string>,
     /** decisionOrder 起点双轨之决策轨：mutation line 尾位点（重放不得重新编号）。 */
     decisionOrder: number,
+    opts: { ownerEpoch?: number; registry?: ReadonlyArray<ProfileRegistryEntry> } = {},
   ) {
     this.sequences = { decisionOrder, eventSeq: recoverEventSeq(store) };
+    this.ownerEpoch = opts.ownerEpoch ?? 0;
+    this.registry = opts.registry ?? [];
   }
 
   /**
@@ -188,6 +233,60 @@ export class Kernel {
       this.sequences = planned.sequences;
       return planned.result;
     });
+  }
+
+  /**
+   * fanOut（票 11）：notification 编址解析的唯一所在（spec story 5）。
+   * 输入 = outbox 行 notificationId（= 确定性 event id，I1 与 transition 1:1）：
+   * 事件 → 实体 → 匹配订阅（store.querySubscriptions）→ domain deliveryTargets 按 origin 分支：
+   * session → sourceSessionId 精确匹配（会话已关投 parked）；auto → scope 内活跃 session（活跃直投、离线不发）；
+   * 无匹配订阅 → delivery 行不发（billboard 兜底由 query 承担）。
+   * 同事务物化 NotificationRow（billboard；>2KB 截断 + evidenceRef=notificationId 指针，makeBillboard 正典）。
+   * I10：每 (notification, session) 恰一行——重复 fanOut 幂等跳过。
+   */
+  fanOut(notificationId: string, deps: FanOutDeps): FanOutResult {
+    return this.withRetry(`fanOut ${notificationId}`, () =>
+      this.store.tx((tx) => {
+        const event = tx.getEvent(notificationId);
+        if (!event) throw new Error(`fanOut rejected: unknown notification ${notificationId}`);
+        const ref = { type: event.entityRefType, key: event.entityRefKey };
+        const subs = this.store.querySubscriptions({ entityRefType: ref.type, entityRefKey: ref.key });
+        // billboard evidence 内容：事件 evidenceRef → evidence 表（无则空 billboard）
+        const evidence = event.evidenceRef
+          ? (this.store.evidenceSearch(event.evidenceRef).find((e) => e.evidenceRef === event.evidenceRef)?.content ?? "")
+          : "";
+        tx.putNotification({
+          notificationId,
+          eventSeq: event.eventSeq,
+          billboardJson: JSON.stringify(
+            makeBillboard(notificationId, { entityRef: ref, verdict: event.to as Verdict, evidence }),
+          ),
+        });
+        const delivered: string[] = [];
+        const parked: string[] = [];
+        for (const subRow of subs) {
+          const addressing: SubscriptionAddressing =
+            subRow.origin === "session"
+              ? { origin: "session", scope: subRow.scope ?? "project", sourceSessionId: subRow.sessionId }
+              : { origin: "auto", scope: "project" };
+          for (const target of deliveryTargets(addressing, deps.activeSessions)) {
+            if (tx.getDelivery(notificationId, target)) continue; // I10 恰一行
+            const active = deps.activeSessions.some((s) => s.sessionId === target);
+            // parked 态由 domain 迁移表推导（pending + session-closed，E1 正典边）
+            const closed = transitionDelivery("pending", "session-closed");
+            if (!closed.ok) throw new Error(`fanOut: canonical edge pending+session-closed rejected: ${closed.reason}`);
+            tx.putDelivery({
+              notificationId,
+              sessionId: target,
+              state: active ? "pending" : closed.to,
+              recordEpoch: this.ownerEpoch,
+            });
+            (active ? delivered : parked).push(target);
+          }
+        }
+        return { notificationId, eventSeq: event.eventSeq, delivered, parked };
+      }),
+    );
   }
 
   /**
