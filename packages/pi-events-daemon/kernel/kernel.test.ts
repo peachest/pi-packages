@@ -473,6 +473,18 @@ describe("票 11 组 2：drain 只出 parked（D2a），dead-letter 零进入", 
     // 全量 drain 兜走剩余
     expect(kernel.drain({ now: 6_000 }).drained).toEqual([{ notificationId: EVT1, sessionId: "session-a" }]);
   });
+
+  it("I12 epoch fence：drain 只重投本 epoch 的 parked 行——异 epoch 行不转换不返回（留给正确 epoch 的 daemon）", () => {
+    const store = createMemoryStore();
+    const kernel = new Kernel(store, VERDICT_STATES, 0, { ownerEpoch: 7 });
+    seedTransitioned(store, kernel);
+    // epoch 8 的 daemon 接管后写入的 parked 行；ownerEpoch 7 的僵尸 kernel 不得重投
+    store.putDelivery({ notificationId: EVT1, sessionId: "session-a", state: "parked", recordEpoch: 8 });
+    store.putDelivery({ notificationId: EVT1, sessionId: "session-b", state: "parked", recordEpoch: 7 });
+    const res = kernel.drain({});
+    expect(res.drained).toEqual([{ notificationId: EVT1, sessionId: "session-b" }]); // recordEpoch 7 正常出队
+    expect(store.getDelivery(EVT1, "session-a")).toMatchObject({ state: "parked", recordEpoch: 8 }); // 不转换不动
+  });
 });
 
 describe("票 11 组 3：query——listChildren 单层 + per-entity backlog/deadLetters + B4 懒重探", () => {
@@ -546,6 +558,19 @@ describe("票 11 组 3：query——listChildren 单层 + per-entity backlog/dea
     const bare = kernel.query({ entityRef: REF });
     expect(bare.entities[0].reprobeRequested).toBeUndefined();
     expect(bare.entities[0].lastProbedAt).toBeNull();
+  });
+
+  it("query 无关系大清单 O(N)：parent→children 索引一次构建——5 万实体全量正常返回（性能回归锚：O(N²) 全表扫必撞 vitest 5s 超时）", () => {
+    const store = createMemoryStore();
+    const kernel = new Kernel(store, VERDICT_STATES, 0);
+    const N = 50_000;
+    // 单事务批量造数：内存 store 每 tx 全表 staging 拷贝，逐行 putEntity 会把夹具自身变 O(N²)
+    store.tx((tx) => {
+      for (let i = 0; i < N; i++) tx.putEntity({ type: REF.type, key: `bulk/${i}`, state: "passed" });
+    });
+    const res = kernel.query({});
+    expect(res.entities).toHaveLength(N);
+    expect(res.entities.every((e) => e.children === undefined)).toBe(true); // 无关系 → 零 children 挂载
   });
 });
 
@@ -642,5 +667,34 @@ describe("票 11 组 4：evidence FTS5 点查 + validate 三类错误 + template
     });
     expect(kernel.templates("fixture-profile").templates).toHaveLength(2);
     expect(() => kernel.templates("nope")).toThrow(/fixture-profile/);
+  });
+
+  it("validate 歧义声明拒绝：template 与 check 同时提供 → checker-declaration（二选一，warnings 不再从 check 推导）", () => {
+    const store = createMemoryStore();
+    const kernel = kernelWithRegistry(store);
+    const res = kernel.validate({
+      profile: "fixture-profile",
+      template: "fixture-tpl",
+      params: { target: "x" },
+      check: "fixture-destructive-cmd",
+    });
+    expect(res).toMatchObject({ ok: false, error: "checker-declaration" });
+    expect((res as { reason: string }).reason).toContain("二选一");
+  });
+
+  it("validate 必填参数不吃原型链：params ['constructor'] + {} → invalid-params（own-property 判定，票 04 同修法）", () => {
+    const store = createMemoryStore();
+    const registry = [
+      {
+        profileId: "proto-profile",
+        templates: [
+          { name: "proto-tpl", entityType: "fixture:widget", states: ["passed", "failed"], params: ["constructor"], usage: "u" },
+        ],
+      },
+    ] as const;
+    const kernel = new Kernel(store, VERDICT_STATES, 0, { registry });
+    const res = kernel.validate({ profile: "proto-profile", template: "proto-tpl", params: {} });
+    expect(res).toMatchObject({ ok: false, error: "invalid-params" });
+    expect((res as { reason: string }).reason).toContain("constructor");
   });
 });

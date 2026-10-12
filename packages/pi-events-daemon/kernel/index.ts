@@ -20,7 +20,7 @@ import {
   entityRefKeyOf,
   sameEntityRef,
 } from "../domain/types.ts";
-import { intentToEvent, planTransition, requireStateIn } from "../domain/intent.ts";
+import { epochAccepts, intentToEvent, planTransition, requireStateIn } from "../domain/intent.ts";
 import type { IntentSequences } from "../domain/intent.ts";
 import {
   type SubscriptionAddressing,
@@ -357,10 +357,14 @@ export class Kernel {
    * （DeliveryRow 无入列时间戳，B 层近似）；now 缺省时 age 为 null。
    * 范围标注：命中规则本票只落 sourceSessionId 精确匹配（行 sessionId == 连接 session）；
    * scope 匹配第二规则需行携带 scope（store 行无此字段），归订阅/行形状后绕票。
+   * I12 epoch fence：重投仅限本 epoch 的 parked 行（epochAccepts 过滤）——僵尸 daemon
+   * 不重投别的世代记录，异 epoch 行不转换不返回（留给正确 epoch 的 daemon）。
    */
   drain(opts: { sessionId?: string; now?: number } = {}): DrainResult {
     const filter = opts.sessionId ? { sessionId: opts.sessionId } : {};
-    const parked = this.store.parkedDeliveries(filter);
+    const parked = this.store
+      .parkedDeliveries(filter)
+      .filter((row) => epochAccepts(row.recordEpoch, this.ownerEpoch));
     const dead = this.store.deadLetters(filter);
     const drained = this.store.tx((tx) =>
       parked.flatMap((row) => {
@@ -414,6 +418,17 @@ export class Kernel {
       return { latestSeq, backlogByRef, deadList };
     });
 
+    // parent→children 索引一次构建（O(N)）：无过滤 query 全量 entryOf(true) 时，
+    // 每实体全表扫父子关系是 O(N²)（万级实体同步阻塞）——单次建 Map 后 O(1) 查找
+    const childrenByParent = new Map<string, EntityRow[]>();
+    for (const e of entities) {
+      if (e.parentType === undefined || e.parentKey === undefined) continue;
+      const pk = entityRefKeyOf({ type: e.parentType, key: e.parentKey });
+      const bucket = childrenByParent.get(pk);
+      if (bucket) bucket.push(e);
+      else childrenByParent.set(pk, [e]);
+    }
+
     const entryOf = (row: EntityRow, withChildren: boolean): QueryEntityEntry => {
       const ref = { type: row.type, key: row.key };
       const k = entityRefKeyOf(ref);
@@ -427,9 +442,7 @@ export class Kernel {
         backlog: joins.backlogByRef.get(k) ?? 0,
       };
       if (withChildren) {
-        const children = entities
-          .filter((e) => e.parentType === row.type && e.parentKey === row.key)
-          .map((c) => entryOf(c, false)); // 单层：孩子不再展开
+        const children = (childrenByParent.get(k) ?? []).map((c) => entryOf(c, false)); // 单层：孩子不再展开
         if (children.length > 0) entry.children = children;
       }
       if (rt && rt.refcount === 0 && probe && (rt.lastProbedAt === null || probe.now - rt.lastProbedAt > probe.reprobeAfterMs)) {
@@ -481,6 +494,13 @@ export class Kernel {
         reason: `profile "${req.profile}" 未找到 — 可用: [${this.registry.map((r) => r.profileId).sort().join(", ")}]`,
       };
     }
+    if (req.template !== undefined && req.check !== undefined) {
+      return {
+        ok: false,
+        error: "checker-declaration",
+        reason: "template 与 check 二选一：模板形态（check 由模板派生）或 ad-hoc 形态（显式声明 check）",
+      };
+    }
     if (req.template !== undefined) {
       const tpl = entry.templates.find((t) => t.name === req.template);
       if (!tpl) {
@@ -490,7 +510,11 @@ export class Kernel {
           reason: `template "${req.template}" 未找到 — 可用: [${entry.templates.map((t) => t.name).join(", ")}]`,
         };
       }
-      const missing = (tpl.params ?? []).filter((p) => req.params?.[p] === undefined);
+      // own-property 判定（票 04 校验器同修法）：不吃 Object.prototype 原型链（"constructor" 等）；显式 undefined 仍算缺失
+      const provided = req.params ?? {};
+      const missing = (tpl.params ?? []).filter(
+        (p) => !Object.prototype.hasOwnProperty.call(provided, p) || provided[p] === undefined,
+      );
       if (missing.length > 0) {
         return { ok: false, error: "invalid-params", reason: `缺少必填参数: ${missing.join(", ")}` };
       }
