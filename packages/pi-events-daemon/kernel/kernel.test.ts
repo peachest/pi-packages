@@ -698,3 +698,244 @@ describe("票 11 组 4：evidence FTS5 点查 + validate 三类错误 + template
     expect((res as { reason: string }).reason).toContain("constructor");
   });
 });
+
+// =============================================================================
+// 票 24 — 订阅生命周期：register / subscribe（幂等/换参/smoke）/ cancel / RunnerSlot
+// B 层：MemoryStore fake 注入；槽键 (EntityRef, 模板) 不含谓词（I5）；阈值先建者定（R2）。
+// =============================================================================
+
+const SLOT_TEMPLATE = "fixture-tpl";
+const SLOT_KEY = `slot:${REF.type}:${REF.key}#${SLOT_TEMPLATE}`;
+
+type SubscribeRequest = Parameters<Kernel["subscribe"]>[0];
+type SubscribeDeps = Parameters<Kernel["subscribe"]>[1];
+
+/** 票 24 fixture 请求：模板形态（check 由 profiles 静态面解析产物，caller 传入——kernel 零 profile import）。 */
+const subReq = (over: Partial<SubscribeRequest> = {}): SubscribeRequest => ({
+  sessionId: "session-1",
+  entityRef: REF,
+  template: SLOT_TEMPLATE,
+  check: "fixture-check-a",
+  now: 1_000,
+  ...over,
+});
+
+const subId = (r: ReturnType<Kernel["subscribe"]>): string => {
+  if (!r.subscribed) throw new Error(`expected subscribed, got ${JSON.stringify(r)}`);
+  return r.subscriptionId;
+};
+
+describe("票 24 — RunnerSlot 全周期：首订阅创建（阈值从 0 起先建者定）→ 共享 → 末 cancel 销毁", () => {
+  it("首订阅建槽：ProbeSpec 落库（check/schedule/source）+ RunLedger refcount 1 + 槽身份平铺；共享订阅 refcount 递增", () => {
+    const store = createMemoryStore();
+    seedEntity(store, "passed");
+    const kernel = new Kernel(store, VERDICT_STATES, 0);
+    expect(kernel.subscribe(subReq()).subscribed).toBe(true);
+    expect(store.getProbeSpec(SLOT_KEY)).toMatchObject({
+      slotKey: SLOT_KEY,
+      check: "fixture-check-a",
+      schedule: { type: "interval", intervalMs: 60_000 },
+      source: "poll",
+    });
+    expect(store.getRunLedger(SLOT_KEY)).toMatchObject({
+      refcount: 1,
+      consecutiveFails: 0,
+      entityRefType: REF.type,
+      entityRefKey: REF.key,
+    });
+    expect(kernel.subscribe(subReq({ sessionId: "session-2" })).subscribed).toBe(true);
+    expect(store.getRunLedger(SLOT_KEY)?.refcount).toBe(2);
+  });
+
+  it("阈值先建者定：第二订阅不同阈值 → warning + 沿用槽值（订阅行存沿用值，首订阅者 cancel 后语义延续）；同值零 warning", () => {
+    const store = createMemoryStore();
+    seedEntity(store, "passed");
+    const kernel = new Kernel(store, VERDICT_STATES, 0);
+    const r1 = kernel.subscribe(subReq({ opts: { failureThreshold: 3, successThreshold: 2 } }));
+    expect(r1.subscribed && r1.warnings).toEqual([]);
+    const r2 = kernel.subscribe(subReq({ sessionId: "session-2", opts: { failureThreshold: 1, successThreshold: 1 } }));
+    expect(r2.subscribed && r2.warnings).toEqual([expect.stringContaining("first-creator-wins")]);
+    // 沿用值落在新订阅行（restoreSlotThresholds 重启重建的数据载体）
+    const row2 = store.querySubscriptions({ sessionId: "session-2" })[0];
+    expect(row2.thresholds).toEqual({ failureThreshold: 3, successThreshold: 2 });
+    // 同值加入：零 warning
+    const r3 = kernel.subscribe(subReq({ sessionId: "session-3", opts: { failureThreshold: 3, successThreshold: 2 } }));
+    expect(r3.subscribed && r3.warnings).toEqual([]);
+    expect(store.getRunLedger(SLOT_KEY)?.refcount).toBe(3);
+  });
+
+  it("末 cancel 销毁槽（refcount 0 计数清零）；重建后阈值重新先建者定；cancel 幂等/未知安全", () => {
+    const store = createMemoryStore();
+    seedEntity(store, "passed");
+    const kernel = new Kernel(store, VERDICT_STATES, 0);
+    const idA = subId(kernel.subscribe(subReq({ opts: { failureThreshold: 3, successThreshold: 2 } })));
+    const idB = subId(kernel.subscribe(subReq({ sessionId: "session-2", opts: { failureThreshold: 1 } })));
+    expect(kernel.cancel({ subscriptionId: idA, now: 2_000 })).toEqual({ cancelled: true });
+    expect(store.getRunLedger(SLOT_KEY)?.refcount).toBe(1); // 共享槽存活
+    expect(store.getProbeSpec(SLOT_KEY)).toBeDefined();
+    expect(kernel.cancel({ subscriptionId: idB, now: 2_100 })).toEqual({ cancelled: true });
+    // 末 cancel：槽销毁 = refcount 0 + 计数清零（probe_spec 行无 delete 语义，refcount 0 即惰性终结）
+    expect(store.getRunLedger(SLOT_KEY)).toMatchObject({ refcount: 0, consecutiveFails: 0, lastVerdict: undefined });
+    // 幂等 cancel / 未知 id：安全不抛
+    expect(kernel.cancel({ subscriptionId: idB, now: 2_200 })).toEqual({ cancelled: false });
+    expect(kernel.cancel({ subscriptionId: "sub-none", now: 2_200 })).toEqual({ cancelled: false });
+    // 重建：阈值从 0 起重新先建者定（先建者 2/2 采纳，非沿用旧槽 3/2）
+    const rC = kernel.subscribe(subReq({ opts: { failureThreshold: 2, successThreshold: 2 } }));
+    expect(rC.subscribed && rC.warnings).toEqual([]);
+    expect(store.getRunLedger(SLOT_KEY)?.refcount).toBe(1);
+    expect(store.querySubscriptions({ sessionId: "session-1" }).at(-1)?.thresholds).toEqual({ failureThreshold: 2, successThreshold: 2 });
+  });
+
+  it("cancel 越权拒绝：非本 session 的订阅 cancel → 明确错误；不带 sessionId（loops 内部关闭路径）放行", () => {
+    const store = createMemoryStore();
+    seedEntity(store, "passed");
+    const kernel = new Kernel(store, VERDICT_STATES, 0);
+    const id = subId(kernel.subscribe(subReq()));
+    expect(() => kernel.cancel({ subscriptionId: id, sessionId: "session-9", now: 2_000 })).toThrow(/belongs to session session-1/);
+    expect(kernel.cancel({ subscriptionId: id, now: 2_000 })).toEqual({ cancelled: true });
+  });
+});
+
+describe("票 24 — subscribe 幂等与换参", () => {
+  it("同 session 同参重复 subscribe → 幂等返回既有订阅（不新建行、refcount 不变）", () => {
+    const store = createMemoryStore();
+    seedEntity(store, "passed");
+    const kernel = new Kernel(store, VERDICT_STATES, 0);
+    const id1 = subId(kernel.subscribe(subReq({ opts: { on: "x", once: true, ttl: 60_000 } })));
+    const r2 = kernel.subscribe(subReq({ opts: { on: "x", once: true, ttl: 60_000 } }));
+    expect(subId(r2)).toBe(id1);
+    expect(store.querySubscriptions({ sessionId: "session-1" })).toHaveLength(1);
+    expect(store.getRunLedger(SLOT_KEY)?.refcount).toBe(1);
+  });
+
+  it("换参：旧关新开（closedReason replaced）、checker 替换（solo 槽 ProbeSpec 换 check）、在途投递不撤", () => {
+    const store = createMemoryStore();
+    seedEntity(store, "passed");
+    const kernel = new Kernel(store, VERDICT_STATES, 0);
+    const idOld = subId(kernel.subscribe(subReq({ opts: { on: "x" } })));
+    // 在途投递：transition + fanOut 产生 delivery 行（旧订阅编址）
+    kernel.transition(REF, "failed", at(1));
+    kernel.fanOut(deterministicEventId(REF, 1), { activeSessions: [{ sessionId: "session-1", scope: "project" }] });
+    const deliveryBefore = store.getDelivery(deterministicEventId(REF, 1), "session-1");
+    expect(deliveryBefore).toMatchObject({ state: "pending" });
+
+    const r2 = kernel.subscribe(subReq({ check: "fixture-check-b", opts: { on: "y" } }));
+    expect(r2.subscribed).toBe(true);
+    const rows = store.querySubscriptions({ sessionId: "session-1" });
+    expect(rows).toHaveLength(2);
+    const oldRow = rows.find((r) => r.subscriptionId === idOld)!;
+    const newRow = rows.find((r) => r.subscriptionId !== idOld)!;
+    expect(oldRow.closedAt).toBe(1_000);
+    expect(oldRow.closedReason).toBe("replaced");
+    expect(newRow.check).toBe("fixture-check-b");
+    expect(newRow.on).toBe("y");
+    expect(newRow.closedAt).toBeUndefined();
+    // checker 替换可观测（solo 槽销毁重建）；refcount 净零不变
+    expect(store.getProbeSpec(SLOT_KEY)?.check).toBe("fixture-check-b");
+    expect(store.getRunLedger(SLOT_KEY)?.refcount).toBe(1);
+    // 在途投递不撤：已落盘 delivery 行原样
+    expect(store.getDelivery(deterministicEventId(REF, 1), "session-1")).toEqual(deliveryBefore);
+  });
+
+  it("已关订阅不收新投递：fanOut 跳过 closedAt 有值的订阅（取消会话零新行）", () => {
+    const store = createMemoryStore();
+    seedEntity(store, "passed");
+    const kernel = new Kernel(store, VERDICT_STATES, 0);
+    const id1 = subId(kernel.subscribe(subReq()));
+    const id2 = subId(kernel.subscribe(subReq({ sessionId: "session-2" })));
+    kernel.cancel({ subscriptionId: id2, now: 1_500 });
+    kernel.transition(REF, "waiting", at(2));
+    kernel.fanOut(deterministicEventId(REF, 1), {
+      activeSessions: [
+        { sessionId: "session-1", scope: "project" },
+        { sessionId: "session-2", scope: "project" },
+      ],
+    });
+    expect(store.getDelivery(deterministicEventId(REF, 1), "session-1")).toMatchObject({ state: "pending" });
+    expect(store.getDelivery(deterministicEventId(REF, 1), "session-2")).toBeUndefined();
+    expect(store.getRunLedger(SLOT_KEY)?.refcount).toBe(1);
+    void id1;
+  });
+});
+
+describe("票 24 — subscribe smoke（live-run 经 prober 同步路径：kernel 协调、不自行 spawn）", () => {
+  const failSync: SubscribeDeps = {
+    probeSync: () => ({ verdict: "failed", reason: "exit 2", evidence: "asserted unreachable", durationMs: 5 }),
+  };
+
+  it("smoke 失败：{subscribed:false, validate} 不抛错；订阅/槽/账本零写入（bad checker 不进 store）", () => {
+    const store = createMemoryStore();
+    seedEntity(store, "passed");
+    const kernel = new Kernel(store, VERDICT_STATES, 0);
+    expect(kernel.subscribe(subReq({ opts: { smoke: true } }), failSync)).toEqual({
+      subscribed: false,
+      validate: { verdict: "failed", reason: "exit 2", evidence: "asserted unreachable", durationMs: 5 },
+    });
+    expect(store.querySubscriptions({ sessionId: "session-1" })).toHaveLength(0);
+    expect(store.getProbeSpec(SLOT_KEY)).toBeUndefined();
+    expect(store.getRunLedger(SLOT_KEY)).toBeUndefined();
+  });
+
+  it("smoke waiting 同样拒绝（通过 = 首探 passed 才落订阅）；smoke 通过：落订阅 + validate 回显 + checker 只跑一次", () => {
+    const store = createMemoryStore();
+    seedEntity(store, "passed");
+    const kernel = new Kernel(store, VERDICT_STATES, 0);
+    const waits: SubscribeDeps = { probeSync: () => ({ verdict: "waiting", reason: "exit 1", evidence: "", durationMs: 3 }) };
+    expect(kernel.subscribe(subReq({ opts: { smoke: true } }), waits).subscribed).toBe(false);
+
+    const checks: string[] = [];
+    const passSync: SubscribeDeps = {
+      probeSync: (check) => {
+        checks.push(check);
+        return { verdict: "passed", reason: "exit 0", evidence: "ok", durationMs: 7 };
+      },
+    };
+    const r = kernel.subscribe(subReq({ check: "fixture-probe-cmd", opts: { smoke: true } }), passSync);
+    expect(r.subscribed && r.validate).toEqual({ verdict: "passed", reason: "exit 0", evidence: "ok", durationMs: 7 });
+    expect(checks).toEqual(["fixture-probe-cmd"]); // kernel 协调一次，不自行重试
+    expect(store.querySubscriptions({ sessionId: "session-1" })).toHaveLength(1);
+  });
+
+  it("smoke 无执行器注入 → 明确抛错（协调失败不静默降级）", () => {
+    const store = createMemoryStore();
+    seedEntity(store, "passed");
+    const kernel = new Kernel(store, VERDICT_STATES, 0);
+    expect(() => kernel.subscribe(subReq({ opts: { smoke: true } }))).toThrow(/probeSync/);
+    expect(store.querySubscriptions({ sessionId: "session-1" })).toHaveLength(0);
+  });
+});
+
+describe("票 24 — register 簿记与 profile 冲突拒绝（US-32：一实体不跨两 profile）", () => {
+  it("register：创建实体记 profileId；同 profile 幂等不覆盖既有 state/payload；冲突 profile 明确拒绝", () => {
+    const store = createMemoryStore();
+    const kernel = new Kernel(store, VERDICT_STATES, 0);
+    expect(kernel.register({ entityRef: REF, profileId: "fixture-profile", state: "passed" })).toEqual({
+      entityRef: REF,
+      state: "passed",
+      created: true,
+    });
+    expect(store.getEntity(REF.type, REF.key)?.profileId).toBe("fixture-profile");
+    expect(
+      kernel.register({ entityRef: REF, profileId: "fixture-profile", state: "failed", payload: { x: 1 } }),
+    ).toEqual({ entityRef: REF, state: "passed", created: false });
+    expect(store.getEntity(REF.type, REF.key)).toMatchObject({ state: "passed", profileId: "fixture-profile" });
+    expect(store.getEntity(REF.type, REF.key)?.payload).toBeUndefined();
+    expect(() => kernel.register({ entityRef: REF, profileId: "other-profile" })).toThrow(
+      /already belongs to profile "fixture-profile"/,
+    );
+  });
+
+  it("subscribe 携异 profile → 拒绝（不静默覆盖实体归属）；一致 profile 可订阅", () => {
+    const store = createMemoryStore();
+    const kernel = new Kernel(store, VERDICT_STATES, 0);
+    kernel.register({ entityRef: REF, profileId: "fixture-profile", state: null });
+    expect(() => kernel.subscribe(subReq({ profileId: "other-profile" }))).toThrow(/belongs to profile/);
+    expect(kernel.subscribe(subReq({ profileId: "fixture-profile" })).subscribed).toBe(true);
+  });
+
+  it("subscribe 未注册实体 → 明确拒绝（probe 路径 transition 需实体存在，fail-fast）", () => {
+    const store = createMemoryStore();
+    const kernel = new Kernel(store, VERDICT_STATES, 0);
+    expect(() => kernel.subscribe(subReq())).toThrow(/unknown entity/);
+  });
+});

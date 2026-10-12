@@ -20,8 +20,16 @@ import {
   entityRefKeyOf,
   sameEntityRef,
 } from "../domain/types.ts";
-import { epochAccepts, intentToEvent, planTransition, requireStateIn } from "../domain/intent.ts";
-import type { IntentSequences } from "../domain/intent.ts";
+import {
+  adoptThresholds,
+  epochAccepts,
+  intentToEvent,
+  planTransition,
+  requireStateIn,
+  restoreSlotThresholds,
+  runnerSlotKey,
+} from "../domain/intent.ts";
+import type { IntentSequences, ThresholdConfig } from "../domain/intent.ts";
 import {
   type SubscriptionAddressing,
   type SubscriptionScope,
@@ -30,11 +38,101 @@ import {
   makeBillboard,
   transitionDelivery,
 } from "../domain/delivery.ts";
-import type { EventRow, Store, TxView } from "../store/index.ts";
+import type { EventRow, Store, SubscriptionRow, TxView } from "../store/index.ts";
 import type { EntityRow } from "../store/index.ts";
 
 /** Intent 消费重试上界（spec 自定裁量：#31 仅"有限重试"未定数值，round-2 备注 → 3 次）。 */
 const MAX_INTENT_ATTEMPTS = 3;
+
+/** 槽 ProbeSpec 缺省（ad-hoc 形态 spec 默认：60s interval；source 缺省 poll——watch 源随 checker 声明携带）。 */
+const DEFAULT_PROBE_SCHEDULE: NonNullable<SubscribeOpts["schedule"]> = { type: "interval", intervalMs: 60_000 };
+const DEFAULT_PROBE_SOURCE = "poll" as const;
+
+// --- 票 24：register / subscribe / cancel 请求与结果形状（#31 操作面 subscribe/cancel 契约的 kernel 内形）---
+
+/** register（publish/status op 的执行底座簿记）：实体注册记 profileId——一个实体一个状态机（US-32）。 */
+export type RegisterRequest = {
+  entityRef: EntityRef;
+  profileId: string;
+  state?: string | null;
+  payload?: unknown;
+  parent?: EntityRef;
+};
+
+export type RegisterResult = { entityRef: EntityRef; state: string | null; created: boolean };
+
+/** subscribe opts（#31 操作面正典：{on, once, flip, template, smoke, sessionId, readyCheck, ttl, thresholds}；
+ *  template 提升为请求结构位；schedule/source 是模板资产解析产物（caller 传入，kernel 零 profile import——opts 永不含 shell）。 */
+export type SubscribeOpts = {
+  /** on 谓词（状态值/状态集/命名转换）——I5：不进槽键。 */
+  on?: string;
+  once?: boolean;
+  flip?: boolean;
+  smoke?: boolean;
+  readyCheck?: string;
+  /** 到期自动关闭（I8）；触发归 loops L4，kernel 只持久化。 */
+  ttl?: number;
+  origin?: "session" | "auto";
+  scope?: "project" | "user";
+  failureThreshold?: number;
+  successThreshold?: number;
+  schedule?: { type: "interval"; intervalMs: number } | { type: "cron"; cron: string; tz?: string };
+  source?: "poll" | "fs-watch" | "k8s-watch";
+};
+
+export type SubscribeRequest = {
+  sessionId: string;
+  entityRef: EntityRef;
+  template: string;
+  /** checker shell（模板资产派生 / ad-hoc）——profiles=静态面、kernel=协调、prober=执行。 */
+  check: string;
+  /** 模板所属 profile（US-32 冲突拒绝面；实体已归属异 profile 时拒绝）。 */
+  profileId?: string;
+  /** createdAt/closedAt 时钟注入（kernel 零时钟，occurredAt 同法）。 */
+  now: number;
+  opts?: SubscribeOpts;
+};
+
+/** smoke 首探结果（prober 同步路径的回流形状，= ProbeResult 去 slotKey）。 */
+export type SmokeValidate = { verdict: Verdict; reason: string; evidence: string; durationMs: number };
+
+/** subscribe 运行时 deps：smoke live-run 执行器（真壳 = prober 同步路径，B 层 fake 注入）。 */
+export type SubscribeDeps = { probeSync?: (check: string) => SmokeValidate };
+
+/** subscribe 结果（#31 操作面：成功 {subscriptionId, entityRef, state, validate?, warnings}；smoke 失败 {subscribed:false, validate} 不抛错）。 */
+export type SubscribeResult =
+  | { subscribed: true; subscriptionId: string; entityRef: EntityRef; state: string | null; validate?: SmokeValidate; warnings: readonly string[] }
+  | { subscribed: false; validate: SmokeValidate };
+
+/** cancel（op 契约幂等：未知/已关 → {cancelled:false}；sessionId 给定时校验归属；loops 内部关闭路径不带 sessionId）。 */
+export type CancelRequest = {
+  subscriptionId: string;
+  sessionId?: string;
+  reason?: "cancelled" | "ttl";
+  now: number;
+};
+
+/** 幂等比较域（换参检测）：check/on/once/flip/readyCheck/ttl/origin/scope。
+ *  thresholds 不入比较域——阈值是槽级（先建者定），差异走 adoptThresholds warning+沿用，不构成换参（票面验收分组）。 */
+function sameSubscribeParams(row: SubscriptionRow, req: SubscribeRequest, opts: SubscribeOpts): boolean {
+  return (
+    row.check === req.check &&
+    (row.on ?? undefined) === (opts.on ?? undefined) &&
+    (row.once ?? false) === (opts.once ?? false) &&
+    (row.flip ?? false) === (opts.flip ?? false) &&
+    (row.readyCheck ?? undefined) === (opts.readyCheck ?? undefined) &&
+    (row.ttlMs ?? undefined) === (opts.ttl ?? undefined) &&
+    row.origin === (opts.origin ?? "session") &&
+    (row.scope ?? undefined) === (opts.scope ?? undefined)
+  );
+}
+
+/** 槽现值阈值：随槽内订阅的创建序恢复（先建者定跨重启延续，restoreSlotThresholds 正典路径）。 */
+function slotThresholdsOf(rows: readonly SubscriptionRow[]): ThresholdConfig | null {
+  const carried = rows.filter((r) => r.thresholds !== undefined);
+  if (carried.length === 0) return null;
+  return restoreSlotThresholds(carried.map((r) => ({ createdAt: r.createdAt, thresholds: r.thresholds! })));
+}
 
 /** transition / migrateState 的返回形状（publish 契约同族：{eventSeq, from, to}）。 */
 export type TransitionResult = { eventSeq: number; from: string | null; to: string };
@@ -190,6 +288,8 @@ export class Kernel {
   private readonly ownerEpoch: number;
   /** I-01 profile 注册表（静态面数据；票 11 消费于 validate/templates）。 */
   private readonly registry: ReadonlyArray<ProfileRegistryEntry>;
+  /** 订阅 id 序（sub-NNNN）：从既有行恢复 max——重启后新订阅不撞旧 id。 */
+  private subSeq: number;
 
   constructor(
     private readonly store: Store,
@@ -202,6 +302,209 @@ export class Kernel {
     this.sequences = { decisionOrder, eventSeq: recoverEventSeq(store) };
     this.ownerEpoch = opts.ownerEpoch ?? 0;
     this.registry = opts.registry ?? [];
+    this.subSeq = 0;
+    for (const s of store.querySubscriptions({})) {
+      const m = /^sub-(\d+)$/.exec(s.subscriptionId);
+      if (m) this.subSeq = Math.max(this.subSeq, Number(m[1]));
+    }
+  }
+
+  /** 订阅 id 铸造：sub-NNNN 单调（prototype 同形），重启经构造恢复位点。 */
+  private nextSubscriptionId(): string {
+    return `sub-${String(++this.subSeq).padStart(4, "0")}`;
+  }
+
+  /**
+   * register（簿记底座）：实体注册记 profileId。同 EntityRef 已归属异 profile → 明确拒绝
+   * （不静默覆盖，US-32：一实体不跨两 profile）；同 profile 重注册幂等（不覆盖既有 state/payload）。
+   */
+  register(req: RegisterRequest): RegisterResult {
+    return this.withRetry(`register ${entityRefKeyOf(req.entityRef)}`, () =>
+      this.store.tx((tx) => {
+        const existing = tx.getEntity(req.entityRef.type, req.entityRef.key);
+        if (existing) {
+          if (existing.profileId && existing.profileId !== req.profileId) {
+            throw new Error(
+              `register rejected: entity ${entityRefKeyOf(req.entityRef)} already belongs to profile "${existing.profileId}" — refusing re-register under "${req.profileId}" (one entity, one profile/state machine)`,
+            );
+          }
+          return { entityRef: req.entityRef, state: existing.state, created: false };
+        }
+        if (req.state !== undefined && req.state !== null) requireStateIn(this.states, req.state);
+        tx.putEntity({
+          type: req.entityRef.type,
+          key: req.entityRef.key,
+          state: req.state ?? null,
+          ...(req.payload !== undefined ? { payload: req.payload } : {}),
+          profileId: req.profileId,
+          ...(req.parent ? { parentType: req.parent.type, parentKey: req.parent.key } : {}),
+        });
+        return { entityRef: req.entityRef, state: req.state ?? null, created: true };
+      }),
+    );
+  }
+
+  /**
+   * subscribe（票 24）：订阅生命周期 + RunnerSlot 编排。
+   * - 幂等：同 session 同 (entityRef, template) 同参 → 返回既有订阅（R1；阈值差异不构成换参，走 warning+沿用）。
+   * - 换参 = 关旧开新（checker 替换）：同 session 同槽旧订阅关（replaced）、新订阅开；旧订阅在途投递不撤（已落盘照投）。
+   * - 槽（I5）：键 = (EntityRef, 模板) 不含谓词；首订阅创建（ProbeSpec + RunLedger，阈值计数从 0 起 = 先建者定），
+   *   末 cancel 销毁（refcount 0 计数清零；probe_spec 行无 delete 语义，refcount 0 即惰性终结——L1 不调度）。
+   * - smoke：checker 首探经注入的 prober 同步路径（kernel 协调不自行 spawn）；非 passed →
+   *   {subscribed:false, validate} 不建订阅不抛错（通过才落订阅）。
+   * 一个方法 = 一个事务单元（Subscribe 跨 ProbeSpec+RunLedger+Subscription 例外按 store spec 单写者事务处理）。
+   */
+  subscribe(req: SubscribeRequest, deps: SubscribeDeps = {}): SubscribeResult {
+    const opts = req.opts ?? {};
+    // smoke 先于事务：checker 执行不进 tx，事务重试不重跑探针
+    let validate: SmokeValidate | undefined;
+    if (opts.smoke) {
+      if (!deps.probeSync) {
+        throw new Error("subscribe smoke: deps.probeSync 未注入（live-run 归 prober 同步路径，kernel 仅协调）");
+      }
+      validate = deps.probeSync(req.check);
+      if (validate.verdict !== "passed") return { subscribed: false, validate };
+    }
+    const entity = this.store.getEntity(req.entityRef.type, req.entityRef.key);
+    if (!entity) {
+      throw new Error(`subscribe rejected: unknown entity ${entityRefKeyOf(req.entityRef)} — register/status first`);
+    }
+    if (req.profileId && entity.profileId && entity.profileId !== req.profileId) {
+      throw new Error(
+        `subscribe rejected: entity ${entityRefKeyOf(req.entityRef)} belongs to profile "${entity.profileId}", refusing subscribe under "${req.profileId}" (US-32: one entity never split across two profiles)`,
+      );
+    }
+    return this.withRetry(`subscribe ${entityRefKeyOf(req.entityRef)}#${req.template}`, () =>
+      this.store.tx((tx): SubscribeResult => {
+        const openAll = () =>
+          this.store
+            .querySubscriptions({ entityRefType: req.entityRef.type, entityRefKey: req.entityRef.key })
+            .filter((s) => s.closedAt === undefined);
+        const incoming: ThresholdConfig = {
+          failureThreshold: opts.failureThreshold ?? 1,
+          successThreshold: opts.successThreshold ?? 1,
+        };
+        const mine = openAll().filter((s) => s.sessionId === req.sessionId && s.template === req.template);
+        const slotOthers = openAll().filter((s) => s.template === req.template && s.sessionId !== req.sessionId);
+        const adopted = adoptThresholds(slotThresholdsOf(slotOthers), incoming);
+        // 幂等：同参返回既有（R1）
+        const existing = mine.find((s) => sameSubscribeParams(s, req, opts));
+        if (existing) {
+          return {
+            subscribed: true,
+            subscriptionId: existing.subscriptionId,
+            entityRef: req.entityRef,
+            state: entity.state,
+            validate,
+            warnings: adopted.warning ? [adopted.warning] : [],
+          };
+        }
+        // 换参 = 关旧开新（checker 替换；同槽其余 session 订阅不动）
+        for (const old of mine) {
+          tx.putSubscription({ ...old, closedAt: req.now, closedReason: "replaced" });
+        }
+        const slotKey = runnerSlotKey(req.entityRef, req.template);
+        if (slotOthers.length === 0) {
+          // 槽（重）建：先建者定——ProbeSpec/check 与 RunLedger 计数从 0 起（solo 换参即 checker 替换）
+          tx.putProbeSpec({
+            slotKey,
+            check: req.check,
+            schedule: opts.schedule ?? DEFAULT_PROBE_SCHEDULE,
+            source: opts.source ?? DEFAULT_PROBE_SOURCE,
+          });
+          tx.putRunLedger({
+            slotKey,
+            epoch: this.ownerEpoch,
+            refcount: 1,
+            consecutiveFails: 0,
+            entityRefType: req.entityRef.type,
+            entityRefKey: req.entityRef.key,
+          });
+        } else {
+          const ledger = tx.getRunLedger(slotKey);
+          if (!ledger) throw new Error(`subscribe: slot ledger missing for shared slot ${slotKey}`);
+          tx.putRunLedger({
+            ...ledger,
+            refcount: slotOthers.length + 1,
+            entityRefType: ledger.entityRefType ?? req.entityRef.type,
+            entityRefKey: ledger.entityRefKey ?? req.entityRef.key,
+          });
+        }
+        const subscriptionId = this.nextSubscriptionId();
+        tx.putSubscription({
+          subscriptionId,
+          sessionId: req.sessionId,
+          entityRefType: req.entityRef.type,
+          entityRefKey: req.entityRef.key,
+          template: req.template,
+          check: req.check,
+          on: opts.on,
+          once: opts.once,
+          flip: opts.flip,
+          readyCheck: opts.readyCheck,
+          thresholds: adopted.thresholds,
+          origin: opts.origin ?? "session",
+          scope: opts.scope,
+          createdAt: req.now,
+          ttlMs: opts.ttl,
+        });
+        return {
+          subscribed: true,
+          subscriptionId,
+          entityRef: req.entityRef,
+          state: entity.state,
+          validate,
+          warnings: adopted.warning ? [adopted.warning] : [],
+        };
+      }),
+    );
+  }
+
+  /**
+   * cancel（op 契约幂等）：关订阅 + 槽 refcount 重算（归零 = 槽销毁）。在途投递不撤（delivery 行独立于订阅）。
+   * loops 内部关闭路径（once-passed/failed-terminal/ttl）复用本方法：不带 sessionId、reason 指明关闭路径。
+   */
+  cancel(req: CancelRequest): { cancelled: boolean } {
+    // 归属校验在重试面外：确定性拒绝不进 withRetry（重试无意义，包装稀释错误语义）——subscribe 的实体/profile 校验同法
+    const current = this.store.getSubscription(req.subscriptionId);
+    if (!current || current.closedAt !== undefined) return { cancelled: false };
+    if (req.sessionId !== undefined && current.sessionId !== req.sessionId) {
+      throw new Error(
+        `cancel rejected: subscription ${req.subscriptionId} belongs to session ${current.sessionId}, not ${req.sessionId}`,
+      );
+    }
+    return this.withRetry(`cancel ${req.subscriptionId}`, () =>
+      this.store.tx((tx) => {
+        const row = tx.getSubscription(req.subscriptionId);
+        if (!row || row.closedAt !== undefined) return { cancelled: false };
+        tx.putSubscription({ ...row, closedAt: req.now, closedReason: req.reason ?? "cancelled" });
+        this.refreshSlotRefCount(tx, row);
+        return { cancelled: true };
+      }),
+    );
+  }
+
+  /** 槽 refcount 重算（订阅关闭后）；归零 = 槽销毁（计数清零，账本行保留惰性终结）。
+   *  计数排除本行：MemoryStore 事务内读的是已提交视图（本行关闸尚未提交），排除后与 SQLite 同连接读语义一致。 */
+  private refreshSlotRefCount(tx: TxView, sub: SubscriptionRow): void {
+    const ref = { type: sub.entityRefType, key: sub.entityRefKey };
+    const slotKey = runnerSlotKey(ref, sub.template ?? "");
+    const ledger = tx.getRunLedger(slotKey);
+    if (!ledger) return;
+    const refcount = this.store
+      .querySubscriptions({ entityRefType: ref.type, entityRefKey: ref.key })
+      .filter((s) => s.closedAt === undefined && s.template === sub.template && s.subscriptionId !== sub.subscriptionId)
+      .length;
+    tx.putRunLedger({
+      slotKey,
+      epoch: ledger.epoch,
+      refcount,
+      consecutiveFails: refcount === 0 ? 0 : ledger.consecutiveFails,
+      lastVerdict: refcount === 0 ? undefined : ledger.lastVerdict,
+      nextDueAt: refcount === 0 ? undefined : ledger.nextDueAt,
+      entityRefType: ledger.entityRefType ?? ref.type,
+      entityRefKey: ledger.entityRefKey ?? ref.key,
+    });
   }
 
   /**
@@ -310,7 +613,9 @@ export class Kernel {
         const event = tx.getEvent(notificationId);
         if (!event) throw new Error(`fanOut rejected: unknown notification ${notificationId}`);
         const ref = { type: event.entityRefType, key: event.entityRefKey };
-        const subs = this.store.querySubscriptions({ entityRefType: ref.type, entityRefKey: ref.key });
+        const subs = this.store
+          .querySubscriptions({ entityRefType: ref.type, entityRefKey: ref.key })
+          .filter((s) => s.closedAt === undefined); // 已关订阅不收新投递（换参/cancel 后零新行；在途行不撤）
         // billboard evidence 内容：事件 evidenceRef → evidence 表（无则空 billboard）
         const evidence = event.evidenceRef
           ? (this.store.evidenceSearch(event.evidenceRef).find((e) => e.evidenceRef === event.evidenceRef)?.content ?? "")

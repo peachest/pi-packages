@@ -46,6 +46,17 @@ export type SubscriptionRow = {
   scope?: "project" | "user";
   createdAt: number;
   ttlMs?: number;
+  // 票 24 订阅生命周期：opts 持久化（幂等比较 / 换参检测 / 槽阈值恢复；once/flip/readyCheck 判定消费归票 26）
+  // + 关闭簿记（closedAt 有值 = 已关订阅；closedReason 封闭集 = 关闭路径）。
+  check?: string;
+  /** on 谓词（I5：不进槽键，仅订阅参数）。 */
+  on?: string;
+  once?: boolean;
+  flip?: boolean;
+  readyCheck?: string;
+  thresholds?: { failureThreshold: number; successThreshold: number };
+  closedAt?: number;
+  closedReason?: "cancelled" | "replaced" | "ttl" | "once-passed" | "failed-terminal";
 };
 
 export type DeliveryRowData = {
@@ -87,6 +98,9 @@ export type RunLedgerRow = {
   consecutiveFails: number;
   lastVerdict?: "passed" | "failed" | "waiting";
   nextDueAt?: number;
+  /** 票 24：槽身份（EntityRef 平铺，kernel 槽创建时落）——completion 回流的 slotKey → ref 反查（票 26 L0 消费）。 */
+  entityRefType?: string;
+  entityRefKey?: string;
 };
 
 /** 查询过滤器（形状最小化，字段语义见票面）。 */
