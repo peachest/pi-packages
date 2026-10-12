@@ -91,6 +91,18 @@ module.exports = {
       },
     },
     {
+      name: "eda-a-layer-no-direct-io",
+      comment:
+        "A 层（loops/prober/transcript-adapter/daemon-main）禁直接 import node 内置 IO 模块——外部效应只经 fx 端口与 Store 接口（票 14）。fx/ 真壳 adapter 不在本规则 from 集内（真实现必须碰真系统）。合法 node 导入面为空：fx 是零依赖叶（eda-leaf-zero-dep-fx），端口类型只用原始值，A 层无任何正当 node: 引用。",
+      severity: "error",
+      from: {
+        path: `^${R}/pi-events-daemon/(loops|prober|transcript-adapter|daemon-main)/`,
+      },
+      to: {
+        path: `^(node:)?(fs|fs/promises|net|tls|dgram|dns|http|https|http2|child_process|tty|os|process|worker_threads)$`,
+      },
+    },
+    {
       name: "eda-kernel-deps",
       comment: "kernel imports only domain + store（自身内部自由）。",
       severity: "error",
