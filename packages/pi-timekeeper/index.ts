@@ -70,6 +70,7 @@ export default function timekeeperExtension(pi: ExtensionAPI) {
     };
   });
 
+  // sessionManager 的完整类型未从 pi 公共入口导出；用结构子集 + 边界 cast（review S1 判定接受）。
   function restoreFromBranch(ctx: { sessionManager: { getBranch(): unknown; getEntries(): unknown } }) {
     try {
       const entries = (ctx.sessionManager.getBranch() ?? ctx.sessionManager.getEntries()) as StateEntry[];
@@ -79,6 +80,3 @@ export default function timekeeperExtension(pi: ExtensionAPI) {
     }
   }
 }
-
-// Re-export for tests and downstream consumers.
-export { anchorLine, computeInjection, configFromEnv, restoreState };
