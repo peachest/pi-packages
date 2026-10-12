@@ -30,6 +30,7 @@ import {
   transitionDelivery,
 } from "../domain/delivery.ts";
 import type { EventRow, Store, TxView } from "../store/index.ts";
+import type { EntityRow } from "../store/index.ts";
 
 /** Intent 消费重试上界（spec 自定裁量：#31 仅"有限重试"未定数值，round-2 备注 → 3 次）。 */
 const MAX_INTENT_ATTEMPTS = 3;
@@ -83,6 +84,34 @@ export type FanOutResult = {
 export type DrainResult = {
   drained: ReadonlyArray<{ notificationId: string; sessionId: string }>;
   deadLetterSummary: { count: number; oldestAgeMs: number | null };
+};
+
+/** query B4 懒重探 ctx：probe runtime 是 RunnerSlot 侧数据（票 24 持有），读侧经调用注入。 */
+export type QueryProbeCtx = {
+  now: number;
+  reprobeAfterMs: number;
+  runtime: ReadonlyArray<{ entityRef: EntityRef; refcount: number; lastProbedAt: number | null }>;
+};
+
+export type QueryEntityEntry = {
+  entityRef: EntityRef;
+  state: string | null;
+  payload: unknown;
+  /** 实体最新事件写入序（无事件 = null）；端到端链 B 断言面。 */
+  eventSeq: number | null;
+  lastProbedAt: number | null;
+  /** pending delivery 行数（经事件 join 归实体）。 */
+  backlog: number;
+  /** listChildren 单层展开（孩子条目不再嵌套 children，无级联）。 */
+  children?: QueryEntityEntry[];
+  /** B4 懒重探标记：refcount 0 且 lastProbedAt 超阈（null=未探过亦算陈旧）→ 单次重探；
+   *  重探执行方记录 lastProbedAt 后条件自清（单次语义，query 读侧不写）。 */
+  reprobeRequested?: boolean;
+};
+
+export type QueryResult = {
+  entities: QueryEntityEntry[];
+  deadLetters: ReadonlyArray<{ notificationId: string; sessionId: string; entityRef: EntityRef }>;
 };
 
 /** eventSeq 事件流尾恢复（首版）：outbox 行与 transition 1:1，取 eventSeq 最大值；空库 = 0。 */
@@ -324,6 +353,73 @@ export class Kernel {
       if (Number.isFinite(oldestOccurredAt)) oldestAgeMs = opts.now - oldestOccurredAt;
     }
     return { drained, deadLetterSummary: { count: dead.length, oldestAgeMs } };
+  }
+
+  /**
+   * query（票 11，读侧归一）：实体清单（state/payload 摘要/eventSeq/lastProbedAt/backlog）
+   * + listChildren 单层展开 + per-entity backlog + deadLetters 清单 + B4 懒重探标记。
+   * backlog/deadLetters/eventSeq 归属：delivery/notificationId 经事件 join（tx 批量点查）。
+   * 过滤面本票最小化 {entityRef}（op 表 scope/session 过滤需订阅-实体 join 面，随订阅票补）。
+   */
+  query(filter: { entityRef?: EntityRef } = {}, probe?: QueryProbeCtx): QueryResult {
+    const entities = this.store.queryEntities({});
+    const outbox = this.store.outboxBatch(Number.MAX_SAFE_INTEGER);
+    const pending = this.store.pendingDeliveries({});
+    const dead = this.store.deadLetters({});
+    const joins = this.store.tx((tx) => {
+      const latestSeq = new Map<string, number>();
+      const backlogByRef = new Map<string, number>();
+      const deadList: { notificationId: string; sessionId: string; entityRef: EntityRef }[] = [];
+      for (const o of outbox) {
+        const ev = tx.getEvent(o.notificationId);
+        if (!ev) continue;
+        const k = entityRefKeyOf({ type: ev.entityRefType, key: ev.entityRefKey });
+        latestSeq.set(k, Math.max(latestSeq.get(k) ?? 0, ev.eventSeq));
+      }
+      for (const d of pending) {
+        const ev = tx.getEvent(d.notificationId);
+        if (!ev) continue;
+        const k = entityRefKeyOf({ type: ev.entityRefType, key: ev.entityRefKey });
+        backlogByRef.set(k, (backlogByRef.get(k) ?? 0) + 1);
+      }
+      for (const d of dead) {
+        const ev = tx.getEvent(d.notificationId);
+        if (ev) deadList.push({ notificationId: d.notificationId, sessionId: d.sessionId, entityRef: { type: ev.entityRefType, key: ev.entityRefKey } });
+      }
+      return { latestSeq, backlogByRef, deadList };
+    });
+
+    const entryOf = (row: EntityRow, withChildren: boolean): QueryEntityEntry => {
+      const ref = { type: row.type, key: row.key };
+      const k = entityRefKeyOf(ref);
+      const rt = probe?.runtime.find((r) => sameEntityRef(r.entityRef, ref));
+      const entry: QueryEntityEntry = {
+        entityRef: ref,
+        state: row.state,
+        payload: row.payload ?? null,
+        eventSeq: joins.latestSeq.get(k) ?? null,
+        lastProbedAt: rt?.lastProbedAt ?? null,
+        backlog: joins.backlogByRef.get(k) ?? 0,
+      };
+      if (withChildren) {
+        const children = entities
+          .filter((e) => e.parentType === row.type && e.parentKey === row.key)
+          .map((c) => entryOf(c, false)); // 单层：孩子不再展开
+        if (children.length > 0) entry.children = children;
+      }
+      if (rt && rt.refcount === 0 && probe && (rt.lastProbedAt === null || probe.now - rt.lastProbedAt > probe.reprobeAfterMs)) {
+        entry.reprobeRequested = true;
+      }
+      return entry;
+    };
+
+    const selected = filter.entityRef
+      ? entities.filter((e) => e.type === filter.entityRef!.type && e.key === filter.entityRef!.key)
+      : entities;
+    const deadLetters = filter.entityRef
+      ? joins.deadList.filter((d) => sameEntityRef(d.entityRef, filter.entityRef!))
+      : joins.deadList;
+    return { entities: selected.map((e) => entryOf(e, true)), deadLetters };
   }
 
   /**

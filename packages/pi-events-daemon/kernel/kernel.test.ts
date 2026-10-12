@@ -474,3 +474,77 @@ describe("票 11 组 2：drain 只出 parked（D2a），dead-letter 零进入", 
     expect(kernel.drain({ now: 6_000 }).drained).toEqual([{ notificationId: EVT1, sessionId: "session-a" }]);
   });
 });
+
+describe("票 11 组 3：query——listChildren 单层 + per-entity backlog/deadLetters + B4 懒重探", () => {
+  it("端到端 B 层（链 B 里程碑）：publish→transition→query 返回新状态与 eventSeq", () => {
+    const store = createMemoryStore();
+    const kernel = new Kernel(store, VERDICT_STATES, 0);
+    seedEntity(store, "passed");
+    expect(kernel.transition(REF, "failed", at(1))).toMatchObject({ eventSeq: 1 });
+    expect(kernel.query({ entityRef: REF })).toEqual({
+      entities: [
+        {
+          entityRef: REF,
+          state: "failed",
+          payload: null,
+          eventSeq: 1,
+          lastProbedAt: null,
+          backlog: 0,
+        },
+      ],
+      deadLetters: [],
+    });
+  });
+
+  it("listChildren 单层展开：parent 挂 children 一步；孙辈不上挂（无级联）", () => {
+    const store = createMemoryStore();
+    const kernel = new Kernel(store, VERDICT_STATES, 0);
+    seedEntity(store, "passed");
+    store.putEntity({ type: REF.type, key: "external/child", state: "waiting", parentType: REF.type, parentKey: REF.key });
+    store.putEntity({ type: REF.type, key: "external/grandchild", state: "waiting", parentType: REF.type, parentKey: "external/child" });
+    const res = kernel.query({ entityRef: REF });
+    expect(res.entities).toHaveLength(1);
+    expect(res.entities[0].children?.map((c) => c.entityRef.key)).toEqual(["external/child"]);
+    expect(res.entities[0].children?.[0].children).toBeUndefined(); // 单层
+  });
+
+  it("per-entity backlog/deadLetters：pending 行计数进 backlog；dead-letter 行进清单（经事件 join 归实体）", () => {
+    const store = createMemoryStore();
+    const kernel = new Kernel(store, VERDICT_STATES, 0);
+    seedTransitioned(store, kernel);
+    store.putDelivery({ notificationId: EVT1, sessionId: "session-a", state: "pending", recordEpoch: 1 });
+    store.putDelivery({ notificationId: EVT1, sessionId: "session-b", state: "dead-letter", recordEpoch: 1 });
+    const res = kernel.query({ entityRef: REF });
+    expect(res.entities[0].backlog).toBe(1);
+    expect(res.deadLetters).toEqual([{ notificationId: EVT1, sessionId: "session-b", entityRef: REF }]);
+  });
+
+  it("B4 懒重探触发条件：refcount 0 且 lastProbedAt 超阈 → reprobeRequested；活跃/新鲜/无 ctx 不标", () => {
+    const store = createMemoryStore();
+    const kernel = new Kernel(store, VERDICT_STATES, 0);
+    seedEntity(store, "passed");
+    const probe = {
+      now: 100_000,
+      reprobeAfterMs: 60_000,
+      runtime: [
+        { entityRef: REF, refcount: 0, lastProbedAt: 10_000 }, // 0 + 超阈 → 标记
+      ],
+    };
+    expect(kernel.query({ entityRef: REF }, probe).entities[0].reprobeRequested).toBe(true);
+
+    // refcount > 0：probe 未停，不标
+    expect(
+      kernel.query({ entityRef: REF }, { ...probe, runtime: [{ entityRef: REF, refcount: 2, lastProbedAt: 10_000 }] })
+        .entities[0].reprobeRequested,
+    ).toBeUndefined();
+    // 新鲜 lastProbedAt：未超阈，不标（单次语义：重探执行方记录 lastProbedAt 后条件自清）
+    expect(
+      kernel.query({ entityRef: REF }, { ...probe, runtime: [{ entityRef: REF, refcount: 0, lastProbedAt: 90_000 }] })
+        .entities[0].reprobeRequested,
+    ).toBeUndefined();
+    // 无 probe ctx：读侧归一，不标（lastProbedAt 亦为 null）
+    const bare = kernel.query({ entityRef: REF });
+    expect(bare.entities[0].reprobeRequested).toBeUndefined();
+    expect(bare.entities[0].lastProbedAt).toBeNull();
+  });
+});
