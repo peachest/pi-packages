@@ -645,7 +645,17 @@ class PresetDialog extends Container {
       // action and both Enter and Esc are swallowed by the guard above.
       const returnMode = action.returnMode;
       this.pendingConfirm = null;
-      action.onConfirm();
+      try {
+        action.onConfirm();
+      } catch (error) {
+        // The callback runs on a fresh settings read (ocr R8M): a corrupt
+        // config can throw. Report it and still return to returnMode so
+        // the dialog does not stay stuck in confirm mode.
+        this.ctx.ui.notify(
+          `Action failed: ${action.message} (${error instanceof Error ? error.message : String(error)})`,
+          "error",
+        );
+      }
       this.mode = returnMode;
       return;
     }

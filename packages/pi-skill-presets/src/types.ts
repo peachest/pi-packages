@@ -32,7 +32,11 @@ export interface ResolvedActiveSet {
   /** All skill names from the default preset plus explicitly loaded
    * (active) presets (deduplicated). */
   skillNames: string[];
-  /** Preset names in the active set that have no definition in config. */
+  /** Preset names that resolved to nothing, from two sources (ocr R8L):
+   * 1) names in the active set no longer present in config; 2) the
+   * defaultName argument passed to resolveSkills when it is absent from
+   * config. When no default is defined/defaultName is undefined, no entry
+   * is produced for it. */
   missingPresets: string[];
 }
 
