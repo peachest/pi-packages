@@ -131,6 +131,7 @@ describe("票 03: 三契约 schema 文件随包发版（schemas/）", () => {
       sessionId: true,
       readyCheck: true,
       ttl: true,
+      schedule: true,
       failureThreshold: true,
       successThreshold: true,
     };
@@ -200,5 +201,34 @@ describe("票 03: 三契约 schema 文件随包发版（schemas/）", () => {
       expect(validateValue(node.oneOf[0], { type: "interval", every: "60s" })).toEqual([]);
       expect(validateValue(node.oneOf[1], { type: "cron", expr: "*/5 * * * *" })).toEqual([]);
     }
+  });
+
+  it("ad-hoc schedule（#31 L105）：opts.schedule 走 $ref，oneOf 同构 definitions/scheduleSpec；every=number 毫秒，cron=expr/tz", () => {
+    const opts = (opSchema.properties as Record<string, any>).subscribe.properties.request.properties.opts;
+    expect(opts.properties.schedule.$ref).toBe("#/definitions/adhocSchedule");
+    expect(opts.properties.schedule.description).toEqual(expect.any(String));
+    const adhoc = (opSchema.definitions as any).adhocSchedule;
+    expect(adhoc.oneOf).toHaveLength(2);
+    // interval 分支：every 必填且为 number 毫秒（60000 = 60s）
+    expect(validateValue(adhoc.oneOf[0], { type: "interval", every: 60000 })).toEqual([]);
+    expect(validateValue(adhoc.oneOf[0], { type: "interval" }).length).toBeGreaterThan(0);
+    expect(validateValue(adhoc.oneOf[0], { type: "interval", every: "60s" }).length).toBeGreaterThan(0);
+    // cron 分支：expr 必填，tz 可选
+    expect(validateValue(adhoc.oneOf[1], { type: "cron", expr: "*/5 * * * *" })).toEqual([]);
+    expect(validateValue(adhoc.oneOf[1], { type: "cron", expr: "*/5 * * * *", tz: "Asia/Shanghai" })).toEqual([]);
+    expect(validateValue(adhoc.oneOf[1], { type: "cron" }).length).toBeGreaterThan(0);
+    // 整体经 $ref 校验同样分流
+    expect(validateValue(adhoc, { type: "interval", every: 60000 })).toEqual([]);
+  });
+
+  it("ttl 统一 number 毫秒（I8）：op 契约 opts 与 events.json 均 number；模板 scheduleSpec.every 不受影响仍为 string", () => {
+    const opts = (opSchema.properties as Record<string, any>).subscribe.properties.request.properties.opts;
+    expect(opts.properties.ttl.type).toBe("number");
+    expect(opts.properties.ttl.description).toContain("毫秒");
+    const eventsEntry = (eventsSchema.properties as Record<string, any>).subscriptions.items;
+    expect(eventsEntry.properties.ttl.type).toBe("number");
+    expect(eventsEntry.properties.ttl.description).toContain("毫秒");
+    const specEvery = (opSchema.definitions as any).scheduleSpec.oneOf[0].properties.every;
+    expect(specEvery.type).toBe("string");
   });
 });

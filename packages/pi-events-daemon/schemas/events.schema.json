@@ -28,7 +28,7 @@
           },
           "once": { "type": "boolean", "description": "一次性：命中即自动关闭。" },
           "flip": { "type": "boolean", "description": "翻转沿通知形态：failed 不关闭（R2 裁定）。" },
-          "ttl": { "type": "string", "description": "到期自动关闭（I8）。" },
+          "ttl": { "type": "number", "description": "到期自动关闭（I8）。单位毫秒（milliseconds）。" },
           "failureThreshold": {
             "type": "integer",
             "minimum": 1,

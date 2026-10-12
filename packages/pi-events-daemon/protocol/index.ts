@@ -52,7 +52,7 @@ export type ValidateReport = {
   warnings: string[];
 };
 
-/** subscribe opts（#31 R1 A2 补全 + threshold 裁定）。opts 永不含 shell/schedule（模板形态）。 */
+/** subscribe opts（#31 R1 A2 补全 + threshold 裁定）。shell 永不含；schedule 仅 ad-hoc 形态（模板形态不含——B1：schedule 归模板资产）。 */
 export type SubscribeOpts = {
   /** on 谓词：状态值 / 状态集 / 命名转换（如 digest-changed）。 */
   on?: string | string[];
@@ -63,8 +63,10 @@ export type SubscribeOpts = {
   sessionId?: string;
   /** 两阶段订阅的 flip 判定（缺省沿用 check）。 */
   readyCheck?: string;
-  /** 到期自动关闭（I8）。 */
-  ttl?: string;
+  /** 到期自动关闭（I8）。单位毫秒（milliseconds）。 */
+  ttl?: number;
+  /** ad-hoc 形态探针节奏（缺省 60s interval 由 daemon 内置缺省承载）；every 单位毫秒（60000 = 60s）。 */
+  schedule?: { type: "interval"; every: number } | { type: "cron"; expr: string; tz?: string };
   failureThreshold?: number;
   successThreshold?: number;
 };
@@ -104,7 +106,8 @@ export type PublishRequest = {
   entityRef: EntityRefId;
   transition: { to: string; contentIdentity?: string; payload?: unknown };
 };
-export type PublishResponse = { eventSeq: number; from: string; to: string };
+/** from 可空：首转换 from=null（domain Transitioned 正典，#31）。 */
+export type PublishResponse = { eventSeq: number; from: string | null; to: string };
 
 /** drain：兑现 parked，{sessionId?} → {drained, deadLetterSummary}（SESSION_START 自动 + 手动幂等）。 */
 export type DrainRequest = { sessionId?: string };

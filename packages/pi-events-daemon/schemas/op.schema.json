@@ -49,6 +49,33 @@
         }
       ]
     },
+    "adhocSchedule": {
+      "type": "object",
+      "description": "ad-hoc 订阅节奏（opts.schedule 专用，#31 L105）：{type:\"interval\", every} | {type:\"cron\", expr, tz?}；与模板侧 definitions/scheduleSpec 同构（oneOf 两分支按 type 收紧），但 every 为 number 毫秒（ttl 同口径；模板资产沿用票 03 的 \"60s\" 字符串形态）。缺省 60s interval（60000）由 daemon 内置缺省承载。",
+      "oneOf": [
+        {
+          "type": "object",
+          "description": "interval 形态。",
+          "required": ["type", "every"],
+          "properties": {
+            "type": { "enum": ["interval"] },
+            "every": { "type": "number", "description": "间隔毫秒（60000 = 60s）。" }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "description": "cron 形态。",
+          "required": ["type", "expr"],
+          "properties": {
+            "type": { "enum": ["cron"] },
+            "expr": { "type": "string", "description": "5 字段表达式。" },
+            "tz": { "type": "string", "description": "时区（缺省本地）。" }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
     "queryEntity": {
       "type": "object",
       "description": "query 实体行：观测态摘要（payload 摘要非全量）。",
@@ -111,7 +138,7 @@
             },
             "opts": {
               "type": "object",
-              "description": "subscribe opts（#31 R1 A2 补全 + threshold 裁定，与票 02 已合并 SubscribeOpts 类型逐键对齐）。opts 永不含 shell/schedule（B1：schedule 归模板资产；ad-hoc 实体默认 60s interval 由 daemon 内置缺省承载）。",
+              "description": "subscribe opts（#31 R1 A2 补全 + threshold 裁定，与票 02 已合并 SubscribeOpts 类型逐键对齐）。opts 永不含 shell；schedule 仅 ad-hoc 形态可设（B1：模板形态不含——schedule 归模板资产；ad-hoc 缺省 60s interval 由 daemon 内置缺省承载）。",
               "properties": {
                 "on": {
                   "type": ["string", "array"],
@@ -124,7 +151,11 @@
                 "smoke": { "type": "boolean", "description": "订阅时试跑 check；失败返回 {subscribed:false, validate}。" },
                 "sessionId": { "type": "string", "description": "origin=session 编址的投递目标（缺省当前 session）。" },
                 "readyCheck": { "type": "string", "description": "两阶段订阅的 flip 判定（缺省沿用 check）。" },
-                "ttl": { "type": "string", "description": "到期自动关闭（I8）。" },
+                "schedule": {
+                  "$ref": "#/definitions/adhocSchedule",
+                  "description": "ad-hoc 形态专用：探针节奏（缺省 60s interval）。模板形态不含——schedule 归模板资产（B1）。"
+                },
+                "ttl": { "type": "number", "description": "到期自动关闭（I8）。单位毫秒（milliseconds）。" },
                 "failureThreshold": {
                   "type": "integer",
                   "minimum": 1,
