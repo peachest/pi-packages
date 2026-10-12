@@ -219,7 +219,8 @@ class PresetDialog extends Container {
     return this.getDefaultPreset();
   }
 
-  private saveConfig(): void {
+  /** Returns true when the write succeeded; false after a notified failure (ocr R6M1). */
+  private saveConfig(presetName?: string): boolean {
     // Merge dialog edits onto a fresh read (ocr R2): settings.json can change
     // while the dialog is open (e.g. a new default written externally); writing
     // the stale snapshot whole would clobber it. Only the definitions this
@@ -242,13 +243,25 @@ class PresetDialog extends Container {
     // still hold the pre-save edits, so a retry re-merges and re-writes them.
     // Refreshing the baseline before the write would silently drop the edits
     // on a failed save.
-    writePresetsConfig(fresh, "global");
+    // Catch the failure (ocr R6M1): notify the user with the preset name and
+    // reason, then report failure to the caller — which rolls back its local
+    // edit so retrying the original action re-attempts the write instead of
+    // hitting an already-exists / already-added guard.
+    try {
+      writePresetsConfig(fresh, "global");
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      const label = presetName ? `preset "${presetName}"` : "presets";
+      this.ctx.ui.notify(`Failed to save ${label}: ${reason}`, "error");
+      return false;
+    }
     this.config = fresh;
     // Refresh the delta baseline to the merged result (ocr R4M2/M3): later
     // saves only merge edits not yet on disk, so external changes made after
     // this save survive, and a preset created-then-deleted in this dialog is
     // actually deleted (it is now part of the baseline).
     this.originalDefinitions = structuredClone(fresh.definitions);
+    return true;
   }
 
   private loadAllSkills(): void {
@@ -625,8 +638,14 @@ class PresetDialog extends Container {
     if (!action) return;
 
     if (matchesKey(data, Key.enter)) {
+      // Always restore returnMode after the callback (ocr R6M2): a rejected
+      // confirm (e.g. deleting the default preset) returns without changing
+      // mode — without this the dialog stays in confirm mode with no pending
+      // action and both Enter and Esc are swallowed by the guard above.
+      const returnMode = action.returnMode;
       this.pendingConfirm = null;
       action.onConfirm();
+      this.mode = returnMode;
       return;
     }
 
@@ -702,7 +721,10 @@ class PresetDialog extends Container {
     }
 
     def.skills.push(skillName);
-    this.saveConfig();
+    if (!this.saveConfig(presetName)) {
+      def.skills.pop(); // roll back so retrying this action re-attempts the write
+      return;
+    }
     this.ctx.ui.notify(`Added "${skillName}" to preset "${presetName}".`, "info");
   }
 
@@ -711,7 +733,10 @@ class PresetDialog extends Container {
     if (!def || skillIndex < 0 || skillIndex >= def.skills.length) return;
 
     const removed = def.skills.splice(skillIndex, 1)[0];
-    this.saveConfig();
+    if (!this.saveConfig(presetName)) {
+      def.skills.splice(skillIndex, 0, removed); // roll back for retry
+      return;
+    }
     this.ctx.ui.notify(`Removed "${removed}" from preset "${presetName}".`, "info");
 
     const len = def.skills.length;
@@ -730,10 +755,19 @@ class PresetDialog extends Container {
       return;
     }
 
+    const removedDef = this.config.definitions[presetName];
     delete this.config.definitions[presetName];
     // No default clearing here: default protection is judged against the live
     // getter above, and saveConfig preserves whatever default is fresh on disk
     // (ocr R2 — the dialog's snapshot default may be stale).
+
+    // Save first; commit session side effects only after success (ocr R6M1):
+    // a failed write must not leave the preset offloaded or a replay entry
+    // written for a definition that is still on disk.
+    if (!this.saveConfig(presetName)) {
+      this.config.definitions[presetName] = removedDef; // roll back for retry
+      return;
+    }
 
     if (this.state.has(presetName)) {
       this.state.offload(presetName);
@@ -744,7 +778,6 @@ class PresetDialog extends Container {
       });
     }
 
-    this.saveConfig();
     this.ctx.ui.notify(`Deleted preset "${presetName}".`, "info");
 
     this.mode = "browse";
@@ -769,7 +802,10 @@ class PresetDialog extends Container {
     }
 
     this.config.definitions[name] = { skills: [] };
-    this.saveConfig();
+    if (!this.saveConfig(name)) {
+      delete this.config.definitions[name]; // roll back so the name is free to retry
+      return;
+    }
     this.ctx.ui.notify(`Created preset "${name}".`, "info");
 
     this.editPresetName = name;

@@ -68,6 +68,22 @@ export function pickGatewayFromRaw(
   };
 }
 
+/**
+ * Strict provider-consistent model pick (ocr R6M3): only the pinned model
+ * under `provider`. No cross-provider fallback — the reachability verdict
+ * (`gatewayUp`) belongs to the probed provider, so a model resolved from a
+ * different provider would run or skip the suite on the wrong probe. When
+ * nothing matches, the caller skips the suite.
+ */
+export function pickPinnedModel<T extends { provider?: string; id: string }>(
+  available: readonly T[],
+  provider: string | undefined,
+  pinnedModelId: string,
+): T | undefined {
+  if (provider === undefined) return undefined;
+  return available.find((m) => m.provider === provider && m.id === pinnedModelId);
+}
+
 // Strict http(s) check (ocr R1): startsWith("http") accepts junk like
 // "httpx://bad"; parse and pin the protocol instead. Credentials embedded
 // in the URL (ocr R5M2) make fetch reject the request outright, so they

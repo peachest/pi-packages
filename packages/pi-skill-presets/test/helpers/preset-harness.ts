@@ -20,7 +20,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
 import type { Model, Api } from "@earendil-works/pi-ai";
-import { pickGatewayFromRaw } from "./gateway-pick.ts";
+import { pickGatewayFromRaw, pickPinnedModel } from "./gateway-pick.ts";
 import type { GatewayInfo } from "./gateway-pick.ts";
 import skillPresetsExtension from "../../index.ts";
 import { setNotifyObserver } from "../../index.ts";
@@ -176,7 +176,11 @@ export async function createTestSession(opts: SessionOpts): Promise<AgentSession
 }
 
 // ---------------------------------------------------------------------------
-// Shared runtime — strict model pin (#65 B4): no fallback to available[0]
+// Shared runtime — strict model pin (#65 B4, ocr R6M3): only the pinned model
+// under the probed gateway's provider; no cross-provider fallback. A fallback
+// would run or skip the suite based on a reachability probe of a different
+// provider than the model actually used. Absent model → whole group skips,
+// same treatment as network unreachability.
 // ---------------------------------------------------------------------------
 
 export const modelRuntime = await ModelRuntime.create({
@@ -184,20 +188,11 @@ export const modelRuntime = await ModelRuntime.create({
   modelsPath: join(REAL_AGENT_DIR, "models.json"),
 });
 const available = await modelRuntime.getAvailable();
-// Provider-consistent pick (ocr R5M1): the probed gateway names a provider;
-// prefer the pinned model under that same provider so the probe's
-// reachability verdict actually applies to the model we select. Only when
-// the pinned model does not exist under the probed provider do we fall back
-// to any provider carrying it — and say so loudly.
-export const model: Model<Api> | undefined =
-  available.find(
-    (m) => m.provider === gateway?.provider && m.id === PINNED_MODEL_ID,
-  ) ?? available.find((m) => m.id === PINNED_MODEL_ID);
-if (model && gateway && model.provider !== gateway.provider) {
-  console.warn(
-    `[preset-harness] provider mismatch: gateway probe picked "${gateway.provider}" but pinned model "${PINNED_MODEL_ID}" resolved from provider "${model.provider}" — probe reachability may not reflect the model's provider`,
-  );
-}
+export const model: Model<Api> | undefined = pickPinnedModel(
+  available,
+  gateway?.provider,
+  PINNED_MODEL_ID,
+);
 
 // Whole group skips when the gateway is unreachable OR the pinned model is
 // absent — same treatment as network unreachability, never a silent fallback.
