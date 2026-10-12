@@ -223,15 +223,52 @@ describe("command dispatch", () => {
       expect(statusMsg).toContain("domain-modeling");
     });
 
+    it("reuses the protected config read instead of a second live read (ocr R12M2)", async () => {
+      const state = new PresetState();
+      const { pi } = makeFakePi();
+      const { ctx, notifications } = makeFakeCtx();
+      // If status still called the unprotected live getter, this throw would
+      // reject the whole command past the error-notification path.
+      const commands = createCommands(pi, state, () => TMP_DIR, () => {
+        throw new Error("second read must not happen");
+      });
+
+      await commands.presetStatusCommand("", ctx);
+
+      const statusMsg = notifications[0]?.msg ?? "";
+      expect(statusMsg).toContain("Default: engineer");
+      expect(notifications.some((n) => n.type === "error")).toBe(false);
+    });
+
     it("shows no presets loaded when empty", async () => {
       const state = new PresetState();
       const { pi } = makeFakePi();
       const { ctx, notifications } = makeFakeCtx();
       const commands = createCommands(pi, state, () => TMP_DIR, () => undefined);
 
-      await commands.presetStatusCommand("", ctx);
+      // ocr R12M2: status reads the default from the protected config read,
+      // not the injected live getter — remove the default from settings to
+      // simulate "no default configured" (restored in finally).
+      const settingsPath = path.join(AGENT_DIR, "settings.json");
+      const original = fs.readFileSync(settingsPath, "utf-8");
+      fs.writeFileSync(
+        settingsPath,
+        JSON.stringify({
+          presets: {
+            definitions: {
+              engineer: { skills: ["wayfinder", "tdd"] },
+              ddd: { skills: ["domain-modeling"] },
+            },
+          },
+        }),
+      );
+      try {
+        await commands.presetStatusCommand("", ctx);
 
-      expect(notifications[0]?.msg).toContain("No presets loaded");
+        expect(notifications[0]?.msg).toContain("No presets loaded");
+      } finally {
+        fs.writeFileSync(settingsPath, original);
+      }
     });
 
     it("annotates presets missing from config", async () => {

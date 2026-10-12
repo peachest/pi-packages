@@ -269,6 +269,15 @@ class PresetDialog extends Container {
       return false;
     }
     this.config = fresh;
+    // ocr R12L: fresh is the merged on-disk state — the browse-selected preset
+    // may have been externally deleted while editing. Realign browseIndex to
+    // the selected name (clamped when gone) so returning to browse always has
+    // a valid selection instead of pointing past the end of the list.
+    const selected = this.presetNames[this.browseIndex];
+    const idx = selected ? this.presetNames.indexOf(selected) : -1;
+    this.browseIndex = idx >= 0
+      ? idx
+      : Math.min(this.browseIndex, Math.max(0, this.presetNames.length - 1));
     // Refresh the delta baseline to the merged result (ocr R4M2/M3): later
     // saves only merge edits not yet on disk, so external changes made after
     // this save survive, and a preset created-then-deleted in this dialog is

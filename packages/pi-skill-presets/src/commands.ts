@@ -180,7 +180,11 @@ export function createCommands(
     const cwd = getCwd();
     const config = readConfigOrRefuse(cwd, ctx);
     if (!config) return;
-    const defaultPreset = getDefaultPreset();
+    // ocr R12M2: reuse the protected read above — a second live getDefaultPreset()
+    // re-read inside this command was unprotected, so a corruption between the
+    // two reads made the whole command reject past the error notification.
+    // config was just read, so config.default is the same value.
+    const defaultPreset = config.default;
     const loaded = state.getLoaded();
 
     if (loaded.length === 0 && !defaultPreset) {

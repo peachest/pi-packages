@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
@@ -368,5 +368,68 @@ describe("saveConfig fresh-read failure (ocr R7M)", () => {
     expect(config.definitions.base.skills).toEqual(["one", "two"]);
     const written = JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf-8"));
     expect(written.presets.definitions.base.skills).toEqual(["one", "two"]);
+  });
+});
+
+describe("browse index realign after save (ocr R12L)", () => {
+  it("keyboard flow: editing preset b while a is externally deleted keeps a valid browse selection", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "preset-dialog-realign-cwd-"));
+    const agentDir = mkdtempSync(join(tmpdir(), "preset-dialog-realign-agent-"));
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    // One real skill so the skill-list has something to add.
+    mkdirSync(join(agentDir, "skills", "foo"), { recursive: true });
+    writeFileSync(
+      join(agentDir, "skills", "foo", "SKILL.md"),
+      "---\nname: foo\ndescription: Test skill\n---\n\nBody.\n",
+      "utf-8",
+    );
+    writeFileSync(
+      join(agentDir, "settings.json"),
+      JSON.stringify({
+        presets: { definitions: { a: { skills: [] }, b: { skills: [] } } },
+      }),
+      "utf-8",
+    );
+
+    try {
+      const config = readPresetsConfig(cwd);
+      const notifyLog: RecordedNotify[] = [];
+      const dialog = await buildDialog(cwd, config, { notifyLog });
+      const d = dialog as unknown as {
+        handleInput: (data: string) => void;
+        browseIndex: number;
+        mode: string;
+        presetNames: string[];
+      };
+
+      // Browse: select b (index 1), enter edit mode.
+      d.handleInput("\x1b[B"); // down
+      d.handleInput("e");
+      expect(d.mode).toBe("preset-edit");
+
+      // External deletion of preset a while the dialog is open.
+      writeFileSync(
+        join(agentDir, "settings.json"),
+        JSON.stringify({ presets: { definitions: { b: { skills: [] } } } }),
+        "utf-8",
+      );
+
+      // Add a skill to b and save (a → skill-list, enter confirms foo).
+      d.handleInput("a");
+      d.handleInput("\r");
+      // Esc back to preset-edit, Esc back to browse.
+      d.handleInput("\x1b");
+      d.handleInput("\x1b");
+
+      expect(d.mode).toBe("browse");
+      // fresh config only has b (index 0) — the stale index 1 would leave
+      // the browse list without a selection.
+      expect(d.browseIndex).toBe(0);
+      expect(d.presetNames).toEqual(["b"]);
+    } finally {
+      delete process.env.PI_CODING_AGENT_DIR;
+      rmSync(cwd, { recursive: true, force: true });
+      rmSync(agentDir, { recursive: true, force: true });
+    }
   });
 });
