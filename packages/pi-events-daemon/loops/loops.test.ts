@@ -121,6 +121,48 @@ describe("组 2：缓存只在提交回调更新——提交回调外无缓存�
 
 });
 
+describe("组 4：ocr 评审修复——启动种子投影 / stop 解除订阅 / stop 终止 drain", () => {
+  it("Finding 1：重启后初始投影——预置实体启动、无后续写 → 缓存含实体（不漏已有实体）", () => {
+    const store = createMemoryStore();
+    store.putEntity({ type: REF.type, key: REF.key, state: "passed" });
+    const loops = startLoops(makeCtx(store));
+    expect(loops.cache.states.get(REF_KEY)).toBe("passed"); // 启动即含已提交实体，不等新写
+  });
+
+  it("Finding 2：stop 解除订阅——stop 后外部提交不更新旧句柄缓存，stop 幂等", () => {
+    const store = createMemoryStore();
+    store.putEntity({ type: REF.type, key: REF.key, state: null });
+    const loops = startLoops(makeCtx(store));
+    loops.submit({ kind: "transition", ref: REF, verdict: "failed", occurredAt: at(1) });
+    loops.stop();
+    loops.stop(); // 幂等：不抛
+    store.putEntity({ type: REF.type, key: REF.key, state: "passed" }); // 外部提交（绕过 L0）
+    expect(loops.cache.states.get(REF_KEY)).toBe("failed"); // 订阅已解除，旧缓存停更
+  });
+
+  it("Finding 3：提交回调内重入 submit 后 stop()——旧 drain 不再消费剩余请求，重启侧无重复 eventSeq", () => {
+    const store = createMemoryStore();
+    store.putEntity({ type: REF.type, key: REF.key, state: null });
+    const first = startLoops(makeCtx(store));
+    let armed = false;
+    store.onWrite((tables) => {
+      if (!armed && tables.includes("entities")) {
+        armed = true;
+        first.submit({ kind: "transition", ref: REF, verdict: "passed", occurredAt: at(2) }); // 重入入队
+        first.stop(); // 提交回调内停机：外层 drain 尚有剩余请求
+      }
+    });
+    first.submit({ kind: "transition", ref: REF, verdict: "failed", occurredAt: at(1) });
+    expect(store.outboxBatch(10).map((r) => r.eventSeq)).toEqual([1]); // 剩余请求丢弃，不消费
+    // 重启侧 L0 重放自愈：位点接事件流尾，无重复 eventSeq
+    const second = startLoops(makeCtx(store));
+    second.submit({ kind: "transition", ref: REF, verdict: "waiting", occurredAt: at(3) });
+    const outbox = store.outboxBatch(Number.MAX_SAFE_INTEGER);
+    expect(outbox.map((r) => r.eventSeq)).toEqual([1, 2]);
+    expect(outbox.map((r) => store.tx((tx) => tx.getEvent(r.notificationId)!.to))).toEqual(["failed", "waiting"]);
+  });
+});
+
 describe("组 3：startLoops 假时钟/假 store 启动 + 双轨重启恢复", () => {
   it("重启重入：startLoops 二次接线后缓存重新挂回调、旧句柄缓存停更", () => {
     const store = createMemoryStore();

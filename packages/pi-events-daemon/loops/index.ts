@@ -20,7 +20,7 @@ export type MutationRequest =
   | { kind: "transition"; ref: EntityRef; verdict: Verdict; occurredAt: string }
   | { kind: "consumeIntent"; intent: TransitionIntent };
 
-/** 提交回调维护的状态缓存（只读视图；唯一写点在 store.onWrite 回调内，票 25 验收面）。 */
+/** 提交回调维护的状态缓存（只读视图；运行期唯一写点在 store.onWrite 回调内，启动时另有种子投影 = 已提交状态初始快照，票 25 验收面）。 */
 export interface LoopsCache {
   /** refKey（entityRefKeyOf）→ 已提交状态；逐提交与 store 实体表同步。 */
   readonly states: ReadonlyMap<string, string | null>;
@@ -77,15 +77,22 @@ export function startLoops(ctx: LoopsCtx): LoopsHandle {
 
   // 缓存：唯一写点 = 提交回调（store 契约：提交成功后按提交序同步触发，fake/SQLite 两实现一致）。
   // 全量重投影 = 接口忠实形态（回调只给表名，无行级增量；行级下推归 store 接口后续票）。
+  // 启动种子投影（票 25 Finding 1）：startLoops 返回句柄前先从已提交状态建一次初始快照——
+  // 重启后无新 entities 写时缓存不空（level-trigger 扫描不漏已有实体）；种子是读侧已提交
+  // 状态的初始快照（store 读接口），运行期唯一缓存写点仍是提交回调。
   const states = new Map<string, string | null>();
-  let stopped = false;
-  ctx.store.onWrite((tables) => {
-    if (stopped || !tables.includes("entities")) return;
+  const reproject = (): void => {
     states.clear();
     for (const e of ctx.store.queryEntities({})) {
       states.set(entityRefKeyOf({ type: e.type, key: e.key }), e.state);
     }
+  };
+  let stopped = false;
+  const offWrite = ctx.store.onWrite((tables) => {
+    if (stopped || !tables.includes("entities")) return;
+    reproject();
   });
+  reproject();
 
   const queue: MutationRequest[] = [];
   const errors: unknown[] = [];
@@ -103,11 +110,13 @@ export function startLoops(ctx: LoopsCtx): LoopsHandle {
   };
 
   // L0 串行消费：队列至空；重入提交（提交回调内再 submit，C2 编排形态）由外层收尾按 FIFO 继续。
+  // stopped 检查提前到每次消费前（票 25 Finding 3）：提交回调内 stop() 后剩余请求丢弃——
+  // 已提交部分持久化，未消费请求由重启侧 L0 重放自愈，不产生重复 eventSeq。
   const drain = (): void => {
     if (draining) return;
     draining = true;
     try {
-      while (queue.length > 0) {
+      while (!stopped && queue.length > 0) {
         const req = queue.shift()!;
         try {
           apply(req);
@@ -130,6 +139,7 @@ export function startLoops(ctx: LoopsCtx): LoopsHandle {
     errors,
     stop(): void {
       stopped = true;
+      offWrite(); // 幂等取消订阅（票 25 Finding 2）：重复启停不累积监听器、旧闭包可回收
     },
   };
 }
