@@ -1,4 +1,4 @@
-import type { Clock } from "./types.ts";
+import type { Clock, Exec, ExecOptions, ExecResult } from "./types.ts";
 
 /**
  * FakeClock——manual drive 行为契约（fx.md 钉死：手动推进、到期定时器按序触发后返回）。
@@ -38,5 +38,23 @@ export class FakeClock implements Clock {
     }
     this.time = target;
     this.timers = this.timers.filter((t) => !t.cancelled);
+  }
+}
+
+/** FakeExec——脚本化响应序列（fx.md 钉死）：run 按入队次序逐个消费，partial 补平台原形默认值；耗尽即响亮失败。 */
+export class FakeExec implements Exec {
+  readonly calls: { command: string; opts: ExecOptions | undefined }[] = [];
+  private readonly script: Partial<ExecResult>[] = [];
+
+  /** 入队后续 run 的响应（按序消费）。 */
+  enqueue(...results: Partial<ExecResult>[]): void {
+    this.script.push(...results);
+  }
+
+  async run(command: string, opts?: ExecOptions): Promise<ExecResult> {
+    this.calls.push({ command, opts });
+    const scripted = this.script.shift();
+    if (!scripted) throw new Error(`FakeExec: script exhausted, unexpected run: ${command}`);
+    return { exitCode: 0, signal: null, stdout: "", stderr: "", timedOut: false, ...scripted };
   }
 }

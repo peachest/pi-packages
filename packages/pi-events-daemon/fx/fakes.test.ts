@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { FakeClock } from "./index.ts";
+import { FakeClock, FakeExec } from "./index.ts";
 
 describe("票 13 FakeClock：manual drive（fx.md 钉死契约：手动推进、到期定时器按序触发后返回）", () => {
   it("step 推进 now；到期定时器按（到期时刻, 调度序）同步触发后返回", () => {
@@ -56,5 +56,37 @@ describe("票 13 FakeClock：manual drive（fx.md 钉死契约：手动推进、
     clock.step(30);
     expect(clock.pendingCount).toBe(0);
     expect(fired).toEqual([1, 2]);
+  });
+});
+
+describe("票 13 FakeExec：脚本化响应序列（fx.md 钉死契约）", () => {
+  it("按入队次序逐个消费；partial 结果补平台原形默认值（exitCode 0/空流/无信号/未超时）", async () => {
+    const exec = new FakeExec();
+    exec.enqueue({ stdout: "v3\n" }, { exitCode: 2, stderr: "assert failed\n" });
+
+    await expect(exec.run("echo v3")).resolves.toEqual({
+      exitCode: 0,
+      signal: null,
+      stdout: "v3\n",
+      stderr: "",
+      timedOut: false,
+    });
+    await expect(exec.run("false")).resolves.toMatchObject({ exitCode: 2, stderr: "assert failed\n" });
+  });
+
+  it("calls 按序记录每次执行的 command+opts（执行面收到的命令可断言）", async () => {
+    const exec = new FakeExec();
+    exec.enqueue({ exitCode: 0 });
+    await exec.run("curl -sf https://x/status", { timeoutMs: 10_000, env: { no_proxy: "*" } });
+    expect(exec.calls).toEqual([
+      { command: "curl -sf https://x/status", opts: { timeoutMs: 10_000, env: { no_proxy: "*" } } },
+    ]);
+  });
+
+  it("脚本耗尽再 run = 响亮失败（脚本不匹配是测试 bug，静默默认值会掩扇真断言）", async () => {
+    const exec = new FakeExec();
+    exec.enqueue({ exitCode: 0 });
+    await exec.run("only-scripted");
+    await expect(exec.run("un-scripted")).rejects.toThrowError(/script exhausted.*un-scripted/s);
   });
 });
