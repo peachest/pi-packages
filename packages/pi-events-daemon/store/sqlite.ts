@@ -237,8 +237,12 @@ export class SqliteStore implements Store {
   /** 第五停点（fake only，真实现 no-op）：SQLite 事务原子性天然覆盖 X1/X2。 */
   injectCrash(_point: "tx" | "outbox"): void {}
 
-  onWrite(cb: (tables: readonly string[]) => void): void {
+  onWrite(cb: (tables: readonly string[]) => void): () => void {
     this.writeListeners.push(cb);
+    return () => {
+      const i = this.writeListeners.indexOf(cb);
+      if (i >= 0) this.writeListeners.splice(i, 1);
+    };
   }
 
   private st(sql: string): StatementSync {
@@ -277,7 +281,8 @@ export class SqliteStore implements Store {
     try {
       while (this.notifyQueue.length > 0) {
         const batch = this.notifyQueue.shift()!;
-        for (const cb of this.writeListeners) cb(batch);
+        // 快照分发：监听器内取消订阅（含自解除）不影响本批已入快照的分发，后续提交不再触发
+        for (const cb of [...this.writeListeners]) cb(batch);
       }
     } finally {
       this.dispatching = false;
