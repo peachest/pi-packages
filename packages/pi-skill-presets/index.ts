@@ -3,8 +3,10 @@
  *
  * Prefix-cache-aware dynamic skill loading via named presets.
  *
- * - System prompt filtering via before_agent_start (session start / reload)
- * - Transient injection via context event (mid-session preset loads)
+ * - before_agent_start mutates systemPromptOptions.skills statelessly every turn:
+ *   allowed = default preset ∪ active-set presets, intersected with pi's
+ *   discovered skills by name, written back as a new array; returns undefined so
+ *   pi renders the section diff itself (prefix cache stays intact)
  * - Load/offload operations persisted as custom entries for restart recovery
  * - Does NOT touch settings.json — skill-manager owns +/- exclusively
  *
@@ -20,8 +22,6 @@ import type { ExtensionAPI, CustomEntry } from "@earendil-works/pi-coding-agent"
 import { PresetState } from "./src/preset-state.ts";
 import { createCommands } from "./src/commands.ts";
 import { PRESET_OP_CUSTOM_TYPE } from "./src/types.ts";
-import { createInjector } from "./src/injector.ts";
-import { filterSystemPrompt } from "./src/prompt-filter.ts";
 import { readPresetsConfig } from "./src/config.ts";
 import type { PresetOpEntry } from "./src/types.ts";
 
@@ -31,19 +31,7 @@ export default function skillPresetsExtension(pi: ExtensionAPI) {
   let cwd = process.cwd();
   let defaultPresetName: string | undefined;
 
-  // v2: needsFilter flag — controls when before_agent_start re-filters the system prompt.
-  // Set to true by session_start, consumed by next before_agent_start.
-  let needsFilter = true;
-
-  // Cached filtered system prompt. Returned every turn to prevent pi from
-  // resetting to the unfiltered _baseSystemPrompt. Same string → KV cache hit.
-  let cachedSystemPrompt: string | undefined;
-
-  // v2: tracks which skill names are in the system prompt after filtering.
-  // Used by the injector to exclude them from transient injection.
-  let systemPromptSkillNames: Set<string> = new Set();
-
-  // --- session_start: rebuild active set + set needsFilter ---
+  // --- session_start: rebuild active set ---
   pi.on("session_start", async (_event, ctx) => {
     cwd = ctx.cwd;
 
@@ -81,46 +69,33 @@ export default function skillPresetsExtension(pi: ExtensionAPI) {
       }
     }
 
-    // Signal before_agent_start to re-filter on next call
-    needsFilter = true;
-    cachedSystemPrompt = undefined;
   });
 
-  // --- before_agent_start: filter system prompt available_skills ---
+  // --- before_agent_start: stateless per-turn skills mutation ---
   pi.on("before_agent_start", (event, _ctx) => {
-    if (needsFilter) {
-      // Session start / reload: recompute filtered prompt
-      needsFilter = false;
-      const config = readPresetsConfig(cwd);
-      const activeSkillNames = state.getActiveSkillNames(config);
-
-      const result = filterSystemPrompt(
-        event.systemPrompt,
-        event.systemPromptOptions.skills ?? [],
-        activeSkillNames,
-        cwd,
-      );
-
-      // Track which skills are now in the system prompt (for injector exclusion)
-      systemPromptSkillNames = result.filteredSkillNames;
-
-      // Cache the filtered prompt (or the base if no filtering needed)
-      cachedSystemPrompt = result.systemPrompt ?? event.systemPrompt;
-    }
-
-    // Return cached prompt every turn.
-    // Same string → KV cache hit. Without this, pi resets to _baseSystemPrompt (unfiltered).
-    if (cachedSystemPrompt !== undefined) {
-      return { systemPrompt: cachedSystemPrompt };
-    }
-    return undefined;
-  });
-
-  // --- context event: transient injection ---
-  pi.on("context", (event, ctx) => {
     const config = readPresetsConfig(cwd);
-    const injector = createInjector(state, config, cwd, ctx, systemPromptSkillNames);
-    return injector(event.messages);
+    const resolved = state.resolveSkills(config);
+
+    // Zero-config passthrough: no presets configured and empty active set →
+    // leave pi's discovered skills untouched.
+    if (resolved.skillNames.length === 0) return undefined;
+
+    const allowed = new Set(resolved.skillNames);
+    const present = new Set<string>();
+    // Dedup by name (a skill listed by multiple presets renders once); keep
+    // pi's discovery order for the skills pi already found.
+    const nextSkills = event.systemPromptOptions.skills.filter((skill) => {
+      if (!allowed.has(skill.name) || present.has(skill.name)) return false;
+      present.add(skill.name);
+      return true;
+    });
+
+    // Bad-reference collection: preset-listed names absent from pi discovery.
+    // Data structure only — warning surfacing lands with #63.
+    const missingSkillNames = [...allowed].filter((name) => !present.has(name));
+
+    event.systemPromptOptions.skills = nextSkills;
+    return undefined;
   });
 
   // --- Commands ---
