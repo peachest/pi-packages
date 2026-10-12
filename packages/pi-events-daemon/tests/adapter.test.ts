@@ -238,7 +238,13 @@ describe("票 19 组 6——只读断言（无写调用）：fx Fs 接口无写�
   it("fx Fs 接口面本身无写方法（类型层只读，票 12 收窄裁定）", () => {
     // 编译层断言：Fs 唯一方法 readFile；运行时键集同构证明无写入通道。
     const fs = new FakeFs({});
-    expect(Object.getOwnPropertyNames(Object.getPrototypeOf(fs)).filter((m) => m !== "constructor")).toEqual(["readFile"]);
+    // 票 18 授权扩展：Fs 增 watch/change 只读监听停点（fx.md 停点映射表）——写方法仍禁
+		expect(Object.getOwnPropertyNames(Object.getPrototypeOf(fs)).filter((m) => m !== "constructor").sort()).toEqual(
+			["change", "readFile", "watch"],
+		);
+		for (const writeMethod of ["writeFile", "appendFile", "mkdir", "rm", "rmdir", "unlink"]) {
+			expect((fs as unknown as Record<string, unknown>)[writeMethod]).toBeUndefined();
+		}
   });
 });
 
@@ -392,6 +398,10 @@ describe("票 20 组 9——注册路径（新 session 注册触发判别并缓�
 class DenyFs implements Fs {
   readFile(): Promise<string> {
     return Promise.reject(Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" }));
+  }
+  // 票 18 授权扩展后 Fs 必需成员——本 fake 拒绝一切，watch 只需满足接口形状
+  watch(): { close(): void } {
+    return { close(): void {} };
   }
 }
 
