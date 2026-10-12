@@ -82,12 +82,12 @@ module.exports = {
     })),
     {
       name: "eda-adapter-fx-only",
-      comment: "prober / transcript-adapter 零上层依赖，只可用 fx 端口（自身内部自由）。",
+      comment: "prober / transcript-adapter 零上层依赖，只可用 fx 端口（自身内部自由；fx 在放行清单内，对齐票 01 DAG）。",
       severity: "error",
       from: { path: `^${R}/pi-events-daemon/(prober|transcript-adapter)/` },
       to: {
         path: `^${R}/pi-events-daemon/`,
-        pathNot: `^${R}/pi-events-daemon/(prober|transcript-adapter)/`,
+        pathNot: `^${R}/pi-events-daemon/(prober|transcript-adapter|fx)/`,
       },
     },
     {
