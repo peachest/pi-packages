@@ -32,6 +32,7 @@ import {
   type ProbeSpecRow,
   type RunLedgerRow,
   type Store,
+  type SubscriptionFilter,
   type SubscriptionRow,
   type TxView,
 } from "./index.ts";
@@ -450,6 +451,17 @@ export class SqliteStore implements Store {
     return (this.st(sql).all(...params) as RawRow[]).map(rowToEntity);
   }
 
+  querySubscriptions(filter: SubscriptionFilter): SubscriptionRow[] {
+    const where: string[] = [];
+    const params: Array<string | number | null> = [];
+    if (filter.entityRefType !== undefined) { where.push("entity_ref_type = ?"); params.push(filter.entityRefType); }
+    if (filter.entityRefKey !== undefined) { where.push("entity_ref_key = ?"); params.push(filter.entityRefKey); }
+    if (filter.sessionId !== undefined) { where.push("session_id = ?"); params.push(filter.sessionId); }
+    if (filter.origin !== undefined) { where.push("origin = ?"); params.push(filter.origin); }
+    const sql = `SELECT * FROM subscriptions${where.length ? ` WHERE ${where.join(" AND ")}` : ""} ORDER BY rowid`;
+    return (this.st(sql).all(...params) as RawRow[]).map(rowToSubscription);
+  }
+
   outboxBatch(limit: number): OutboxRow[] {
     return (this.st("SELECT notification_id, event_seq FROM outbox ORDER BY rowid LIMIT ?").all(limit) as RawRow[])
       .map((r) => ({ notificationId: String(r.notification_id), eventSeq: Number(r.event_seq) }));
@@ -463,7 +475,11 @@ export class SqliteStore implements Store {
     return this.deliveriesByState("dead-letter", filter);
   }
 
-  /** fake 语义对齐：state 固定为本方法的 target（pending/dead-letter），matchDelivery 的 filter.state 若与此矛盾则空集。 */
+  parkedDeliveries(filter: DeliveryFilter): DeliveryRowData[] {
+    return this.deliveriesByState("parked", filter);
+  }
+
+  /** fake 语义对齐：state 固定为本方法的 target（pending/dead-letter/parked），matchDelivery 的 filter.state 若与此矛盾则空集。 */
   private deliveriesByState(state: string, filter: DeliveryFilter): DeliveryRowData[] {
     if (filter.state !== undefined) {
       const states = typeof filter.state === "string" ? [filter.state] : filter.state;

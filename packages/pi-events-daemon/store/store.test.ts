@@ -10,6 +10,7 @@ import {
   type EventRow,
   type EvidenceRow,
   type Store,
+  type SubscriptionRow,
 } from "./index.ts";
 import { defaultStorePath, SqliteStore } from "./sqlite.ts";
 
@@ -131,6 +132,25 @@ function dualSuite(label: string, make: () => Store & { close?(): void }): void 
       expect(s.pendingDeliveries({ sessionId: "sess2" })).toHaveLength(1);
       // deadLetters 不被 pendingDeliveries 混入（store spec：pendingDeliveries 不含 dead-letter）
       expect(s.pendingDeliveries({})).toHaveLength(2);
+      // parkedDeliveries 同构直过滤（票 11 drain D2a 输入面）：只取 parked，不混入其它 state
+      expect(s.parkedDeliveries({ sessionId: "sess1" })).toHaveLength(1);
+      expect(s.parkedDeliveries({})).toHaveLength(1);
+      s.close?.();
+    });
+
+    it("querySubscriptions 按 filter 直过滤（票 11 fanOut 读面）", () => {
+      const s = make();
+      const mk = (id: string, refType: string, refKey: string, sess: string, origin: SubscriptionRow["origin"]): SubscriptionRow =>
+        ({ subscriptionId: id, sessionId: sess, entityRefType: refType, entityRefKey: refKey, origin, createdAt: 0 });
+      s.tx((tx) => {
+        tx.putSubscription(mk("s1", "a", "1", "sess1", "session"));
+        tx.putSubscription(mk("s2", "a", "1", "sess2", "auto"));
+        tx.putSubscription(mk("s3", "a", "2", "sess1", "session"));
+      });
+      expect(s.querySubscriptions({ entityRefType: "a", entityRefKey: "1" }).map((r) => r.subscriptionId)).toEqual(["s1", "s2"]);
+      expect(s.querySubscriptions({ sessionId: "sess1" }).map((r) => r.subscriptionId)).toEqual(["s1", "s3"]);
+      expect(s.querySubscriptions({ origin: "auto" }).map((r) => r.subscriptionId)).toEqual(["s2"]);
+      expect(s.querySubscriptions({})).toHaveLength(3);
       s.close?.();
     });
 
