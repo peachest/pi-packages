@@ -42,21 +42,30 @@ export class FakeClock implements Clock {
   }
 }
 
-/** FakeExec——脚本化响应序列（fx.md 钉死）：run 按入队次序逐个消费，partial 补平台原形默认值；耗尽即响亮失败。 */
+/** FakeExec——脚本化响应序列（fx.md 钉死）：run 按入队次序逐个消费（结果/失败同队混排），partial 补平台原形默认值；耗尽即响亮失败。 */
 export class FakeExec implements Exec {
   readonly calls: { command: string; opts: ExecOptions | undefined }[] = [];
-  private readonly script: Partial<ExecResult>[] = [];
+  private readonly script: (Partial<ExecResult> | { failure: unknown; sync: boolean })[] = [];
 
   /** 入队后续 run 的响应（按序消费）。 */
   enqueue(...results: Partial<ExecResult>[]): void {
     this.script.push(...results);
   }
 
-  async run(command: string, opts?: ExecOptions): Promise<ExecResult> {
+  /** 入队后续 run 的失败注入（与 enqueue 同队按调用序消费）：failSync=true 同步抛错（调用方 try/catch 面），否则 Promise 拒绝（.catch 面）。票 13 fake 契约延续。 */
+  enqueueFailure(err: unknown, failSync = false): void {
+    this.script.push({ failure: err, sync: failSync });
+  }
+
+  run(command: string, opts?: ExecOptions): Promise<ExecResult> {
     this.calls.push({ command, opts });
-    const scripted = this.script.shift();
-    if (!scripted) throw new Error(`FakeExec: script exhausted, unexpected run: ${command}`);
-    return { exitCode: 0, signal: null, stdout: "", stderr: "", timedOut: false, ...scripted };
+    const next = this.script.shift();
+    if (!next) return Promise.reject(new Error(`FakeExec: script exhausted, unexpected run: ${command}`));
+    if ("failure" in next) {
+      if (next.sync) throw next.failure;
+      return Promise.reject(next.failure);
+    }
+    return Promise.resolve({ exitCode: 0, signal: null, stdout: "", stderr: "", timedOut: false, ...next });
   }
 }
 

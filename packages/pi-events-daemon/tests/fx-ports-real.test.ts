@@ -57,6 +57,18 @@ describe("fx 真壳存在性证明（票 12 断言 1）", () => {
     expect(res.exitCode).toBeNull();
   });
 
+  it(
+    "ShellExec: 忽略 SIGTERM 的 hung checker（trap）→ 宽限期后 SIGKILL 升级整进程组，run 必结算（Exec 契约：timeoutMs 后承诺必落地）",
+    async () => {
+      const exec: fx.Exec = new fx.ShellExec();
+      const res = await exec.run("trap '' TERM; while :; do sleep 1; done", { timeoutMs: 100 });
+      expect(res.timedOut).toBe(true);
+      expect(res.exitCode).toBeNull();
+      expect(res.signal).toBe("SIGKILL");
+    },
+    20_000,
+  );
+
   it("NodeFs: 真文件读（utf-8 全文；缺失文件 ENOENT 原形上抛）", async () => {
     const dir = tmpDir("eda-fx-fs-");
     const file = path.join(dir, "transcript.jsonl");
