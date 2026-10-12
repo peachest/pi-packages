@@ -79,3 +79,151 @@ export function transitionDelivery(from: DeliveryState, op: DeliveryOp): Deliver
 	if (!edge) return { ok: false, from, op, reason: rejectReason(from, op) };
 	return { ok: true, from, to: edge.to };
 }
+
+// --- 共享类型最小版本（types: provisional, merge coordinator will unify）---
+// EntityRef / Verdict 正典定义归 entity.ts（票 06，先到者拥有）；本票先行需要，故留最小版本。
+
+/** types: provisional — EntityRef 正典在 entity.ts（源系统原生标识，前缀 external/|project/|user/）。 */
+export type EntityRef = string;
+/** types: provisional — Verdict 正典在 entity.ts（#31：agent 可见面一律语义名，退出码不外泄）。 */
+export type Verdict = "passed" | "failed" | "waiting";
+
+// --- Notification 值对象（#31：notificationId/eventSeq/billboard 视图；一个 notification 扇出多行 Delivery）---
+
+/** evidence >2KB 截断 + evidenceRef 指针（#31 通知条目行）。 */
+export const EVIDENCE_INLINE_LIMIT = 2000;
+
+/** 通知条目 billboard：count + 实体 + verdict，无 payload 内联。 */
+export interface BillboardView {
+	entityRef: EntityRef;
+	verdict: Verdict;
+	/** 合流进本条通知的事件数（batch 合流由调用方给出，单事件 = 1）。 */
+	count: number;
+	evidence: string;
+	/** 仅截断时存在；= notificationId（evidence op 据此解引用）。 */
+	evidenceRef?: string;
+}
+
+export function makeBillboard(
+	notificationId: string,
+	b: { entityRef: EntityRef; verdict: Verdict; evidence: string; count?: number },
+): BillboardView {
+	const truncated = b.evidence.length > EVIDENCE_INLINE_LIMIT;
+	return {
+		entityRef: b.entityRef,
+		verdict: b.verdict,
+		count: b.count ?? 1,
+		evidence: truncated ? b.evidence.slice(0, EVIDENCE_INLINE_LIMIT) : b.evidence,
+		...(truncated ? { evidenceRef: notificationId } : {}),
+	};
+}
+
+/** Notification：一次命中事件的推送内容；notificationId 与 Transitioned 事件同事务预分配（I1），是 I9 transcript 点查询键。 */
+export interface Notification {
+	notificationId: string;
+	/** 来源 Transitioned 事件的写入序（eventSeq 全局单调）。 */
+	eventSeq: number;
+	billboard: BillboardView;
+}
+
+// --- Delivery 单行根（I10：每 (notification, session) 恰一行；I12：行带所有权 epoch 防僵尸 daemon 误投）---
+
+export interface DeliveryRow {
+	notificationId: string;
+	sessionId: string;
+	state: DeliveryState;
+	/** I12 所有权 epoch：创建本行的 daemon 实例世代。 */
+	ownerEpoch: number;
+}
+
+// --- Subscription 聚合（#31：probe 资产 + 意图 opts + 编址 scope/origin/sourceSessionId）---
+
+export type SubscriptionScope = "project" | "user";
+export type SubscriptionOrigin = "session" | "auto";
+
+/** Schedule（CONTEXT.md 正典）：模板资产的时间维，agent 不在 subscribe opts 里设置（B1）。 */
+export type Schedule =
+	| { type: "interval"; every: string }
+	| { type: "cron"; expr: string; tz?: string };
+
+/** ProbeSpec：完整描述对一个实体如何评估一个条件；值相等 ⇒ 共享同一 runner（I5）。thresholds 默认 1/1（R2 裁定）。 */
+export interface ProbeSpec {
+	check: string;
+	schedule: Schedule;
+	failureThreshold: number;
+	successThreshold: number;
+}
+
+/** subscribe opts（#31 操作面）：{on, once, flip, template, smoke, sessionId, readyCheck, ttl, failureThreshold?, successThreshold?}；永不含 shell/schedule（模板形态）。 */
+export interface SubscriptionOpts {
+	/** on 谓词：状态值 / 状态集 / 命名转换（如 digest-changed）。 */
+	on?: string | string[];
+	once?: boolean;
+	flip?: boolean;
+	template?: string;
+	smoke?: boolean;
+	sessionId?: string;
+	readyCheck?: string;
+	/** 到期自动关闭（I8）。 */
+	ttl?: number;
+	failureThreshold?: number;
+	successThreshold?: number;
+}
+
+/**
+ * 编址（#31：sourceSessionId 仅 origin=session 时存在）。判别联合在类型层钉死两分支：
+ * session → sourceSessionId 精确投递；auto = 隐式 project scope（user-scope auto post-MVP），不携带 sourceSessionId。
+ */
+export type SubscriptionAddressing =
+	| { origin: "session"; scope: SubscriptionScope; sourceSessionId: string }
+	| { origin: "auto"; scope: "project" };
+
+export interface Subscription {
+	subscriptionId: string;
+	entityRef: EntityRef;
+	/** probe 资产：模板实例化出的 ProbeSpec。 */
+	spec: ProbeSpec;
+	opts: SubscriptionOpts;
+	addressing: SubscriptionAddressing;
+}
+
+export type AddressingValidation =
+	| { ok: true; addressing: SubscriptionAddressing }
+	| { ok: false; reason: string };
+
+/** 运行时（JSON-RPC 侧数据）编址校验：两分支数据形状的运行时门（类型层已由判别联合钉死）。 */
+export function validateAddressing(input: unknown): AddressingValidation {
+	if (typeof input !== "object" || input === null)
+		return { ok: false, reason: "编址必须是对象" };
+	const o = input as Record<string, unknown>;
+	if (o.origin === "session") {
+		const scope = o.scope;
+		if (scope !== "project" && scope !== "user")
+			return { ok: false, reason: `origin=session 需 scope ∈ {project, user}，得到 ${String(scope)}` };
+		if (typeof o.sourceSessionId !== "string" || o.sourceSessionId === "")
+			return { ok: false, reason: "origin=session 需非空 sourceSessionId（编址必须精确到 session）" };
+		return {
+			ok: true,
+			addressing: { origin: "session", scope, sourceSessionId: o.sourceSessionId },
+		};
+	}
+	if (o.origin === "auto") {
+		if (o.scope !== "project")
+			return { ok: false, reason: "origin=auto 仅支持隐式 project scope（user-scope auto post-MVP）" };
+		if ("sourceSessionId" in o)
+			return { ok: false, reason: "sourceSessionId 仅 origin=session 时存在" };
+		return { ok: true, addressing: { origin: "auto", scope: "project" } };
+	}
+	return { ok: false, reason: `origin ∈ {session, auto}，得到 ${String(o.origin)}` };
+}
+
+/** 编址推导的投递目标（#31：session → sourceSessionId 精确；auto → scope 内全部活跃 session，不留 pending 行）。 */
+export function deliveryTargets(
+	addressing: SubscriptionAddressing,
+	activeSessions: ReadonlyArray<{ sessionId: string; scope: SubscriptionScope }>,
+): string[] {
+	if (addressing.origin === "session") return [addressing.sourceSessionId];
+	return activeSessions
+		.filter((s) => s.scope === addressing.scope)
+		.map((s) => s.sessionId);
+}

@@ -3,8 +3,13 @@ import {
 	DELIVERY_STATES,
 	DELIVERY_OPS,
 	transitionDelivery,
+	EVIDENCE_INLINE_LIMIT,
+	validateAddressing,
+	deliveryTargets,
+	makeBillboard,
 	type DeliveryState,
 	type DeliveryOp,
+	type Subscription,
 } from "./delivery.ts";
 
 // 期望表独立编码自 #31 正文（Delivery 状态机句 + D2a）与票 07 断言 2/3，不读实现表。
@@ -110,5 +115,83 @@ describe("终态语义（票 07 断言 3）", () => {
 			expect(transitionDelivery("verified", op).ok, `verified must reject ${op}`).toBe(false);
 			expect(transitionDelivery("failed", op).ok, `failed must reject ${op}`).toBe(false);
 		}
+	});
+});
+
+describe("Subscription origin 两分支数据形状（票 07 断言 4）", () => {
+	it("origin=session → sourceSessionId 精确：有且仅有该 session，不依赖活跃清单", () => {
+		const a = validateAddressing({ origin: "session", scope: "project", sourceSessionId: "sess-A" });
+		if (!a.ok || a.addressing.origin !== "session")
+			throw new Error("session 编址应通过校验且落在 session 分支");
+		expect(a.addressing.sourceSessionId).toBe("sess-A");
+		expect(deliveryTargets(a.addressing, [])).toEqual(["sess-A"]);
+		expect(deliveryTargets(a.addressing, [{ sessionId: "other", scope: "project" }])).toEqual(["sess-A"]);
+		// sourceSessionId 缺失 / 空 → 拒绝（编址必须精确到 session）
+		expect(validateAddressing({ origin: "session", scope: "project" }).ok).toBe(false);
+		expect(validateAddressing({ origin: "session", scope: "project", sourceSessionId: "" }).ok).toBe(false);
+	});
+
+	it("origin=auto → scope 活跃：project scope 内全部活跃 session，不留 pending 行；sourceSessionId 字段不存在", () => {
+		const a = validateAddressing({ origin: "auto", scope: "project" });
+		expect(a.ok).toBe(true);
+		if (a.ok) {
+			expect(a.addressing).toEqual({ origin: "auto", scope: "project" });
+			expect("sourceSessionId" in a.addressing).toBe(false);
+			const active = [
+				{ sessionId: "p1", scope: "project" as const },
+				{ sessionId: "u1", scope: "user" as const },
+				{ sessionId: "p2", scope: "project" as const },
+			];
+			expect(deliveryTargets(a.addressing, active)).toEqual(["p1", "p2"]);
+			expect(deliveryTargets(a.addressing, [])).toEqual([]);
+		}
+	});
+
+	it("user-scope auto = post-MVP → 拒绝；auto 携带 sourceSessionId → 拒绝（仅 origin=session 时存在）", () => {
+		expect(validateAddressing({ origin: "auto", scope: "user" }).ok).toBe(false);
+		expect(
+			validateAddressing({ origin: "auto", scope: "project", sourceSessionId: "sess-A" }).ok,
+		).toBe(false);
+		expect(validateAddressing({ origin: "cron" }).ok).toBe(false);
+	});
+});
+
+describe("Notification 值对象（billboard 视图）", () => {
+	it("evidence ≤2KB 内联无指针；>2KB 截断 + evidenceRef 指针（= notificationId）", () => {
+		expect(EVIDENCE_INLINE_LIMIT).toBe(2000);
+		const small = makeBillboard("n:1", {
+			entityRef: "external/https://gitlab.example/api/v4/projects/1/merge_requests/42",
+			verdict: "passed",
+			evidence: "ok",
+		});
+		expect(small).toEqual({
+			entityRef: "external/https://gitlab.example/api/v4/projects/1/merge_requests/42",
+			verdict: "passed",
+			count: 1,
+			evidence: "ok",
+		});
+		const big = makeBillboard("n:2", {
+			entityRef: "external/https://x",
+			verdict: "failed",
+			evidence: "x".repeat(EVIDENCE_INLINE_LIMIT + 1),
+		});
+		expect(big.evidence.length).toBe(EVIDENCE_INLINE_LIMIT);
+		expect(big.evidenceRef).toBe("n:2");
+	});
+
+	it("Subscription 聚合形状：probe 资产 + opts + 编址（tsc 形状回归）", () => {
+		const sub: Subscription = {
+			subscriptionId: "sub-1",
+			entityRef: "external/https://gitlab.example/api/v4/projects/1/merge_requests/42",
+			spec: {
+				check: "glab api projects/1/merge_requests/42",
+				schedule: { type: "interval", every: "60s" },
+				failureThreshold: 1,
+				successThreshold: 1,
+			},
+			opts: { on: "merged", once: true },
+			addressing: { origin: "session", scope: "project", sourceSessionId: "sess-A" },
+		};
+		expect(sub.addressing.origin).toBe("session");
 	});
 });
