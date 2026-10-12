@@ -169,7 +169,10 @@ interface SectionsView {
 
 function systemSectionMessages(session: AgentSession): SectionsView[] {
   const views: SectionsView[] = [];
-  for (const entry of session.sessionManager.getEntries() as SessionEntry[]) {
+  // Path-aware (#64): read from the current leaf path, not the flat entry list —
+  // after tree navigation the LLM-visible sections come from the path's own
+  // system messages (abandoned-branch sections must not leak in).
+  for (const entry of session.sessionManager.buildContextEntries() as SessionEntry[]) {
     if (entry.type !== "message") continue;
     const message = entry.message as { role?: string; sections?: Record<string, string | null> };
     if (message.role !== "system" || !message.sections) continue;
@@ -337,6 +340,54 @@ suite(`preset-diff integration (gateway ${gateway?.baseUrl ?? "n/a"}, model ${PI
       expect(skills).toContain("<name>beta</name>");
       // alpha is in both `base` (default) and `dup` — rendered once.
       expect(countOccurrences(skills, "<name>alpha</name>")).toBe(1);
+    },
+    180_000,
+  );
+
+  it(
+    "session tree navigation: side-branch preset load reverts on navigate back (#64)",
+    async () => {
+      const skillRoot = makeTempDir("t64-skills-");
+      makeSkill(skillRoot, "alpha", "fixture skill one");
+      makeSkill(skillRoot, "beta", "fixture skill two");
+      makeSkill(skillRoot, "gamma", "fixture skill three");
+
+      const session = await createTestSession({ settings: PRESET_SETTINGS, skillRoot });
+
+      // Main line: two turns → u1→a1→u2→a2 (leaf = a2).
+      await session.prompt(PROMPT);
+      await session.prompt(PROMPT);
+      const mainLeafId = session.sessionManager.getLeafId();
+      expect(mainLeafId).not.toBeNull();
+
+      // Navigate back to the first assistant reply → leaf = a1 (non-user message:
+      // leaf stays on the selected node). Next prompt forks a side branch under a1.
+      const firstAssistant = (
+        session.sessionManager.getEntries() as SessionEntry[]
+      ).find((e) => e.type === "message" && e.message.role === "assistant");
+      expect(firstAssistant).toBeDefined();
+      const nav = await session.navigateTree(firstAssistant!.id, { summarize: false });
+      expect(nav.cancelled).toBe(false);
+
+      // Side branch: load `extra` (beta+gamma) and turn.
+      await session.prompt("/preset-load extra");
+      await session.prompt(PROMPT);
+      const sideViews = systemSectionMessages(session);
+      const sideSkills = sideViews[sideViews.length - 1].text("skills");
+      expect(sideSkills).toContain("<name>alpha</name>");
+      expect(sideSkills).toContain("<name>beta</name>");
+      expect(sideSkills).toContain("<name>gamma</name>");
+
+      // Navigate back to the main leaf: the side branch's preset-op must be
+      // excluded by path-aware replay — active set falls back to default only.
+      const back = await session.navigateTree(mainLeafId!, { summarize: false });
+      expect(back.cancelled).toBe(false);
+      await session.prompt(PROMPT);
+      const mainViews = systemSectionMessages(session);
+      const mainSkills = mainViews[mainViews.length - 1].text("skills");
+      expect(mainSkills).toContain("<name>alpha</name>");
+      expect(mainSkills).not.toContain("<name>beta</name>");
+      expect(mainSkills).not.toContain("<name>gamma</name>");
     },
     180_000,
   );

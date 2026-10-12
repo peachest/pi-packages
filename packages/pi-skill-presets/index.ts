@@ -18,7 +18,11 @@
  *   /preset-prompt     — Dump system prompt to file
  */
 
-import type { ExtensionAPI, CustomEntry } from "@earendil-works/pi-coding-agent";
+import type {
+  ExtensionAPI,
+  CustomEntry,
+  SessionEntry,
+} from "@earendil-works/pi-coding-agent";
 import { PresetState } from "./src/preset-state.ts";
 import { createCommands } from "./src/commands.ts";
 import { PRESET_OP_CUSTOM_TYPE } from "./src/types.ts";
@@ -31,14 +35,17 @@ export default function skillPresetsExtension(pi: ExtensionAPI) {
   let cwd = process.cwd();
   let defaultPresetName: string | undefined;
 
-  // --- session_start: rebuild active set ---
-  pi.on("session_start", async (_event, ctx) => {
-    cwd = ctx.cwd;
-
-    // Read config to get default preset name
-    const config = readPresetsConfig(cwd);
-    defaultPresetName = config.default;
-
+  /**
+   * Rebuild the active set from the current leaf path.
+   *
+   * Path-aware replay: buildContextEntries() walks the tree from the current
+   * leaf (compaction-aware), so preset-ops on abandoned branches are excluded.
+   * For linear/v2 sessions this equals the full entry list, keeping backwards
+   * compatibility. Used by both session_start and session_tree (#64).
+   */
+  const rebuildActiveSet = (sessionManager: {
+    buildContextEntries(): SessionEntry[];
+  }) => {
     // Clear active set and load default preset (always in active set)
     state.clear();
     if (defaultPresetName) {
@@ -46,7 +53,7 @@ export default function skillPresetsExtension(pi: ExtensionAPI) {
     }
 
     // Replay persistent entries to restore non-default presets
-    const entries = ctx.sessionManager.getEntries();
+    const entries = sessionManager.buildContextEntries();
     const presetOps: PresetOpEntry[] = entries
       .filter(
         (e): e is CustomEntry<PresetOpEntry> =>
@@ -68,7 +75,22 @@ export default function skillPresetsExtension(pi: ExtensionAPI) {
         state.offload(entry.preset);
       }
     }
+  };
 
+  // --- session_start: rebuild active set from current leaf path ---
+  pi.on("session_start", async (_event, ctx) => {
+    cwd = ctx.cwd;
+
+    // Read config to get default preset name
+    const config = readPresetsConfig(cwd);
+    defaultPresetName = config.default;
+
+    rebuildActiveSet(ctx.sessionManager);
+  });
+
+  // --- session_tree: rebuild active set after tree navigation (#64) ---
+  pi.on("session_tree", async (_event, ctx) => {
+    rebuildActiveSet(ctx.sessionManager);
   });
 
   // --- before_agent_start: stateless per-turn skills mutation ---
