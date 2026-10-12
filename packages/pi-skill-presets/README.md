@@ -4,10 +4,9 @@ Prefix-cache-aware dynamic skill loading via named presets for [pi](https://gith
 
 ## How it works
 
-- **Default preset** → loaded into the system prompt via `settings.skills` (persistent, all sessions)
-- **Non-default presets** → loaded via transient injection through the `context` event (session-level, per-turn)
-- **Restart recovery** → load/offload operations persisted as custom entries, replayed on session start
-- **Cache-friendly** → transient injection appends at the end of the message array, preserving prefix cache
+- **Allowed union** → `before_agent_start` mutates `systemPromptOptions.skills` statelessly every turn: allowed = default preset ∪ active-set presets, intersected with pi's discovered skills; returns `undefined` so pi renders the section diff itself
+- **Restart & tree-navigation recovery** → load/offload operations persisted as custom entries, replayed from the current leaf path on session start and `session_tree`
+- **Cache-friendly** → the section diff/patch is rendered by pi natively, preserving prefix cache
 
 ## Coexistence with pi-skills-manager
 

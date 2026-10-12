@@ -10,7 +10,7 @@ export interface PresetDefinition {
 
 /** The presets configuration block in settings.json. */
 export interface PresetsConfig {
-  /** Name of the default preset (loaded to system prompt via settings.skills). */
+  /** Name of the default preset (always in the active set). */
   default?: string;
   /** Map of preset name → definition. */
   definitions: Record<string, PresetDefinition>;
@@ -29,7 +29,7 @@ export interface ResolvedActiveSet {
   skillNames: string[];
   /** Skills that could not be resolved to a file path. */
   missing: string[];
-  /** Skills excluded because they're disabled by skill-manager toggle. */
+  /** Reserved: v3 never reads skill-manager toggle state directly. */
   disabled: string[];
   /** Skills appearing in multiple loaded presets (deduplicated, informational). */
   duplicates: string[];

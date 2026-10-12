@@ -70,7 +70,7 @@ export class PresetState {
   /**
    * Resolve the active set to a deduplicated list of skill names.
    * In v2, default preset is in active set, so no exclusion is needed.
-   * Used by transient injection to determine which skills to inject.
+   * Used by per-turn skills mutation in before_agent_start.
    *
    * @param config - Presets configuration
    * @returns Resolved active set with skill names, missing skills, and warnings

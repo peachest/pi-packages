@@ -52,7 +52,7 @@ export default function skillPresetsExtension(pi: ExtensionAPI) {
       state.load(defaultPresetName);
     }
 
-    // Replay persistent entries to restore non-default presets
+    // Replay persistent entries to restore presets beyond the default one
     const entries = sessionManager.buildContextEntries();
     const presetOps: PresetOpEntry[] = entries
       .filter(
