@@ -296,6 +296,57 @@ export function rebuildRunLedger(_ledger: RunLedger, now: number): RunLedger {
   return { inFlight: false, lastVerdict: null, nextDueAt: now, consecutiveFails: 0, lastEvidenceRef: null };
 }
 
+// --- 不变量执法：I8 ttl / I9 transcript 验证 / I10 单行 / I12 epoch + 幂等 re-push ---
+
+/** I8：ttl 到期（> ttl 即过期，到期点即关）；now 由调用方注入（零时钟）。 */
+export function ttlExpired(sub: { createdAt: number; ttlMs: number }, now: number): boolean {
+  return now - sub.createdAt > sub.ttlMs;
+}
+
+/** I9：verified 判定 = 确定性 notificationId 出现在目标 session transcript（点查询用纯谓词）。 */
+export function transcriptVerifies(notificationId: string, transcript: readonly string[]): boolean {
+  return transcript.some((line) => line.includes(notificationId));
+}
+
+/** I10 Delivery 单行根：每 (notification, session) 恰一行（一通知扇出多 session 各一行）。 */
+export interface DeliveryRow {
+  notificationId: string;
+  sessionId: string;
+}
+
+/** 同对幂等返回既有行（不产生第二行）；新对追加。 */
+export function upsertDelivery(
+  rows: readonly DeliveryRow[],
+  notificationId: string,
+  sessionId: string,
+): { rows: DeliveryRow[]; row: DeliveryRow; created: boolean } {
+  const existing = rows.find((r) => r.notificationId === notificationId && r.sessionId === sessionId);
+  if (existing) return { rows: [...rows], row: existing, created: false };
+  const row = { notificationId, sessionId };
+  return { rows: [...rows, row], row, created: true };
+}
+
+/** I12：投递记录带所有权 + epoch——仅当前 epoch 的写者放行，僵尸 daemon 误投被结构性拒绝。 */
+export function epochAccepts(recordEpoch: number, currentEpoch: number): boolean {
+  return recordEpoch === currentEpoch;
+}
+
+/** verified 迟到窗口：verified 迟到 24h → 一次幂等 re-push（dead-letter 的唯一复活通道，D2a）。 */
+export const REPUSH_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * 24h verified-absence 幂等 re-push 判定（挂 I10 语义：确定性 notificationId 复用唯一行，
+ * re-push 不产生新投递行）。恰一次：repushed 置位后恒 hold；已 verified 恒 hold。
+ */
+export function repushDecision(
+  row: { verified: boolean; repushed: boolean; pushedAt: number },
+  now: number,
+  windowMs: number = REPUSH_WINDOW_MS,
+): "repush" | "hold" {
+  if (row.verified || row.repushed) return "hold";
+  return now - row.pushedAt >= windowMs ? "repush" : "hold";
+}
+
 /** 实体状态 = 其转换事件的纯归约（按 eventSeq 写入序取末次 to；无事件即 null，无 unprobed 前置态）。 */
 export function reduceState(log: readonly Transitioned[], ref: EntityRef): string | null {
   let latest: Transitioned | undefined;

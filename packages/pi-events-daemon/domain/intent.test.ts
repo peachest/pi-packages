@@ -493,3 +493,83 @@ describe("RunLedger 归零重探（R1 A5：runtime 簿记非真相源，重启�
     expect(observeVerdict({ consecutiveFails: rebuilt.consecutiveFails, consecutivePasses: 0, settled: rebuilt.lastVerdict }, "failed").flipped).toBe(true);
   });
 });
+
+import {
+  ttlExpired,
+  transcriptVerifies,
+  upsertDelivery,
+  epochAccepts,
+  repushDecision,
+  REPUSH_WINDOW_MS,
+  type DeliveryRow,
+} from "./intent.ts";
+
+describe("I8：ttl 到期（到期自动关闭）", () => {
+  const sub = { createdAt: 1_000, ttlMs: 60_000 };
+
+  it("未到期 false；到期点仍未到期（> ttl 严格），过后 true", () => {
+    expect(ttlExpired(sub, 1_000 + 60_000 - 1)).toBe(false);
+    expect(ttlExpired(sub, 1_000 + 60_000)).toBe(false);
+    expect(ttlExpired(sub, 1_000 + 60_000 + 1)).toBe(true);
+  });
+});
+
+describe("I9：verified = notificationId 出现在目标 session transcript", () => {
+  it("出现即 verified；缺席即未 verified", () => {
+    const nid = "ntf-7f3a";
+    const transcript = [
+      "user: drain beginning",
+      `system: notification ${nid} MR #1 merged (billboard)`,
+      "assistant: acknowledged",
+    ];
+    expect(transcriptVerifies(nid, transcript)).toBe(true);
+    expect(transcriptVerifies(nid, ["unrelated line", "another"])).toBe(false);
+    expect(transcriptVerifies(nid, [])).toBe(false);
+  });
+});
+
+describe("I10：每 (notification, session) 恰一行", () => {
+  it("同对重复 upsert 不产生第二行，返回既有行", () => {
+    let rows: DeliveryRow[] = [];
+    const first = upsertDelivery(rows, "ntf-1", "sess-A");
+    rows = first.rows;
+    expect(first.created).toBe(true);
+    const second = upsertDelivery(rows, "ntf-1", "sess-A");
+    expect(second.created).toBe(false);
+    expect(second.row).toEqual(first.row);
+    expect(second.rows).toHaveLength(1);
+  });
+
+  it("不同 session / 不同 notification 各自成行（一通知扇出多行）", () => {
+    let rows: DeliveryRow[] = [];
+    rows = upsertDelivery(rows, "ntf-1", "sess-A").rows;
+    rows = upsertDelivery(rows, "ntf-1", "sess-B").rows;
+    rows = upsertDelivery(rows, "ntf-2", "sess-A").rows;
+    expect(rows).toHaveLength(3);
+    const again = upsertDelivery(rows, "ntf-2", "sess-A");
+    expect(again.rows).toHaveLength(3);
+  });
+});
+
+describe("I12：epoch 防僵尸 daemon + 24h verified-absence 幂等 re-push（挂 I10 语义）", () => {
+  it("epoch 一致放行；僵尸（旧 epoch）写入被拒", () => {
+    expect(epochAccepts(7, 7)).toBe(true);
+    expect(epochAccepts(6, 7)).toBe(false);
+  });
+
+  it("24h 窗口常量 = 24 小时", () => {
+    expect(REPUSH_WINDOW_MS).toBe(24 * 60 * 60 * 1000);
+  });
+
+  it("verified 迟到 24h → 一次幂等 re-push；repush 过/已 verified/未到窗口 → hold", () => {
+    const pushedAt = 0;
+    const now24 = REPUSH_WINDOW_MS;
+    // 未 verified、未 re-push、满 24h → repush
+    expect(repushDecision({ verified: false, repushed: false, pushedAt }, now24)).toBe("repush");
+    expect(repushDecision({ verified: false, repushed: false, pushedAt }, now24 - 1)).toBe("hold");
+    // 幂等：re-push 恰一次（同确定性 notificationId 复用 I10 唯一行，不产生新投递行）
+    expect(repushDecision({ verified: false, repushed: true, pushedAt }, now24 + 100_000)).toBe("hold");
+    // 已 verified 不再推
+    expect(repushDecision({ verified: true, repushed: false, pushedAt }, now24)).toBe("hold");
+  });
+});
