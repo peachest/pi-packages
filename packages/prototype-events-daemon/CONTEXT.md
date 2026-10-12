@@ -79,5 +79,5 @@ _Avoid_: plugin, provider, adapter (adapter means the session-locator adapter)
 The single module that knows how pi persists sessions (today: JSONL transcripts and `custom_message` entries; future v4: custom agent messages and lane envelopes).
 
 **Checker**:
-The shell-level primitive a probe executes to produce a tri-state semantic verdict (pass/fail/in-progress) plus evidence.
+The shell-level primitive a probe executes to produce a tri-state semantic verdict (passed/failed/waiting——#31 正典语义名，2026-10-12 对齐) plus evidence.
 _Avoid_: script, command (a checker is always tri-state; exit 2 means assertion-failed terminal)

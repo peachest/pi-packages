@@ -25,7 +25,7 @@
 | E1 跨天离线 | SessionClosed → DeliveryParked（不重试不超时）→ SessionStarted → Drained → DeliveryVerified | A3 收口 ✓ |
 | E2 传输失败 | DeliveryRetryScheduled（2s→5min 退避）→ DeadLettered | #26 ✓ |
 | E3 断言发散 | AssertionDiverged → ProbeCorrected（探测修正豁免状态机合法性检查——现实赢了就是赢了） | provenance post-MVP，随方案一并挂起（#30 B） |
-| E4 probe 持续失败 | VerdictFailed ×N → SubscriptionClosed（I7 终态关闭） | #26 ✓ |
+| E4 probe 持续失败 | VerdictFailed ×N → SubscriptionClosed（I7 终态关闭） | #26 ✓；（2026-10-12 对齐 R2 收窄：仅 wait 形态终态关闭，flip 形态 failed=not-ready 翻转沿不关闭——#31 I7 修订正典） |
 | E5 verified 迟到 | DeliveryVerifiedAbsence(24h) → DeliveryRePushed（幂等一次） | A3 收口 ✓ |
 
 ## 热点标注

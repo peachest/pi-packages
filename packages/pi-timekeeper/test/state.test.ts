@@ -38,13 +38,13 @@ describe("localDate", () => {
 describe("anchorLine", () => {
   const line = anchorLine(NOW);
 
-  it("has the exact sentence shape: date (weekday) time, tz.", () => {
+  it("has the exact sentence shape: tag + date (weekday) time, tz.", () => {
     // TZ-independent: assert the shape, not concrete values.
-    expect(line).toMatch(/^It is \d{4}-\d{2}-\d{2} \([A-Za-z]+\) \d{2}:\d{2}:\d{2}, \S+\.$/);
+    expect(line).toMatch(/^<time_anchor>It is \d{4}-\d{2}-\d{2} \([A-Za-z]+\) \d{2}:\d{2}:\d{2}, \S+\.<\/time_anchor>$/);
   });
 
   it("starts with the local calendar date", () => {
-    expect(line.startsWith(`It is ${localDate(NOW)} (`)).toBe(true);
+    expect(line.startsWith(`<time_anchor>It is ${localDate(NOW)} (`)).toBe(true);
   });
 });
 
@@ -52,10 +52,14 @@ describe("computeInjection — decision table", () => {
   const enabled: TKConfig = { reminderEnabled: true, reminderIntervalSeconds: 3600 };
   const disabled: TKConfig = { reminderEnabled: false, reminderIntervalSeconds: 3600 };
 
+  it("0. content is wrapped in a <time_anchor> tag (B1: compensates the lost developer channel)", () => {
+    const r = computeInjection({}, NOW, enabled);
+    expect(r.content).toMatch(/^<time_anchor>It is .*<\/time_anchor>$/);
+  });
   it("1. first run anchors (empty state)", () => {
     const r = computeInjection({}, NOW, enabled);
     expect(r.injected).toBe(true);
-    expect(r.content).toMatch(/^It is /);
+    expect(r.content).toMatch(/^<time_anchor>It is /);
     expect(r.state).toEqual({ lastDate: today(), lastReminderAt: NOW });
   });
 
@@ -118,6 +122,27 @@ describe("computeInjection — decision table", () => {
     expect(r.state.lastReminderAt).toBe(NOW);
     expect(typeof r.content).toBe("string");
   });
+
+  it("11. forcePending in state forces injection even when nothing else is due (B2)", () => {
+    const s: TKState = { lastDate: today(), lastReminderAt: NOW, forcePending: true };
+    const r = computeInjection(s, NOW, enabled);
+    expect(r.injected).toBe(true);
+    // persisted pending-reanchor flag is consumed by the injection
+    expect(r.state).toEqual({ lastDate: today(), lastReminderAt: NOW });
+    expect(r.state.forcePending).toBeUndefined();
+  });
+
+  it("12. forcePending survives reminder-disabled (compaction re-anchor must not depend on reminder)", () => {
+    const s: TKState = { lastDate: today(), lastReminderAt: NOW, forcePending: true };
+    const r = computeInjection(s, NOW, disabled);
+    expect(r.injected).toBe(true);
+    expect(r.state.forcePending).toBeUndefined();
+  });
+
+  it("13. forcePending absent: same-window state stays silent (no regression)", () => {
+    const s: TKState = { lastDate: today(), lastReminderAt: NOW };
+    expect(computeInjection(s, NOW, enabled).injected).toBe(false);
+  });
 });
 
 describe("configFromEnv", () => {
@@ -170,9 +195,18 @@ describe("restoreState", () => {
   it("latest timekeeper.state wins", () => {
     const entries = [
       entry("timekeeper.state", { lastDate: "2000-01-01", lastReminderAt: 1 }),
-      entry("timekeeper.state", { lastDate: "2001-02-03", lastReminderAt: 2 }),
+      entry("timekeeper.state", { lastDate: "2001-02-03", lastReminderAt: 2, forcePending: true }),
     ];
-    expect(restoreState(entries)).toEqual({ lastDate: "2001-02-03", lastReminderAt: 2 });
+    expect(restoreState(entries)).toEqual({
+      lastDate: "2001-02-03",
+      lastReminderAt: 2,
+      forcePending: true,
+    });
+  });
+
+  it("forcePending non-boolean normalizes to undefined", () => {
+    const entries = [entry("timekeeper.state", { lastDate: "2001-02-03", lastReminderAt: 2, forcePending: "yes" })];
+    expect(restoreState(entries)).toEqual({ lastDate: "2001-02-03", lastReminderAt: 2, forcePending: undefined });
   });
 
   it("field-corrupt latest: normalizes to undefined, no rescan to earlier entries", () => {
@@ -204,5 +238,13 @@ describe("restoreState", () => {
     expect(r.injected).toBe(true);
     const persisted = entry("timekeeper.state", r.state);
     expect(restoreState([persisted])).toEqual(r.state);
+  });
+
+  it("roundtrip: forcePending survives persistence and is consumed by the next computeInjection", () => {
+    const persisted = entry("timekeeper.state", { lastDate: localDate(NOW), lastReminderAt: NOW, forcePending: true });
+    const restored = restoreState([persisted]);
+    const r = computeInjection(restored, NOW, DEFAULT_CONFIG);
+    expect(r.injected).toBe(true);
+    expect(r.state.forcePending).toBeUndefined();
   });
 });

@@ -7,6 +7,12 @@ export interface TKState {
   lastDate?: string;
   /** Epoch ms of the last injected reminder anchor. */
   lastReminderAt?: number;
+  /**
+   * Persisted pending-reanchor flag (B2): set by session_compact alongside the
+   * state snapshot so the re-anchor promise survives process restarts; consumed
+   * (and thus cleared) by the next successful injection.
+   */
+  forcePending?: boolean;
 }
 
 export interface TKConfig {
@@ -21,6 +27,11 @@ export const DEFAULT_CONFIG: TKConfig = {
 
 /** Wire key of the persisted state entry (single source of truth; index.ts imports this). */
 export const STATE_ENTRY = "timekeeper.state";
+/** Shape of the entries restoreState scans (structural subset of pi's SessionEntry). */
+export interface StateEntry {
+  customType?: string;
+  data?: unknown;
+}
 
 export function configFromEnv(env: NodeJS.ProcessEnv = process.env): TKConfig {
   const enabled = env["TIMEKEEPER_REMINDER_ENABLED"];
@@ -44,12 +55,19 @@ export function localTimeZone(): string {
   }
 }
 
-/** "It is 2026-09-23 (Tuesday) 14:02:11, Asia/Shanghai." */
+/** Wire key of the injected anchor message (single source of truth; index.ts imports this). */
+export const MESSAGE_CUSTOM_TYPE = "timekeeper.environment";
+
+/**
+ * Wrap the anchor line in a channel tag. Wire-level the anchor is a bare user
+ * turn (convertToLlm drops customType) placed after the user's prompt — the tag
+ * is the only signal that this is environment fact, not a user statement (B1).
+ */
 export function anchorLine(ms: number): string {
   const d = new Date(ms);
   const time = d.toLocaleTimeString("sv-SE", { hour12: false });
   const weekday = d.toLocaleDateString("en-US", { weekday: "long" });
-  return `It is ${localDate(ms)} (${weekday}) ${time}, ${localTimeZone()}.`;
+  return `<time_anchor>It is ${localDate(ms)} (${weekday}) ${time}, ${localTimeZone()}.</time_anchor>`;
 }
 
 export interface ComputeResult {
@@ -64,7 +82,11 @@ export interface ComputeResult {
  * Decide whether a time anchor is due at a run boundary.
  * - date change (local calendar day differs from last anchor) re-anchors;
  * - reminder fires when interval has elapsed since the last anchor;
- * - `force` (compaction re-anchor) makes both due regardless.
+ * - `force` (compaction re-anchor) makes the injection unconditional; the
+ *   reminder field force-refreshes only when reminder is enabled (2026-09-23
+ *   adjudication: prototype semantics);
+ * - persisted `state.forcePending` (survived a restart) behaves like `force`
+ *   and is consumed by the injection (B2).
  * Codex-aligned no-catch-up: missed intervals collapse into this single injection.
  */
 export function computeInjection(
@@ -73,11 +95,12 @@ export function computeInjection(
   config: TKConfig,
   opts: { force?: boolean } = {},
 ): ComputeResult {
+  const forced = opts.force === true || state.forcePending === true;
   const today = localDate(now);
-  const dateChanged = opts.force === true || state.lastDate !== today;
+  const dateChanged = forced || state.lastDate !== today;
   const reminderDue =
     config.reminderEnabled &&
-    (opts.force === true ||
+    (forced ||
       state.lastReminderAt == null ||
       now - state.lastReminderAt >= config.reminderIntervalSeconds * 1000);
 
@@ -88,6 +111,7 @@ export function computeInjection(
   return {
     injected: true,
     content: anchorLine(now),
+    // forcePending is consumed by this injection — the new state never carries it.
     state: {
       lastDate: today,
       lastReminderAt: reminderDue ? now : state.lastReminderAt,
@@ -97,7 +121,7 @@ export function computeInjection(
 
 /** Find the latest persisted state on the current branch (custom entries only). */
 export function restoreState(
-  entries: Array<{ customType?: string; data?: unknown } | undefined>,
+  entries: Array<StateEntry | undefined>,
 ): TKState {
   for (let i = entries.length - 1; i >= 0; i--) {
     const e = entries[i];
@@ -106,6 +130,7 @@ export function restoreState(
       return {
         lastDate: typeof d.lastDate === "string" ? d.lastDate : undefined,
         lastReminderAt: typeof d.lastReminderAt === "number" ? d.lastReminderAt : undefined,
+        forcePending: typeof d.forcePending === "boolean" ? d.forcePending : undefined,
       };
     }
   }
