@@ -291,4 +291,23 @@ describe("组 4：评审修复回归——提交成功后推进游标（F1）/ �
     // 新追加仍受封闭集执法（重放豁免不等于全面豁免）
     expect(() => restored.consumeIntent(replay(3, "beta", "alpha", at(3)))).toThrow(/outside profile closed set/);
   });
+
+  it("F3 实体滞留已删除旧态：transition 拒绝（from 执法，null 首转换豁免）；migrateState 显式迁移放行", () => {
+    const store = createMemoryStore();
+    seedEntity(store, "waiting"); // 持久化实体处于改名前旧态
+    // profile 收缩：旧态 waiting 已移除，新状态集只含 {passed, failed}
+    const postRename = new Kernel(store, new Set(["passed", "failed"]), 0);
+    // 修复前：普通 transition 直写 from=waiting 的事件，绕过显式迁移入口
+    expect(() => postRename.transition(REF, "failed", at(1))).toThrow(/outside profile closed set/);
+    expect(store.outboxBatch(10)).toHaveLength(0);
+    // 显式迁移是唯一出口（from 为历史名，不校验封闭集）
+    expect(postRename.migrateState(REF, { from: "waiting", to: "passed" }, at(1))).toEqual({
+      eventSeq: 1,
+      from: "waiting",
+      to: "passed",
+    });
+    expect(store.getEntity(REF.type, REF.key)?.state).toBe("passed");
+    // 迁移后普通 transition 恢复
+    expect(postRename.transition(REF, "failed", at(2))).toEqual({ eventSeq: 2, from: "passed", to: "failed" });
+  });
 });
