@@ -18,7 +18,8 @@
 
 import type { ExtensionAPI, CustomEntry } from "@earendil-works/pi-coding-agent";
 import { PresetState } from "./src/preset-state.ts";
-import { createCommands, PRESET_OP_CUSTOM_TYPE } from "./src/commands.ts";
+import { createCommands } from "./src/commands.ts";
+import { PRESET_OP_CUSTOM_TYPE } from "./src/types.ts";
 import { createInjector } from "./src/injector.ts";
 import { filterSystemPrompt } from "./src/prompt-filter.ts";
 import { readPresetsConfig } from "./src/config.ts";
