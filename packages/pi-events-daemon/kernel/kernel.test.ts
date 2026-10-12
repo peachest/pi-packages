@@ -6,9 +6,9 @@
  * 全部是 fixture 数据经构造注入；新增 profile 零 kernel 改动。
  */
 import { describe, it, expect } from "vitest";
-import { createMemoryStore } from "../store/index.ts";
+import { createMemoryStore, type Store } from "../store/index.ts";
 import { FIRST_SEQUENCE, planTransition, deterministicEventId } from "../domain/intent.ts";
-import { Kernel } from "./index.ts";
+import { IntentCorruption, Kernel } from "./index.ts";
 
 // --- fixture（数据，非 profile）---
 const REF = { type: "fixture:widget", key: "external/fixture-1" };
@@ -109,5 +109,86 @@ describe("组 1：kernel.transition 唯一写路径——校验（domain）→ �
     const empty = createMemoryStore();
     const orphan = new Kernel(empty, VERDICT_STATES, 0);
     expect(() => orphan.transition(REF, "failed", at(1))).toThrow(/unknown entity/);
+  });
+});
+
+describe("组 2：Intent 串行消费——崩溃重放一致（顺序约束）+ 有界重试 + corruption", () => {
+  it("顺序约束：N intent → 中断 → 全量重放 → 状态一致（不重新编号）", () => {
+    const intents = planChain(4);
+
+    // 基线：干净串行消费 4 个 intent
+    const clean = createMemoryStore();
+    seedEntity(clean, null);
+    const cleanKernel = new Kernel(clean, VERDICT_STATES, 0);
+    for (const intent of intents) cleanKernel.consumeIntent(intent);
+    const expected = snapshot(clean);
+    expect(expected.entities).toEqual([[REF.type, REF.key, "passed", null]]);
+    expect(expected.trail).toHaveLength(4);
+
+    // 崩溃场景：消费 2 个后进程停止（中断点状态可断言），重启后全量重放
+    const crashed = createMemoryStore();
+    seedEntity(crashed, null);
+    const preCrash = new Kernel(crashed, VERDICT_STATES, 0);
+    preCrash.consumeIntent(intents[0]);
+    preCrash.consumeIntent(intents[1]);
+    expect(crashed.getEntity(REF.type, REF.key)?.state).toBe("waiting"); // 中断点状态
+    // —— 崩溃线 ——
+    // 恢复：新 Kernel 实例（重启），decisionOrder=mutation line 尾（4），eventSeq 由 kernel 从事件流尾自恢复；
+    // 重放首条再遇一次瞬断（一次性 X1 停点）——有界重试吸收，幂等收口
+    const replayKernel = new Kernel(crashed, VERDICT_STATES, 4);
+    crashed.injectCrash("tx");
+    for (const intent of intents) replayKernel.consumeIntent(intent); // 全量重放：同 id 跳过 / 未达序追加
+    expect(snapshot(crashed)).toEqual(expected);
+
+    // 重放后新 transition 续接双轨尾（4 之后 = 5），不重新编号
+    expect(replayKernel.transition(REF, "failed", at(9))).toEqual({ eventSeq: 5, from: "passed", to: "failed" });
+    expect(crashed.tx((tx) => tx.getEvent(deterministicEventId(REF, 5)))).toMatchObject({
+      eventSeq: 5,
+      from: "passed",
+      to: "failed",
+    });
+  });
+
+  it("消费失败重试 3 次越界 → dead-letter 语义抛出 + I1 零残留", () => {
+    const store = createMemoryStore();
+    seedEntity(store, "passed");
+    // 持久故障（重试不可恢复）→ 耗尽 3 次总尝试；一次性 X1 停点会被重试吸收（见界内恢复用例）
+    const down: Store = Object.assign(Object.create(store), {
+      tx: () => {
+        throw new Error("store unavailable");
+      },
+    });
+    const kernel = new Kernel(down, VERDICT_STATES, 0);
+    expect(() => kernel.transition(REF, "failed", at(1))).toThrow(/dead-letter/);
+    expect(() => kernel.transition(REF, "failed", at(1))).toThrow(/3 consume attempts/);
+    expect(store.getEntity(REF.type, REF.key)?.state).toBe("passed");
+    expect(store.outboxBatch(10)).toHaveLength(0);
+  });
+
+  it("重试界内恢复：第 3 次尝试成功且决策序未被失败烧掉", () => {
+    const store = createMemoryStore();
+    seedEntity(store, "passed");
+    const kernel = new Kernel(store, VERDICT_STATES, 0);
+    store.injectCrash("tx");
+    store.injectCrash("tx");
+    expect(kernel.transition(REF, "failed", at(1))).toEqual({ eventSeq: 1, from: "passed", to: "failed" });
+    expect(store.tx((tx) => tx.getEvent(deterministicEventId(REF, 1)))).toBeTruthy(); // 同 decisionOrder=1，未重排
+  });
+
+  it("appendIfMissing 双分支经 kernel：同 id 同内容 skipped（零写入）/ 异内容 corruption", () => {
+    const store = createMemoryStore();
+    seedEntity(store, null);
+    const kernel = new Kernel(store, VERDICT_STATES, 0);
+    const intents = planChain(2);
+    kernel.consumeIntent(intents[0]);
+    kernel.consumeIntent(intents[1]);
+    const before = snapshot(store);
+
+    expect(kernel.consumeIntent(intents[1])).toEqual({ kind: "skipped" });
+    expect(snapshot(store)).toEqual(before);
+
+    const forged = { ...intents[1], to: intents[1].to === "failed" ? "waiting" : "failed" }; // 同 id 异内容
+    expect(() => kernel.consumeIntent(forged)).toThrow(IntentCorruption);
+    expect(snapshot(store)).toEqual(before); // corruption 零残留
   });
 });
