@@ -4,24 +4,26 @@
  * 票 19：I9 唯一权威点——daemon 内一切 transcript 读取收敛于此，verdict 推导不出本模块。
  * 零依赖只读叶（eda-adapter-fx-only：只可用 fx 端口；fx Fs 接口无写方法，机器强制只读）。
  *
- * ## 字段路径表（票 19 固化；形态来源见 index.test.ts 头注）
+ * ## 字段路径表（票 19 固化，#31 授权；代表性样本形态来源见 adapter.test.ts 头注）
  *
  * 通知条目载体 = customType 为 NOTIFICATION_CUSTOM_TYPE 的 custom message；
- * 机器校验三元组住 details（pi API 语义：extension 专有元数据，不进 LLM 上下文）。
+ * 机器校验三元组（notificationId/verdict/evidenceRef）住 details（pi API 语义：
+ * extension 专有元数据，不进 LLM 上下文）。
  *
- * | 形态                    | 载体条目                                                                                            | notificationId 路径            | verdict 路径            | evidenceRef 路径            | lane 信封（单列）                          |
- * |------------------------|-----------------------------------------------------------------------------------------------------|-------------------------------|------------------------|----------------------------|-------------------------------------------|
- * | v3 custom_message      | {type:"custom_message",customType,content,display?,details?,id,parentId,timestamp}                  | details.notificationId        | details.verdict        | details.evidenceRef        | 无（v3 无 lane 字段）                     |
- * | v4 custom agent message| {kind:"entry",lane?,type:"message",message:{role:"custom",customType,content,display?,details?}}    | message.details.notificationId| message.details.verdict| message.details.evidenceRef| 行级 "lane" 信封字段透传 → form.lane（verdict 路径与无信封形态相同，单列说明见此） |
+ * | 形态                     | 载体条目                                                                                         | notificationId 路径             | verdict 路径             | evidenceRef 路径             | lane 信封（单列）                                         |
+ * |-------------------------|--------------------------------------------------------------------------------------------------|--------------------------------|-------------------------|-----------------------------|----------------------------------------------------------|
+ * | v3 custom_message       | {type:"custom_message",customType,content,display?,details?,id,parentId,timestamp}               | details.notificationId         | details.verdict         | details.evidenceRef         | 无（v3 无信封形态）                                       |
+ * | v4 custom agent message | {kind:"entry",type:"message",message:{role:"custom",customType,content,display?,details?}}       | message.details.notificationId | message.details.verdict | message.details.evidenceRef | message.content 数组内带 sessionId 字段的条目 → result.lane |
  *
- * - lane 信封（herdr/multi-agent 派发场景）：v4 行级 `lane` 属 envelope 元数据（harness-v2：
- *   decode 即弃），adapter 只透传（form.lane），不参与 notificationId↔turn 映射——映射 =
- *   notificationId 相等，本模块内裁决。
+ * - lane 信封（herdr/multi-agent 派发场景）：sessionId 条目单列透传（result.lane），不参与
+ *   notificationId↔turn 映射——映射 = notificationId 相等，在本模块内裁决（I9）。
  * - verdict 语义 = 通知条目自带的判定（billboard 的实体判定 / 派发回执的 turn 判定），
  *   取值域与 domain Verdict 同串（"passed"|"failed"|"waiting"，#31 判定三态）；adapter 不
  *   import domain（fx-only），结构同形即合约（store 先例 D3）。
  * - 保守降级（C1）：无法唯一确定 → "unknown" + reason；不抛异常。条目未出现 → "waiting"
  *   + "not-found"（撕裂尾行期间不产生假阴性：未落盘 ≠ 不存在）。
+ * - 撕裂尾行（harness-v2：JSONL 无 fsync，尾行 = 未确认写入可截断）：仅最后一个非空行
+ *   JSON.parse 失败视为撕裂、跳过；中段坏行是 corruption → unknown + corrupt-line。
  */
 import type { Fs } from "../fx/index.ts";
 
@@ -43,15 +45,8 @@ export interface SessionRef {
  */
 export type AdapterVerdict = "passed" | "failed" | "waiting" | "unknown";
 
-/** transcript 形态代（文件头采样 / 命中路径判别）。 */
+/** transcript 形态代（文件头采样 / 命中条目判别）。 */
 export type TranscriptFormat = "v3" | "v4";
-
-/** 形态标记：命中条目所处形态代 + lane 信封透传（单列，见字段路径表）。 */
-export interface EvidenceForm {
-  format: TranscriptFormat;
-  /** v4 行级 lane 信封原样透传（herdr/multi-agent 派发场景）；无信封时缺省。 */
-  lane?: string;
-}
 
 /** locate 结果：路径 + 文件头采样形态判别（#31 逐 session 后端探测的最小面）。 */
 export interface LocateResult {
@@ -68,13 +63,15 @@ export type VerifyReason =
   | "verdict-missing"
   | "conflicting-verdicts";
 
-/** verify 结果——verdict + 通知条目携带的 evidence 指针 + 形态标记。 */
+/** verify 结果——verdict + 通知条目携带的 evidence 指针 + 形态标记（票 19 验收形状）。 */
 export interface VerifyResult {
   verdict: AdapterVerdict;
   /** 通知条目 details.evidenceRef 透传；条目未携带时缺省。 */
   evidenceRef?: string;
-  /** 命中条目的形态标记；未命中/无法定位条目时缺省。 */
-  form?: EvidenceForm;
+  /** 形态标记：命中条目所处形态代；未命中/无法定位条目时缺省。 */
+  format?: TranscriptFormat;
+  /** lane 信封单列：content 数组内 sessionId 条目的透传；无信封时缺省。 */
+  lane?: string;
   /** verdict 为 waiting/unknown 时的原因码。 */
   reason?: VerifyReason;
 }
@@ -91,6 +88,56 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 const VERDICTS: readonly string[] = ["passed", "failed", "waiting"];
+
+function isHeaderV3(record: Record<string, unknown>): boolean {
+  return record.type === "session" && record.version === 3;
+}
+
+function isHeaderV4(record: Record<string, unknown>): boolean {
+  return record.kind === "header" && record.version === 4;
+}
+
+function isNotificationV3(record: Record<string, unknown>): boolean {
+  return record.type === "custom_message" && record.customType === NOTIFICATION_CUSTOM_TYPE;
+}
+
+function isNotificationV4(record: Record<string, unknown>): boolean {
+  if (record.kind !== "entry" || record.type !== "message") return false;
+  const message = record.message;
+  return isRecord(message) && message.role === "custom" && message.customType === NOTIFICATION_CUSTOM_TYPE;
+}
+
+/** 命中通知条目的抽取面（字段路径表逐条落地；lane 信封单列）。 */
+interface NotificationHit {
+  notificationId: unknown;
+  verdict: unknown;
+  evidenceRef: unknown;
+  lane?: string;
+}
+
+function hitOfV3(record: Record<string, unknown>): NotificationHit {
+  const details = record.details;
+  return {
+    notificationId: isRecord(details) ? details.notificationId : undefined,
+    verdict: isRecord(details) ? details.verdict : undefined,
+    evidenceRef: isRecord(details) ? details.evidenceRef : undefined,
+  };
+}
+
+function hitOfV4(record: Record<string, unknown>): NotificationHit {
+  const message = record.message as Record<string, unknown>;
+  const details = message.details;
+  const lane = Array.isArray(message.content)
+    ? message.content.find((item): item is { sessionId: string } => isRecord(item) && typeof item.sessionId === "string")
+        ?.sessionId
+    : undefined;
+  return {
+    notificationId: isRecord(details) ? details.notificationId : undefined,
+    verdict: isRecord(details) ? details.verdict : undefined,
+    evidenceRef: isRecord(details) ? details.evidenceRef : undefined,
+    ...(lane !== undefined ? { lane } : {}),
+  };
+}
 
 function firstMeaningfulLine(content: string): string | undefined {
   return content.split("\n").find((line) => line.trim() !== "");
@@ -110,8 +157,8 @@ function createTranscriptAdapter(fs: Fs): TranscriptAdapter {
         try {
           const header: unknown = JSON.parse(first);
           if (isRecord(header)) {
-            if (header.kind === "header" && header.version === 4) return { path: sessionRef.sessionFile, format: "v4" };
-            if (header.type === "session" && header.version === 3) return { path: sessionRef.sessionFile, format: "v3" };
+            if (isHeaderV4(header)) return { path: sessionRef.sessionFile, format: "v4" };
+            if (isHeaderV3(header)) return { path: sessionRef.sessionFile, format: "v3" };
           }
         } catch {
           // 头行本身撕裂/非 JSON → unknown（最保守路径）
@@ -120,8 +167,69 @@ function createTranscriptAdapter(fs: Fs): TranscriptAdapter {
       return { path: sessionRef.sessionFile, format: "unknown" };
     },
 
-    async verify(_sessionRef: SessionRef, _notificationId: string): Promise<VerifyResult> {
-      throw new Error("票 19 组 2 未实现");
+    async verify(sessionRef: SessionRef, notificationId: string): Promise<VerifyResult> {
+      let content: string;
+      try {
+        content = await fs.readFile(sessionRef.sessionFile);
+      } catch {
+        return { verdict: "unknown", reason: "unreadable" };
+      }
+
+      const lines = content.split("\n");
+      let lastMeaningful = -1;
+      for (let i = 0; i < lines.length; i++) {
+        if (lines[i].trim() !== "") lastMeaningful = i;
+      }
+
+      let format: TranscriptFormat | undefined;
+      let corrupt = false; // 中段坏行（≠ 撕裂尾行）→ 整文件不可信，保守降级
+      const hits: NotificationHit[] = [];
+
+      for (let i = 0; i <= lastMeaningful; i++) {
+        const line = lines[i];
+        if (line.trim() === "") continue;
+        let entry: unknown;
+        try {
+          entry = JSON.parse(line);
+        } catch {
+          // 撕裂容错：仅最后一个非空行解析失败 = 未确认写入，跳过只影响该行；
+          // 中段坏行是 corruption（harness-v2 原义）→ 保守降级。
+          if (i === lastMeaningful) break;
+          corrupt = true;
+          break;
+        }
+        if (!isRecord(entry)) continue;
+        if (format === undefined) {
+          if (isHeaderV4(entry)) format = "v4";
+          else if (isHeaderV3(entry)) format = "v3";
+        }
+        if (isNotificationV3(entry)) hits.push(hitOfV3(entry));
+        else if (isNotificationV4(entry)) hits.push(hitOfV4(entry));
+      }
+
+      if (corrupt) return { verdict: "unknown", reason: "corrupt-line" };
+
+      // 形态兜底：头行不可判时由命中条目自身形态代标记（lane 信封仅 v4 载体形态有）。
+      if (format === undefined && hits.length > 0) {
+        format = hits.some((h) => h.lane !== undefined) ? "v4" : "v3";
+      }
+
+      const matched = hits.filter((h) => h.notificationId === notificationId);
+      if (matched.length === 0) return { verdict: "waiting", reason: "not-found" };
+
+      if (matched.some((h) => typeof h.verdict !== "string" || !VERDICTS.includes(h.verdict))) {
+        return { verdict: "unknown", reason: "verdict-missing" };
+      }
+      const distinct = [...new Set(matched.map((h) => h.verdict as string))];
+      if (distinct.length > 1) return { verdict: "unknown", reason: "conflicting-verdicts" };
+
+      const winner = matched[matched.length - 1]; // 多条同 verdict：取最新（文件序）
+      return {
+        verdict: winner.verdict as Exclude<AdapterVerdict, "unknown">,
+        ...(typeof winner.evidenceRef === "string" ? { evidenceRef: winner.evidenceRef } : {}),
+        ...(format !== undefined ? { format } : {}),
+        ...(winner.lane !== undefined ? { lane: winner.lane } : {}),
+      };
     },
   };
 }
