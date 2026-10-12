@@ -99,7 +99,7 @@ module.exports = {
         path: `^${R}/pi-events-daemon/(loops|prober|transcript-adapter|daemon-main)/`,
       },
       to: {
-        path: `^(node:)?(fs|fs/promises|net|tls|dgram|dns|http|https|http2|child_process|tty|os|process|worker_threads)$`,
+        path: `^(node:)?(fs|fs/promises|net|tls|dgram|dns|dns/promises|http|https|http2|child_process|tty|os|process|worker_threads)$`,
       },
     },
     {
