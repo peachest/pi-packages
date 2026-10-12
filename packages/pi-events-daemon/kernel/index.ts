@@ -79,6 +79,12 @@ export type FanOutResult = {
   parked: string[];
 };
 
+/** drain 出参：投递结果（重投行清单）+ dead-letter 只读摘要（D2a：零进入，可见性三件套①）。 */
+export type DrainResult = {
+  drained: ReadonlyArray<{ notificationId: string; sessionId: string }>;
+  deadLetterSummary: { count: number; oldestAgeMs: number | null };
+};
+
 /** eventSeq 事件流尾恢复（首版）：outbox 行与 transition 1:1，取 eventSeq 最大值；空库 = 0。 */
 function recoverEventSeq(store: Store): number {
   let max = 0;
@@ -287,6 +293,37 @@ export class Kernel {
         return { notificationId, eventSeq: event.eventSeq, delivered, parked };
       }),
     );
+  }
+
+  /**
+   * drain（票 11，D2a）：只投 parked——重投 = parked 经 drain-redeliver 正典边回 accepted
+   * （两段式：accepted = 在线重试态，wake/verified 归 transport/transcript）。
+   * dead-letter 零进入：出口仅 reckon 对账 / query 查看 / 24h re-push，不经 drain——本方法结构上只读 parkedDeliveries。
+   * deadLetterSummary 为只读摘要（可见性三件套①）；最老年龄按底层事件 occurredAt 计
+   * （DeliveryRow 无入列时间戳，B 层近似）；now 缺省时 age 为 null。
+   * 范围标注：命中规则本票只落 sourceSessionId 精确匹配（行 sessionId == 连接 session）；
+   * scope 匹配第二规则需行携带 scope（store 行无此字段），归订阅/行形状后绕票。
+   */
+  drain(opts: { sessionId?: string; now?: number } = {}): DrainResult {
+    const filter = opts.sessionId ? { sessionId: opts.sessionId } : {};
+    const parked = this.store.parkedDeliveries(filter);
+    const dead = this.store.deadLetters(filter);
+    const drained = this.store.tx((tx) =>
+      parked.flatMap((row) => {
+        const edge = transitionDelivery(row.state, "drain-redeliver");
+        if (!edge.ok) return []; // 防御：快照后竞态变业（理论不可达）
+        tx.putDelivery({ ...row, state: edge.to });
+        return [{ notificationId: row.notificationId, sessionId: row.sessionId }];
+      }),
+    );
+    let oldestAgeMs: number | null = null;
+    if (dead.length > 0 && opts.now !== undefined) {
+      const oldestOccurredAt = this.store.tx((tx) =>
+        Math.min(...dead.map((d) => Date.parse(tx.getEvent(d.notificationId)?.occurredAt ?? ""))),
+      );
+      if (Number.isFinite(oldestOccurredAt)) oldestAgeMs = opts.now - oldestOccurredAt;
+    }
+    return { drained, deadLetterSummary: { count: dead.length, oldestAgeMs } };
   }
 
   /**

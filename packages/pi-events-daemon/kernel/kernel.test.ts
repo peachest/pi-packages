@@ -433,3 +433,44 @@ describe("票 11 组 1：fanOut origin 编址三分支（#31 正典）", () => {
     expect(billboard.evidenceRef).toBe(EVT1); // 截断指针 = notificationId（evidence op 据此解引用）
   });
 });
+
+describe("票 11 组 2：drain 只出 parked（D2a），dead-letter 零进入", () => {
+  it("SESSION_START 语义：parked 行 sourceSessionId == 连接 session → 重投（parked→accepted，drain-redeliver 正典边）", () => {
+    const store = createMemoryStore();
+    const kernel = new Kernel(store, VERDICT_STATES, 0);
+    seedTransitioned(store, kernel);
+    store.putSubscription(sub({ subscriptionId: "sub-a", sessionId: "session-a" }));
+    kernel.fanOut(EVT1, { activeSessions: [] }); // 离线 → parked
+    expect(store.getDelivery(EVT1, "session-a")?.state).toBe("parked");
+
+    const res = kernel.drain({ sessionId: "session-a", now: 5_000 });
+    expect(res.drained).toEqual([{ notificationId: EVT1, sessionId: "session-a" }]);
+    expect(store.getDelivery(EVT1, "session-a")?.state).toBe("accepted"); // 两段式：accepted=在线重试态
+  });
+
+  it("D2a：dead-letter 零进入——drain 不迁移 dead-letter，只读摘要", () => {
+    const store = createMemoryStore();
+    const kernel = new Kernel(store, VERDICT_STATES, 0);
+    seedTransitioned(store, kernel);
+    store.putDelivery({ notificationId: EVT1, sessionId: "session-a", state: "dead-letter", recordEpoch: 1 });
+    const res = kernel.drain({ sessionId: "session-a", now: 5_000 });
+    expect(res.drained).toEqual([]);
+    expect(store.getDelivery(EVT1, "session-a")?.state).toBe("dead-letter"); // 终态无出边
+    expect(res.deadLetterSummary).toEqual({ count: 1, oldestAgeMs: 5_000 - Date.parse(at(1)) });
+  });
+
+  it("sessionId 过滤：他 session 的 parked 不动；无 sessionId = 全量 parked；零 dead-letter → oldestAgeMs null", () => {
+    const store = createMemoryStore();
+    const kernel = new Kernel(store, VERDICT_STATES, 0);
+    seedTransitioned(store, kernel);
+    store.putSubscription(sub({ subscriptionId: "sub-a", sessionId: "session-a" }));
+    store.putSubscription(sub({ subscriptionId: "sub-b", sessionId: "session-b" }));
+    kernel.fanOut(EVT1, { activeSessions: [] }); // 两行 parked
+    const res = kernel.drain({ sessionId: "session-b", now: 5_000 });
+    expect(res.drained).toEqual([{ notificationId: EVT1, sessionId: "session-b" }]);
+    expect(store.getDelivery(EVT1, "session-a")?.state).toBe("parked"); // 不动
+    expect(res.deadLetterSummary).toEqual({ count: 0, oldestAgeMs: null });
+    // 全量 drain 兜走剩余
+    expect(kernel.drain({ now: 6_000 }).drained).toEqual([{ notificationId: EVT1, sessionId: "session-a" }]);
+  });
+});
