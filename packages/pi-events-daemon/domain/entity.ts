@@ -1,29 +1,26 @@
 /**
  * domain/entity — Entity 富聚合的身份与转换决策（票 06；零 IO 纯函数，测试零 fake）。
  *
- * 共享类型归属（domain 三票协调约定）：EntityRef / Entity / Transitioned / TransitionIntent
- * 定义在 entity.ts 的先到者拥有（本票），票 07/08 import 本文件；
- * domain/index.ts 的 re-export 由 merger 统一处理（本票不改 index.ts）。
+ * 共享类型正典（2026-10-12 统一）：EntityRef / Transitioned / TransitionIntent / Verdict
+ * 定义在 types.ts，本文件 re-export 保持消费方 import 面不变；Entity 聚合仍归本文件。
  */
-
-// --- EntityRef：源系统原生标识 + 封闭前缀集（ADR 0002：agent 不铸造不解析，key generator 归 profile 层）---
-export const ENTITY_REF_PREFIXES = ["external", "project", "user"] as const;
-export type EntityRef = `${(typeof ENTITY_REF_PREFIXES)[number]}/${string}`;
+import {
+	type EntityRef,
+	type TransitionIntent,
+	deterministicEventId,
+	parseEntityRefKey,
+	ENTITY_REF_PREFIXES,
+} from "./types.ts";
+export { ENTITY_REF_PREFIXES, parseEntityRefKey };
+export type { EntityRef, Verdict, Transitioned, TransitionIntent } from "./types.ts";
 
 /**
- * 边界校验：只认 `<prefix>/<native-key>` 形状，key 内容原样通过——
- * URL/路径的理解与规范化归 profile key generator，daemon 侧零身份铸造（ADR 0002）。
+ * 从 raw 字符串构造 EntityRef：只认 `<prefix>/<native-key>` 形状做 key 校验，
+ * key 内容原样通过——URL/路径的理解与规范化归 profile key generator，daemon 侧零身份铸造（ADR 0002）。
+ * type 判别符不由 raw 推导（raw 只有前缀信息），调用方显式给出。
  */
-export function parseEntityRef(raw: string): EntityRef {
-	const slash = raw.indexOf("/");
-	const prefix = slash === -1 ? "" : raw.slice(0, slash);
-	const key = slash === -1 ? "" : raw.slice(slash + 1);
-	if (!(ENTITY_REF_PREFIXES as readonly string[]).includes(prefix) || key === "") {
-		throw new Error(
-			`invalid EntityRef "${raw}": expected external/<native-key> | project/<native-key> | user/<native-key> — agents never mint or parse keys (ADR 0002)`,
-		);
-	}
-	return raw as EntityRef;
+export function makeEntityRef(type: string, rawKey: string): EntityRef {
+	return { type, key: parseEntityRefKey(rawKey) };
 }
 
 // --- Entity 富聚合（#31 领域模型：决策只需当前快照；状态 = 转换事件的纯归约，归约缓存 post-MVP）---
@@ -43,34 +40,6 @@ export type Entity = {
 	retired: boolean;
 };
 
-/**
- * Transitioned — 单一事件族（#31 事件模型：字段清单定死，票 08/09 依赖；只有实体转换产生事件）。
- * 自转换同族：无 per-state 事件类型，(state, contentIdentity) 是真实对（ADR 0003）。
- */
-export type Transitioned = {
-	/** 写入序：全局单调（R1 双轨之写入轨），kernel/store 分配 */
-	eventSeq: number;
-	entityRef: EntityRef;
-	/** 首转换为 null（无 unprobed 前置态） */
-	from: string | null;
-	to: string;
-	contentIdentity: string | null;
-	/** ISO 8601；调用方注入，domain 不碰时钟 */
-	occurredAt: string;
-	/** probe 路径的 evidence 指针；publish 路径无 evidence，可缺省 */
-	evidenceRef?: string;
-};
-
-/**
- * TransitionIntent — 决策序载体（R1 双轨：决策序与写入序互不替代、各自单调）。
- * 预分配确定性 event id（内容子集派生、不含 payload——消费侧 appendIfMissing 同 id 跳过、
- * 异内容 = corruption）；eventSeq 同为预分配值，满足 #31 publish 响应 {eventSeq, from, to}。
- */
-export type TransitionIntent = Transitioned & {
-	eventId: string;
-	payload: unknown;
-};
-
 export type PublishCommand = { to: string; contentIdentity?: string; payload?: unknown };
 
 export type PublishContext = {
@@ -80,6 +49,8 @@ export type PublishContext = {
 	occurredAt: string;
 	/** eventSeq 预分配值（全局单调计数归 kernel/store） */
 	eventSeq: number;
+	/** decisionOrder 预分配值（R1 双轨之决策轨，kernel/mutation line 分配——event id 的确定性来源） */
+	decisionOrder: number;
 };
 
 /**
@@ -102,7 +73,8 @@ export function publish(entity: Entity, cmd: PublishCommand, ctx: PublishContext
 	const contentIdentity = cmd.contentIdentity ?? null;
 	if (entity.state === cmd.to && contentIdentity === entity.contentIdentity) return null;
 	return {
-		eventId: transitionEventId(entity.ref, entity.state, cmd.to, contentIdentity, ctx.occurredAt),
+		eventId: deterministicEventId(entity.ref, ctx.decisionOrder),
+		decisionOrder: ctx.decisionOrder,
 		eventSeq: ctx.eventSeq,
 		entityRef: entity.ref,
 		from: entity.state,
@@ -113,13 +85,4 @@ export function publish(entity: Entity, cmd: PublishCommand, ctx: PublishContext
 	};
 }
 
-/** 预分配确定性 event id：意图内容子集（不含 payload）拼接，崩溃重放可重推导同一 id。 */
-function transitionEventId(
-	ref: EntityRef,
-	from: string | null,
-	to: string,
-	contentIdentity: string | null,
-	occurredAt: string,
-): string {
-	return `transition:${JSON.stringify([ref, from, to, contentIdentity, occurredAt])}`;
-}
+

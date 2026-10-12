@@ -1,13 +1,14 @@
 import { describe, it, expect } from "vitest";
 import {
-	parseEntityRef,
+	parseEntityRefKey,
 	publish,
 	type Entity,
 	type PublishCommand,
 	type PublishContext,
+	type EntityRef,
 } from "./entity.ts";
 
-const REF = parseEntityRef("project/https://gitlab.example/group/pipe/-/merge_requests/42");
+const REF: EntityRef = { type: "gitlab:mr", key: "project/https://gitlab.example/group/pipe/-/merge_requests/42" };
 
 const entity = (over: Partial<Entity> = {}): Entity => ({
 	ref: REF,
@@ -24,6 +25,7 @@ const ctx = (over: Partial<PublishContext> = {}): PublishContext => ({
 	states: new Set(["draft", "ready", "merged", "closed"]),
 	occurredAt: "2026-10-12T08:00:00.000Z",
 	eventSeq: 7,
+	decisionOrder: 11,
 	...over,
 });
 
@@ -34,14 +36,14 @@ describe("EntityRef key 前缀规范（ADR 0002：agent 不铸造不解析）", 
 			"project/https://gitlab.example/group/pipe/-/merge_requests/42",
 			"user//mnt/disk1/hyx/projects/pi-mypackage",
 		];
-		for (const key of keys) expect(parseEntityRef(key)).toBe(key);
+		for (const key of keys) expect(parseEntityRefKey(key)).toBe(key);
 	});
 
 	it("拒绝未知前缀、无前缀、空 key，错误信息列封闭前缀集", () => {
 		for (const bad of ["gitlab/mr!1", "mr-24248", "external/", ""]) {
-			expect(() => parseEntityRef(bad)).toThrow(/EntityRef/);
+			expect(() => parseEntityRefKey(bad)).toThrow(/nativeKey/);
 		}
-		expect(() => parseEntityRef("gitlab/mr!1")).toThrow(/project/);
+		expect(() => parseEntityRefKey("gitlab/mr!1")).toThrow(/project/);
 	});
 });
 
@@ -131,8 +133,10 @@ describe("TransitionIntent：预分配确定性 event id + 事件族字段（票
 
 	it("intent 形状定死：Transitioned 事件族字段（eventSeq/EntityRef/from/to/contentIdentity/occurredAt；evidenceRef 走 probe 路径）+ eventId + payload", () => {
 		const intent = publish(entity({ state: "ready" }), { to: "merged" }, ctx())!;
+		// 2026-10-12 统一：decisionOrder 进 Intent（R1 双轨正典，event id 的确定性来源）
 		expect(Object.keys(intent).sort()).toEqual([
 			"contentIdentity",
+			"decisionOrder",
 			"entityRef",
 			"eventId",
 			"eventSeq",
@@ -143,10 +147,13 @@ describe("TransitionIntent：预分配确定性 event id + 事件族字段（票
 		]);
 	});
 
-	it("确定性：同输入 → 同 event id；occurredAt 变 → id 变", () => {
+	it("确定性：同 (entityRef, decisionOrder) → 同 event id（崩溃重放幂等的基础）；decisionOrder 变 → id 变", () => {
+		// 2026-10-12 统一裁定 adopt intent.ts 方案：id = f(entityRef, decisionOrder)，occurredAt 不参与。
+		// 理由：appendIfMissing 的幂等重放要求同 decisionOrder 恒同 id——内容派生方案在重放时
+		// occurredAt 变化会导致 id 漂移，幂等失效（票 08 的 R1 双轨语义）。
 		const a = publish(entity({ state: "ready" }), { to: "merged" }, ctx())!;
 		const b = publish(entity({ state: "ready" }), { to: "merged" }, ctx())!;
-		const c = publish(entity({ state: "ready" }), { to: "merged" }, ctx({ occurredAt: "2026-10-12T08:00:01.000Z" }))!;
+		const c = publish(entity({ state: "ready" }), { to: "merged" }, ctx({ decisionOrder: 12 }))!;
 		expect(b.eventId).toBe(a.eventId);
 		expect(c.eventId).not.toBe(a.eventId);
 	});

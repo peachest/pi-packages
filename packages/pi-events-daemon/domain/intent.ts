@@ -2,75 +2,26 @@
  * domain/intent.ts — ticket 08: TransitionIntent 双轨（R1）+ appendIfMissing + 封闭集执法.
  *
  * 零 IO 纯函数：输入数据、输出数据，不碰 store、不碰时钟、不碰 socket。
- * 依赖方向：本文件不 import 任何其他模块（eda-leaf-zero-dep-domain）。
- *
- * types: provisional, merge coordinator will unify
- * —— EntityRef / TransitionIntent / Transitioned / Verdict 的正典归属是 domain/entity.ts
- *    （票 06 先到者拥有）；本分支尚无该文件，故在此定义最小版本，合并时以 entity.ts 为准。
+ * 依赖方向：本文件只 import ./types.ts（domain 内共享类型正典，2026-10-12 统一）。
  *
  * 术语正典：packages/prototype-events-daemon/CONTEXT.md；契约：#31 spec（spec31-body.md）。
  */
+import {
+  type EntityRef,
+  type Verdict,
+  type Transitioned,
+  type TransitionIntent,
+  deterministicEventId,
+  TRANSITIONED_CONTENT_FIELDS,
+  TRANSITIONED_FIELDS,
+} from "./types.ts";
 
-// --- provisional shared types（entity.ts 到位后由 merge coordinator 统一）---
-
-/** 实体标识：type + 源系统原生 key（前缀 external/ project/ user/，agent 不铸造不解析——ADR 0002）。 */
-export interface EntityRef {
-  type: string;
-  key: string;
-}
-
-/** 判定三态：agent 可见面一律语义名，退出码不外泄（0=passed / 2=failed / 其他=waiting）。 */
-export type Verdict = "passed" | "failed" | "waiting";
-
-/**
- * TransitionIntent —— 决策产物（publish/转换校验的输出，票 06）。
- * 双轨（R1）：decisionOrder = 决策序（mutation line，"哪个转换先决定"）；
- * eventSeq = 写入序（落盘序，"哪条先落盘"）。两轨互不替代、各自单调，
- * eventSeq 由单写者顺序预分配在 Intent 上（#31 publish 响应 {eventSeq, from, to} 的来源）。
- */
-export interface TransitionIntent {
-  /** 确定性预分配 event id = f(entityRef, decisionOrder)，崩溃重放可复得（appendIfMissing 匹配键）。 */
-  eventId: string;
-  decisionOrder: number;
-  eventSeq: number;
-  entityRef: EntityRef;
-  from: string | null;
-  to: string;
-  contentIdentity?: string;
-  occurredAt: string;
-  evidenceRef?: string;
-}
-
-/**
- * Transitioned —— 单一事件族（#31 事件模型，无 per-state 事件类型；自转换同族）。
- * 字段清单正典（票 08 定死，票 09 corruption "异内容"判定依赖）：eventSeq / EntityRef /
- * from / to / contentIdentity / occurredAt / evidenceRef；eventId 为去重匹配键。
- */
-export interface Transitioned {
-  eventId: string;
-  eventSeq: number;
-  entityRef: EntityRef;
-  from: string | null;
-  to: string;
-  contentIdentity?: string;
-  occurredAt: string;
-  evidenceRef?: string;
-}
-
-/** Transitioned 字段清单（含匹配键 eventId）；sameEventContent 只比较正典内容七字段。 */
-export const TRANSITIONED_FIELDS = [
-  "eventId",
-  "eventSeq",
-  "entityRef",
-  "from",
-  "to",
-  "contentIdentity",
-  "occurredAt",
-  "evidenceRef",
-] as const;
+// re-export（消费方零改动；intent.test.ts 从本文件 import 这些名字）
+export type { EntityRef, Verdict, Transitioned, TransitionIntent };
+export { deterministicEventId, TRANSITIONED_CONTENT_FIELDS, TRANSITIONED_FIELDS };
 
 /** appendIfMissing 的内容比较域：#31 事件模型清单（不含匹配键 eventId）。 */
-const CONTENT_FIELDS = ["eventSeq", "entityRef", "from", "to", "contentIdentity", "occurredAt", "evidenceRef"] as const;
+// 内容比较域正典在 types.ts（TRANSITIONED_CONTENT_FIELDS）
 
 // --- R1 双轨 ---
 
@@ -81,11 +32,6 @@ export interface IntentSequences {
 }
 
 export const FIRST_SEQUENCE: IntentSequences = { decisionOrder: 0, eventSeq: 0 };
-
-/** 确定性 event id：同 (entityRef, decisionOrder) 恒同 id——异内容因此可被检出为 corruption。 */
-export function deterministicEventId(ref: EntityRef, decisionOrder: number): string {
-  return `evt:${ref.type}:${ref.key}#${decisionOrder}`;
-}
 
 export function planTransition(
   seq: IntentSequences,
@@ -106,7 +52,7 @@ export function intentToEvent(intent: TransitionIntent): Transitioned {
 
 /** 清单内容逐字段相等（undefined 与缺失视为同值）。 */
 export function sameEventContent(a: Transitioned, b: Transitioned): boolean {
-  return CONTENT_FIELDS.every((f) => {
+  return TRANSITIONED_CONTENT_FIELDS.every((f) => {
     const av = a[f];
     const bv = b[f];
     return (av === undefined && bv === undefined) || av === bv;
