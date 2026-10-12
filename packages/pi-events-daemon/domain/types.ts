@@ -5,13 +5,13 @@
  * 本地重复定义删除（P-014：不为现有概念造第二名称）。
  *
  * 裁定记录：
- * - EntityRef = {source, nativeKey} 对象（adopt intent.ts 结构）：source = 源系统判别符
- *   （如 "gitlab:mr"，key generator 归 profile 层——ADR 0002），nativeKey = 前缀编码键
- *   （external/|project/|user/<native-id>）。entity.ts 原 template-literal 版是 nativeKey
- *   的值域描述，parseEntityRef 重定位为 nativeKey 校验器（保留，用于测试与构造边）。
+ * - EntityRef = {type, key} 对象（adopt intent.ts 结构）：type = 源系统判别符
+ *   （如 "gitlab:mr"，key generator 归 profile 层——ADR 0002），key = 前缀编码键
+ *   （external/|project/|user/<native-id>）。entity.ts 原 template-literal 版是 key
+ *   的值域描述，parseEntityRefKey 重定位为 key 校验器（保留，用于测试与构造边）。
  * - Verdict = "passed" | "failed" | "waiting"（#31 判定三态，agent 可见面一律语义名）。
  * - Transitioned = 8 字段（intent.ts 版）：eventId 是 appendIfMissing 匹配键（I10 幂等基础），
- *   事件清单含它；contentIdentity 为 string | null（发布路径显式 null ≠ undefined）。
+ *   事件清单含它；contentIdentity 可选 string | null（probe 路径无身份字段；null = 显式无身份）。
  * - TransitionIntent = Transitioned + decisionOrder + payload?（合并 06/08 双必填为可选——
  *   probe 路径的 Intent 无 payload，publish 路径的 Intent 无 decisionOrder 语义？
  *   否：decisionOrder 双轨正典是 kernel 统一消费序，保留必填；payload 可选（probe 路径无）。
@@ -26,7 +26,7 @@ export interface EntityRef {
   key: string;
 }
 
-/** ADR 0002 前缀集（EntityRef.nativeKey 的封闭值域）。 */
+/** ADR 0002 前缀集（EntityRef.key 的封闭值域）。 */
 export const ENTITY_REF_PREFIXES = ["external", "project", "user"] as const;
 
 /** EntityRef.key 前缀校验：`<prefix>/<native-key>` 形状，key 内容原样通过（agent 不铸造不解析）。 */
@@ -36,7 +36,7 @@ export function parseEntityRefKey(raw: string): string {
   const key = slash === -1 ? "" : raw.slice(slash + 1);
   if (!(ENTITY_REF_PREFIXES as readonly string[]).includes(prefix) || key === "") {
     throw new Error(
-      `invalid nativeKey "${raw}": expected external/<native-key> | project/<native-key> | user/<native-key> — agents never mint or parse keys (ADR 0002)`,
+      `invalid EntityRef key "${raw}": expected external/<native-key> | project/<native-key> | user/<native-key> — agents never mint or parse keys (ADR 0002)`,
     );
   }
   return raw;
@@ -90,6 +90,22 @@ export const TRANSITIONED_CONTENT_FIELDS = [
 
 /** Transitioned 完整字段清单（含匹配键 eventId；事件形状 pinning 用——票 08 语义）。 */
 export const TRANSITIONED_FIELDS = ["eventId", ...TRANSITIONED_CONTENT_FIELDS] as const;
+
+/**
+ * DeliveryRow — Delivery 单行根（I10：每 (notification, session) 恰一行；I12：行带所有权 epoch）。
+ * 正典形状（challenger 审计 A1 收敛裁定）：intent.ts 的两字段投影与 delivery.ts 完整版统一于此。
+ */
+export interface DeliveryRow {
+  notificationId: string;
+  sessionId: string;
+  state: "pending" | "accepted" | "verified" | "parked" | "failed" | "dead-letter";
+  /** I12 所有权 epoch：创建本行的 daemon 实例世代。 */
+  ownerEpoch: number;
+  /** E5/24h re-push 幂等载体（repushed 置位恒 hold）；verified 时间戳供 L4 扫描。 */
+  verifiedAt?: string | null;
+  repushed?: boolean;
+  pushedAt?: string | null;
+}
 
 /**
  * TransitionIntent — 决策序载体（R1 双轨：decisionOrder 与 eventSeq 互不替代、各自单调）。

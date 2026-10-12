@@ -122,15 +122,9 @@ export interface Notification {
 	billboard: BillboardView;
 }
 
-// --- Delivery 单行根（I10：每 (notification, session) 恰一行；I12：行带所有权 epoch 防僵尸 daemon 误投）---
-
-export interface DeliveryRow {
-	notificationId: string;
-	sessionId: string;
-	state: DeliveryState;
-	/** I12 所有权 epoch：创建本行的 daemon 实例世代。 */
-	ownerEpoch: number;
-}
+// --- Delivery 单行根：DeliveryRow 正典在 types.ts（A1 收敛），DeliveryState 迁移语义归本文件 ---
+import type { DeliveryRow } from "./types.ts";
+export type { DeliveryRow };
 
 // --- Subscription 聚合（#31：probe 资产 + 意图 opts + 编址 scope/origin/sourceSessionId）---
 

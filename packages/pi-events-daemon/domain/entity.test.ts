@@ -41,7 +41,7 @@ describe("EntityRef key 前缀规范（ADR 0002：agent 不铸造不解析）", 
 
 	it("拒绝未知前缀、无前缀、空 key，错误信息列封闭前缀集", () => {
 		for (const bad of ["gitlab/mr!1", "mr-24248", "external/", ""]) {
-			expect(() => parseEntityRefKey(bad)).toThrow(/nativeKey/);
+			expect(() => parseEntityRefKey(bad)).toThrow(/EntityRef key/);
 		}
 		expect(() => parseEntityRefKey("gitlab/mr!1")).toThrow(/project/);
 	});

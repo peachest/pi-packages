@@ -531,10 +531,10 @@ describe("I9：verified = notificationId 出现在目标 session transcript", ()
 describe("I10：每 (notification, session) 恰一行", () => {
   it("同对重复 upsert 不产生第二行，返回既有行", () => {
     let rows: DeliveryRow[] = [];
-    const first = upsertDelivery(rows, "ntf-1", "sess-A");
+    const first = upsertDelivery(rows, "ntf-1", "sess-A", 1);
     rows = first.rows;
     expect(first.created).toBe(true);
-    const second = upsertDelivery(rows, "ntf-1", "sess-A");
+    const second = upsertDelivery(rows, "ntf-1", "sess-A", 1);
     expect(second.created).toBe(false);
     expect(second.row).toEqual(first.row);
     expect(second.rows).toHaveLength(1);
@@ -542,11 +542,11 @@ describe("I10：每 (notification, session) 恰一行", () => {
 
   it("不同 session / 不同 notification 各自成行（一通知扇出多行）", () => {
     let rows: DeliveryRow[] = [];
-    rows = upsertDelivery(rows, "ntf-1", "sess-A").rows;
-    rows = upsertDelivery(rows, "ntf-1", "sess-B").rows;
-    rows = upsertDelivery(rows, "ntf-2", "sess-A").rows;
+    rows = upsertDelivery(rows, "ntf-1", "sess-A", 1).rows;
+    rows = upsertDelivery(rows, "ntf-1", "sess-B", 1).rows;
+    rows = upsertDelivery(rows, "ntf-2", "sess-A", 1).rows;
     expect(rows).toHaveLength(3);
-    const again = upsertDelivery(rows, "ntf-2", "sess-A");
+    const again = upsertDelivery(rows, "ntf-2", "sess-A", 1);
     expect(again.rows).toHaveLength(3);
   });
 });

@@ -254,21 +254,20 @@ export function transcriptVerifies(notificationId: string, transcript: readonly 
   return transcript.some((line) => line.includes(notificationId));
 }
 
-/** I10 Delivery 单行根：每 (notification, session) 恰一行（一通知扇出多 session 各一行）。 */
-export interface DeliveryRow {
-  notificationId: string;
-  sessionId: string;
-}
+/** I10 单行根：DeliveryRow 正典在 types.ts（A1 收敛，含 state/ownerEpoch/repush 幂等载体）。 */
+export type { DeliveryRow } from "./types.ts";
+import type { DeliveryRow } from "./types.ts";
 
-/** 同对幂等返回既有行（不产生第二行）；新对追加。 */
+/** 同对幂等返回既有行（不产生第二行）；新对追加（初态 pending + 所有权 epoch 由调用方给）。 */
 export function upsertDelivery(
   rows: readonly DeliveryRow[],
   notificationId: string,
   sessionId: string,
+  ownerEpoch: number,
 ): { rows: DeliveryRow[]; row: DeliveryRow; created: boolean } {
   const existing = rows.find((r) => r.notificationId === notificationId && r.sessionId === sessionId);
   if (existing) return { rows: [...rows], row: existing, created: false };
-  const row = { notificationId, sessionId };
+  const row: DeliveryRow = { notificationId, sessionId, state: "pending", ownerEpoch };
   return { rows: [...rows, row], row, created: true };
 }
 
