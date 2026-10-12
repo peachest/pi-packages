@@ -36,8 +36,8 @@ export type OpName = (typeof OP_NAMES)[number];
 /** JSON-RPC 请求 id。 */
 export type RequestId = string | number;
 
-/** 实体标识：source-system native identifier 字符串（CONTEXT.md EntityRef，agent 不铸造不解析）。 */
-export type EntityRef = string;
+/** 实体标识：source-system native identifier 字符串（线协议侧类型名 EntityRefId——与 domain 对象版 EntityRef 同名异型的区分；CONTEXT.md EntityRef 词条，agent 不铸造不解析）。 */
+export type EntityRefId = string;
 
 /** schedule spec（#31 正典）：type 枚举即扩展接口。 */
 export type ScheduleSpec = { type: "interval"; every: string } | { type: "cron"; expr: string; tz?: string };
@@ -70,11 +70,11 @@ export type SubscribeOpts = {
 };
 
 /** subscribe：{entityRef | url | check, opts?} → 订阅成功形态。 */
-export type SubscribeRequest = { entityRef?: EntityRef; url?: string; check?: string; opts?: SubscribeOpts };
+export type SubscribeRequest = { entityRef?: EntityRefId; url?: string; check?: string; opts?: SubscribeOpts };
 /** subscribe 成功：{subscriptionId, entityRef, state, validate?, warnings?[]}（state 为 null 直到首个 verdict）。 */
 export type SubscribeOk = {
   subscriptionId: string;
-  entityRef: EntityRef;
+  entityRef: EntityRefId;
   state: string | null;
   validate?: ValidateReport;
   warnings?: string[];
@@ -88,9 +88,9 @@ export type CancelRequest = { subscriptionId: string };
 export type CancelResponse = { cancelled: true };
 
 /** query 读侧归一（吸收 states 查询 / listChildren / backlog / dead-letter 清单）。 */
-export type QueryRequest = { entityRef?: EntityRef; scope?: string; session?: string };
+export type QueryRequest = { entityRef?: EntityRefId; scope?: string; session?: string };
 export type QueryEntity = {
-  entityRef: EntityRef;
+  entityRef: EntityRefId;
   state: string | null;
   payloadSummary?: unknown;
   lastProbedAt?: string;
@@ -101,7 +101,7 @@ export type QueryResponse = { entities: QueryEntity[]; deadLetters: unknown[] };
 
 /** publish：agent 断言 {entityRef, transition:{to, contentIdentity?, payload?}} → {eventSeq, from, to}（非法 to 同步报错）。 */
 export type PublishRequest = {
-  entityRef: EntityRef;
+  entityRef: EntityRefId;
   transition: { to: string; contentIdentity?: string; payload?: unknown };
 };
 export type PublishResponse = { eventSeq: number; from: string; to: string };
@@ -117,7 +117,7 @@ export type EvidenceResponse = { content: string; truncated: boolean };
 /** status：登记处写入 {type, key, state?, payload?} → {entityRef, state, event?}（状态变更自动发事件）。 */
 export type StatusRequest = { type: string; key: string; state?: string; payload?: unknown };
 /** event 形状归 domain（Transitioned 事件族），线层透传。 */
-export type StatusResponse = { entityRef: EntityRef; state: string | null; event?: unknown };
+export type StatusResponse = { entityRef: EntityRefId; state: string | null; event?: unknown };
 
 /** validate：check 体检 {check} → 判定器报告。 */
 export type ValidateRequest = { check: string };
