@@ -22,7 +22,13 @@ import type { AgentSession } from "@earendil-works/pi-coding-agent";
 import type { Model, Api } from "@earendil-works/pi-ai";
 import skillPresetsExtension from "../../index.ts";
 
-export const PINNED_MODEL_ID = "glm53-flash-internal";
+// Pinned per spec #40 Testing Decisions (charting ruling 2026-09-20). When the
+// pinned model is absent from the gateway (e.g. renamed upstream), tests skip
+// rather than fall back to an arbitrary model. Set PI_SKILL_PRESETS_TEST_MODEL
+// to run the same suite against another gateway-hosted model for local
+// verification; CI and the default path always use the pinned value.
+export const PINNED_MODEL_ID =
+  process.env.PI_SKILL_PRESETS_TEST_MODEL?.trim() || "glm53-flash-internal";
 export const PROMPT = "Reply with exactly one word: ok";
 
 export const REAL_AGENT_DIR =
