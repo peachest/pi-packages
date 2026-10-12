@@ -28,16 +28,17 @@ export function getProjectSettingsPath(cwd: string): string {
 }
 
 /**
- * Read a settings.json file and return the parsed JSON (or {} if missing/invalid).
+ * Read a settings.json file and return the parsed JSON.
+ *
+ * A missing file is legal ({}). A file that exists but cannot be read or
+ * parsed (truncated JSON, permissions, …) THROWS (ocr R11M1): swallowing the
+ * error returned {} and made the "truncated to `{`" corruption invisible to
+ * every tri-state guard downstream — operation paths then ran as usual.
  */
 function readSettingsFile(filePath: string): Record<string, unknown> {
   if (!existsSync(filePath)) return {};
-  try {
-    const raw = readFileSync(filePath, "utf-8");
-    return JSON.parse(raw) as Record<string, unknown>;
-  } catch {
-    return {};
-  }
+  const raw = readFileSync(filePath, "utf-8");
+  return JSON.parse(raw) as Record<string, unknown>;
 }
 
 /**

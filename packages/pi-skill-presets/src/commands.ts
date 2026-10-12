@@ -38,10 +38,32 @@ export function createCommands(
   /** Optional: records per-name replay-warning dedup (#65 B3, ocr-F2). */
   consumeReplayWarning?: (names: string[]) => void,
 ) {
+  /**
+   * Read config or refuse the operation (ocr R11M2): unreadable settings.json
+   * must not produce any state/entry change — notify an error and return null.
+   */
+  function readConfigOrRefuse(
+    cwd: string,
+    ctx: ExtensionCommandContext,
+  ): ReturnType<typeof readPresetsConfig> | null {
+    try {
+      return readPresetsConfig(cwd);
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      recordNotify(
+        ctx.ui,
+        `settings.json unreadable, cannot proceed: ${reason}`,
+        "error",
+      );
+      return null;
+    }
+  }
+
   /** /preset — TUI dialog */
   async function presetCommand(_args: string, ctx: ExtensionCommandContext): Promise<void> {
     const cwd = getCwd();
-    const config = readPresetsConfig(cwd);
+    const config = readConfigOrRefuse(cwd, ctx);
+    if (!config) return;
     // getDefaultPreset is a live getter — the dialog re-reads the default at
     // each interaction point, so a settings.json change mid-dialog applies.
     await showPresetDialog(ctx, pi, state, config, getDefaultPreset, consumeReplayWarning);
@@ -56,7 +78,8 @@ export function createCommands(
     }
 
     const cwd = getCwd();
-    const config = readPresetsConfig(cwd);
+    const config = readConfigOrRefuse(cwd, ctx);
+    if (!config) return;
 
     if (!config.definitions[name]) {
       recordNotify(
@@ -108,7 +131,20 @@ export function createCommands(
       return;
     }
 
-    const defaultPreset = getDefaultPreset();
+    // ocr R11M2: the live getter re-reads settings.json — an unreadable file
+    // must refuse the offload, not crash the command with an unhandled throw.
+    let defaultPreset: string | undefined;
+    try {
+      defaultPreset = getDefaultPreset();
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      recordNotify(
+        ctx.ui,
+        `settings.json unreadable, cannot proceed: ${reason}`,
+        "error",
+      );
+      return;
+    }
     if (defaultPreset && name === defaultPreset) {
       recordNotify(
         ctx.ui,
@@ -142,7 +178,8 @@ export function createCommands(
   /** /preset-status */
   async function presetStatusCommand(_args: string, ctx: ExtensionCommandContext): Promise<void> {
     const cwd = getCwd();
-    const config = readPresetsConfig(cwd);
+    const config = readConfigOrRefuse(cwd, ctx);
+    if (!config) return;
     const defaultPreset = getDefaultPreset();
     const loaded = state.getLoaded();
 

@@ -188,4 +188,71 @@ describe("confirm-callback error guard (ocr R8M)", () => {
     expect(recoveredFrame.join("\n")).not.toContain("settings.json unreadable");
     expect(recoveredFrame.join("\n")).toContain("gone");
   });
+
+  it("truncated settings.json during ops: toggle/delete refuse, zero entries, recovery works (ocr R11M1/M2)", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "preset-dialog-guard-"));
+    const agentDir = mkdtempSync(join(tmpdir(), "preset-dialog-guard-agent-"));
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    mkdirSync(join(cwd, ".pi"), { recursive: true });
+    writeFileSync(
+      join(cwd, ".pi", "settings.json"),
+      JSON.stringify({ presets: { definitions: { gone: { skills: ["one"] } } } }, null, 2),
+    );
+
+    const config: PresetsConfig = readPresetsConfig(cwd);
+    const getDefaultPreset = () => readPresetsConfig(cwd).default;
+
+    const notifyLog: RecordedNotify[] = [];
+    const entries: { action: string; preset: string }[] = [];
+    let dialog: unknown;
+    const ctx = makeFakeDialogCtx(cwd, notifyLog);
+    const captureCtx = {
+      ...ctx,
+      ui: {
+        ...ctx.ui,
+        custom: async (factory: (...args: unknown[]) => unknown) => {
+          dialog = factory(
+            { requestRender: () => {}, terminal: { rows: 40, columns: 100 } },
+            new Proxy({}, { get: () => (...args: unknown[]) => args[args.length - 1] }),
+            { matches: () => false },
+            () => {},
+          );
+        },
+      },
+    } as unknown as ExtensionCommandContext;
+    await showPresetDialog(captureCtx, makeFakePi(entries), new PresetState(), config, getDefaultPreset);
+    const d = dialog as { handleInput: (data: string) => void; mode?: string; render: (width: number) => string[] };
+    expect(d).toBeTruthy();
+
+    // The common corruption mode (ocr R11M1): file truncated to `{` — a JSON
+    // SYNTAX error, not the legal-JSON-null case the earlier rounds covered.
+    writeFileSync(getGlobalSettingsPath(), "{", "utf-8");
+
+    // Render degrades to the error line instead of throwing.
+    const frame = d.render(60);
+    expect(frame.join("\n")).toContain("settings.json unreadable");
+
+    // Toggle (Enter in browse) and delete ('d' + Enter) are gated by the
+    // unreadable-config check: error notify, zero state change, zero entries.
+    expect(() => d.handleInput("\r")).not.toThrow();
+    expect(() => d.handleInput("d")).not.toThrow();
+    expect(d.mode).toBe("confirm");
+    expect(() => d.handleInput("\r")).not.toThrow();
+    expect(d.mode).toBe("browse");
+    const opError = notifyLog.find((n) => n.level === "error" && n.message.includes("settings.json unreadable, cannot proceed"));
+    expect(opError).toBeTruthy();
+    expect(entries).toEqual([]);
+
+    // Recovery: restore the file and the same dialog instance works again —
+    // toggle goes through and writes an entry.
+    writeFileSync(
+      getGlobalSettingsPath(),
+      JSON.stringify({ presets: { definitions: { gone: { skills: ["one"] } } } }, null, 2),
+      "utf-8",
+    );
+    const recoveredFrame = d.render(60);
+    expect(recoveredFrame.join("\n")).not.toContain("settings.json unreadable");
+    d.handleInput("\r");
+    expect(entries).toEqual([{ action: "load", preset: "gone", timestamp: expect.any(Number) }]);
+  });
 });

@@ -175,7 +175,6 @@ class PresetDialog extends Container {
   private skillListLoaded = false;
   private readonly nameInput = new Input();
   private pendingConfirm: ConfirmAction | null = null;
-  private configError: string | null = null;
 
   constructor(
     ctx: ExtensionContext,
@@ -216,22 +215,19 @@ class PresetDialog extends Container {
 
   // Live read (ocr N2): the default can change in settings.json while the
   // dialog is open; every default comparison uses the current value.
-  // Tri-state (ocr R10M): a corrupted settings.json (legal JSON `null`) makes
-  // the live read throw, and a bare undefined would make operation paths
-  // mistake the always-on default for "no default configured" and proceed to
-  // load/offload it with an entry written. Callers must handle ok:false:
-  // render paths degrade to the error line, operation paths refuse to act.
+  // Tri-state (ocr R10M): an unreadable settings.json (corrupt or truncated
+  // JSON) makes the live read throw, and a bare undefined would make operation
+  // paths mistake the always-on default for "no default configured" and
+  // proceed to load/offload it with an entry written. Callers must handle
+  // ok:false: render paths degrade to the error line, operation paths refuse
+  // to act. (ocr R11M1: with parse errors no longer swallowed by
+  // readSettingsFile, this tri-state now actually fires for the common
+  // "truncated to `{`" corruption, not just legal JSON `null`.)
   private readDefaultPreset(): { ok: true; name?: string } | { ok: false; error: string } {
     try {
-      const name = this.getDefaultPreset();
-      // ocr R10L: clear a stale error from an earlier corrupt read so the
-      // error line disappears once settings.json is readable again.
-      this.configError = null;
-      return { ok: true, name };
+      return { ok: true, name: this.getDefaultPreset() };
     } catch (err) {
-      const error = err instanceof Error ? err.message : String(err);
-      this.configError = error;
-      return { ok: false, error };
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
     }
   }
 
@@ -243,9 +239,9 @@ class PresetDialog extends Container {
     // dialog actually touched (added, edited, deleted) are applied — the fresh
     // default and all externally-modified/untouched definitions survive.
     // Catch read + merge + write failures (ocr R6M1/R7M): the fresh read can
-    // throw too — e.g. settings.json externally overwritten with legal JSON
-    // `null` makes readPresetsConfig/extractPresets throw a TypeError — so the
-    // whole read-merge-write sequence shares one failure path: notify the user
+    // throw too — e.g. settings.json externally corrupted (legal JSON `null`
+    // or truncated/invalid JSON, ocr R11M1) makes readPresetsConfig throw —
+    // so the whole read-merge-write sequence shares one failure path: notify the user
     // with the preset name and reason, then report failure to the caller —
     // which rolls back its local edit so retrying the original action
     // re-attempts the save instead of hitting an already-exists /
@@ -332,8 +328,9 @@ class PresetDialog extends Container {
   }
 
   private buildBrowseLines(lines: string[], innerWidth: number): void {
-    // Read the default once up front: on corrupt settings this populates
-    // configError and we render the error state instead of throwing (ocr R9M).
+    // Read the default once up front: on unreadable settings the tri-state
+    // getter returns ok:false and we render the error state instead of
+    // throwing (ocr R9M).
     const def = this.readDefaultPreset();
     const defaultName = def.ok ? def.name : undefined;
     if (!def.ok) {

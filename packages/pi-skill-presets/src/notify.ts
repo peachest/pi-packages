@@ -25,10 +25,11 @@ export function setNotifyObserver(fn: NotifyObserver | null): void {
 }
 
 export function recordNotify(
-  ui: { notify(message: string, type?: NotifyLevel): void },
+  ui: { notify(message: string, type?: NotifyLevel): void } | undefined,
   msg: string,
   level: NotifyLevel,
 ): void {
   observer?.({ msg, level });
-  ui.notify(msg, level);
+  // SDK/no-op contexts can carry no ui — still record for observers (tests).
+  ui?.notify(msg, level);
 }

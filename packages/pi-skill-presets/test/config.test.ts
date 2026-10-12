@@ -48,6 +48,17 @@ describe("config", () => {
       expect(config.default).toBeUndefined();
     });
 
+    it("throws on corrupt (truncated) global settings.json (ocr R11M1)", () => {
+      writeFileSync(resolve(AGENT_DIR, "settings.json"), "{", "utf-8");
+      expect(() => readPresetsConfig(PROJECT_DIR)).toThrow();
+    });
+
+    it("throws on corrupt (truncated) project settings.json (ocr R11M1)", () => {
+      writeFileSync(resolve(AGENT_DIR, "settings.json"), "{}", "utf-8");
+      writeFileSync(resolve(PROJECT_DIR, ".pi", "settings.json"), '{"presets":', "utf-8");
+      expect(() => readPresetsConfig(PROJECT_DIR)).toThrow();
+    });
+
     it("reads global settings.json", () => {
       const settings = {
         presets: {
@@ -118,13 +129,12 @@ describe("config", () => {
       expect(config.definitions.engineer.skills).toEqual(["wayfinder"]);
     });
 
-    it("handles invalid JSON gracefully", () => {
+    it("throws on invalid JSON (ocr R11M1 — corruption must be visible)", () => {
       writeFileSync(
         resolve(AGENT_DIR, "settings.json"),
         "not valid json {{{",
       );
-      const config = readPresetsConfig(PROJECT_DIR);
-      expect(config.definitions).toEqual({});
+      expect(() => readPresetsConfig(PROJECT_DIR)).toThrow();
     });
 
     it("handles settings without presets field", () => {
