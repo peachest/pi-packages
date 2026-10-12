@@ -199,6 +199,7 @@ describe("Notification 值对象（billboard 视图）", () => {
 			entityRef: { type: "gitlab:mr", key: "external/https://gitlab.example/api/v4/projects/1/merge_requests/42" },
 			spec: {
 				check: "glab api projects/1/merge_requests/42",
+				source: "poll",
 				schedule: { type: "interval", every: "60s" },
 				failureThreshold: 1,
 				successThreshold: 1,

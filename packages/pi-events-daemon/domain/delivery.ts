@@ -145,9 +145,11 @@ export type Schedule =
 	| { type: "interval"; every: string }
 	| { type: "cron"; expr: string; tz?: string };
 
-/** ProbeSpec：完整描述对一个实体如何评估一个条件；值相等 ⇒ 共享同一 runner（I5）。thresholds 默认 1/1（R2 裁定）。 */
+/** ProbeSpec：完整描述对一个实体如何评估一个条件；值相等 ⇒ 共享同一 runner（I5）。source 三源（#31 L111：poll | fs-watch | k8s-watch；store ProbeSpecRow.source 同清单）。thresholds 默认 1/1（R2 裁定）。 */
 export interface ProbeSpec {
 	check: string;
+	/** 探测源三选一（#31 L111；k8s-watch 一等构造块已裁定，MVP 实现待票）。 */
+	source: "poll" | "fs-watch" | "k8s-watch";
 	schedule: Schedule;
 	failureThreshold: number;
 	successThreshold: number;
