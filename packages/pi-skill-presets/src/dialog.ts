@@ -175,6 +175,7 @@ class PresetDialog extends Container {
   private skillListLoaded = false;
   private readonly nameInput = new Input();
   private pendingConfirm: ConfirmAction | null = null;
+  private configError: string | null = null;
 
   constructor(
     ctx: ExtensionContext,
@@ -216,7 +217,16 @@ class PresetDialog extends Container {
   // Live read (ocr N2): the default can change in settings.json while the
   // dialog is open; every default comparison uses the current value.
   private get defaultPreset(): string | undefined {
-    return this.getDefaultPreset();
+    // ocr R9M: a corrupted settings.json (legal JSON `null`) makes the live
+    // read throw. Guard here so the render path degrades to an error line
+    // instead of throwing — the confirm guard restores browse mode, but a
+    // throwing render would still strand the dialog.
+    try {
+      return this.getDefaultPreset();
+    } catch (err) {
+      this.configError = err instanceof Error ? err.message : String(err);
+      return undefined;
+    }
   }
 
   /** Returns true when the write succeeded; false after a notified failure (ocr R6M1). */
@@ -316,6 +326,12 @@ class PresetDialog extends Container {
   }
 
   private buildBrowseLines(lines: string[], innerWidth: number): void {
+    // Read the default once up front: on corrupt settings this populates
+    // configError and we render the error state instead of throwing (ocr R9M).
+    const defaultName = this.defaultPreset;
+    if (this.configError) {
+      lines.push(this.theme.fg("warning", `settings.json unreadable: ${this.configError}`));
+    }
     const names = this.presetNames;
     const maxRows = this.visibleListRows;
 
@@ -334,7 +350,7 @@ class PresetDialog extends Container {
         const name = names[i]!;
         const isSelected = i === this.browseIndex;
         const loaded = this.state.has(name);
-        const isDefault = name === this.defaultPreset;
+        const isDefault = name === defaultName;
 
         const prefix = isSelected ? this.theme.fg("accent", "→ ") : "  ";
         const namePart = name;
@@ -367,7 +383,12 @@ class PresetDialog extends Container {
     const name = this.editPresetName;
     if (!name) return;
 
-    const isDefault = name === this.defaultPreset;
+    // ocr R9M: same corrupt-settings guard as buildBrowseLines.
+    const defaultName = this.defaultPreset;
+    if (this.configError) {
+      lines.push(this.theme.fg("warning", `settings.json unreadable: ${this.configError}`));
+    }
+    const isDefault = name === defaultName;
     if (isDefault) {
       lines.push(this.theme.fg("accent", "★ default preset"));
     }

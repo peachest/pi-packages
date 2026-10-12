@@ -91,12 +91,84 @@ describe("confirm-callback error guard (ocr R8M)", () => {
     d.handleInput("d");
     expect(d.mode).toBe("confirm");
 
-    // Enter → onConfirm throws on the corrupt read → guard notifies and
-    // restores browse mode instead of leaving the dialog stuck.
+    // Enter → onConfirm no longer throws on the corrupt read (ocr R9M: the
+    // defaultPreset getter is guarded, so deletePreset reaches saveConfig,
+    // whose existing catch notifies the failure and rolls back). Either way
+    // the dialog must return to browse mode with an error notify.
     d.handleInput("\r");
     expect(d.mode).toBe("browse");
     const error = notifyLog.find((n) => n.level === "error");
     expect(error).toBeTruthy();
-    expect(error!.message).toContain("Delete preset");
+    expect(error!.message).toContain("Failed to save preset");
+  });
+
+  it("corrupt settings after confirm guard: real render degrades, Enter keeps working (ocr R9M)", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "preset-dialog-guard-"));
+    const agentDir = mkdtempSync(join(tmpdir(), "preset-dialog-guard-agent-"));
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    mkdirSync(join(cwd, ".pi"), { recursive: true });
+    writeFileSync(
+      join(cwd, ".pi", "settings.json"),
+      JSON.stringify({ presets: { definitions: { gone: { skills: ["one"] } } } }, null, 2),
+    );
+
+    const config: PresetsConfig = readPresetsConfig(cwd);
+    const getDefaultPreset = () => readPresetsConfig(cwd).default;
+
+    const notifyLog: RecordedNotify[] = [];
+    let dialog: unknown;
+    const ctx = makeFakeDialogCtx(cwd, notifyLog);
+    const captureCtx = {
+      ...ctx,
+      ui: {
+        ...ctx.ui,
+        custom: async (factory: (...args: unknown[]) => unknown) => {
+          dialog = factory(
+            { requestRender: () => {}, terminal: { rows: 40, columns: 100 } },
+            // theme.fg(style, text) must return the text, not just the style
+            // name — the R9M error line asserts on its message content.
+            new Proxy({}, { get: () => (...args: unknown[]) => args[args.length - 1] }),
+            { matches: () => false },
+            () => {},
+          );
+        },
+      },
+    } as unknown as ExtensionCommandContext;
+    await showPresetDialog(captureCtx, makeFakePi(), new PresetState(), config, getDefaultPreset);
+    const d = dialog as { handleInput: (data: string) => void; mode?: string; render: (width: number) => string[] };
+    expect(d).toBeTruthy();
+
+    writeFileSync(getGlobalSettingsPath(), "null", "utf-8");
+
+    // Confirm guard restores browse mode (previous test covers the notify).
+    d.handleInput("d");
+    expect(d.mode).toBe("confirm");
+    d.handleInput("\r");
+    expect(d.mode).toBe("browse");
+
+    // Real render path: buildBrowseLines must not throw on the corrupt read
+    // (no requestRender mocking — this executes the actual line builder) and
+    // must show the degraded error line.
+    const frame = d.render(60);
+    expect(frame.join("\n")).toContain("settings.json unreadable");
+
+    // preset-edit render path degrades the same way.
+    d.handleInput("e");
+    expect(d.mode).toBe("preset-edit");
+    const editFrame = d.render(60);
+    expect(editFrame.join("\n")).toContain("settings.json unreadable");
+    d.handleInput("\u001b"); // back to browse
+    expect(d.mode).toBe("browse");
+
+    // Enter-driven actions in the corrupted state: toggle goes through
+    // togglePreset (default comparison safe), 'd' + Enter through the
+    // deletePreset → saveConfig failure path. Neither may throw uncaught.
+    expect(() => d.handleInput("\r")).not.toThrow();
+    expect(() => d.handleInput("d")).not.toThrow();
+    expect(d.mode).toBe("confirm");
+    expect(() => d.handleInput("\r")).not.toThrow();
+    expect(d.mode).toBe("browse");
+    const saveError = notifyLog.find((n) => n.level === "error" && n.message.includes("Failed to save"));
+    expect(saveError).toBeTruthy();
   });
 });
