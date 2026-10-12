@@ -337,7 +337,7 @@ export class MemoryStore implements Store {
   }
 }
 
-// 内容比较域与 domain/intent.ts CONTENT_FIELDS 同清单（同名结构，非 import——D3）。
+// 内容比较域与 domain/types.ts TRANSITIONED_CONTENT_FIELDS 为同一清单的两份拷贝（D3 豁免：store 行形状拆 entityRefType/entityRefKey，非 import），漂移须双向同步。
 const CONTENT_FIELDS = ["eventSeq", "entityRefType", "entityRefKey", "from", "to", "contentIdentity", "occurredAt", "evidenceRef"] as const;
 
 // --- 便捷工厂 ---

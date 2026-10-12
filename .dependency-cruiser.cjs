@@ -120,6 +120,17 @@ module.exports = {
       to: { path: `^${R}/pi-events-daemon/profiles/` },
     },
     {
+      name: "eda-profiles-deps",
+      comment:
+        "profiles from-set 完整约束（eda-profiles-type-only 的对偶）：profiles 只许 import kernel（类型，I-01/ADR 0005）+ 自身；禁 profiles→{protocol,domain,store,fx,prober,transcript-adapter,loops,transport,daemon-main}。",
+      severity: "error",
+      from: { path: `^${R}/pi-events-daemon/profiles/` },
+      to: {
+        path: `^${R}/pi-events-daemon/`,
+        pathNot: `^${R}/pi-events-daemon/(profiles/|kernel/|kernel\.ts$)`,
+      },
+    },
+    {
       name: "eda-loops-deps",
       comment: "loops → kernel / prober / transcript-adapter / fx / store / domain，禁止直达 transport / profiles / daemon-main。",
       severity: "error",

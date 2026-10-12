@@ -396,7 +396,6 @@ import {
   runnerSlotKey,
   rebuildRunLedger,
   type ThresholdConfig,
-  type RunLedger,
 } from "./intent.ts";
 
 describe("槽级阈值先建者定（一个实体一个状态机，不因敏感度不同分裂）", () => {
@@ -466,19 +465,10 @@ describe("I5：谓词不进槽键——N 个不同 on 谓词共享同一次抓�
   });
 });
 
-describe("RunLedger 归零重探（R1 A5：runtime 簿记非真相源，重启全槽立即重探）", () => {
-  const crashed: RunLedger = {
-    inFlight: true,
-    lastVerdict: "failed",
-    nextDueAt: 9_999,
-    consecutiveFails: 5,
-    lastEvidenceRef: "evd:old",
-  };
-
-  it("任意槽态输入 → 归零输出 + 立即重探标记（nextDueAt = now）", () => {
+describe("RunLedger 归零重探（R1 A5：runtime 簿记非真相源，重启全槽立即重探；旧 ledger 参数已删除——归零不看输入，槽态不可能泄漏）", () => {
+  it("归零输出 + 立即重探标记（nextDueAt = now）", () => {
     const now = 1_000_000;
-    const rebuilt = rebuildRunLedger(crashed, now);
-    expect(rebuilt).toEqual({
+    expect(rebuildRunLedger(now)).toEqual({
       inFlight: false,
       lastVerdict: null,
       nextDueAt: now,
@@ -488,7 +478,7 @@ describe("RunLedger 归零重探（R1 A5：runtime 簿记非真相源，重启�
   });
 
   it("归零 lastVerdict ⇒ 重启后首个 fresh verdict 视为到达（拿最新事实），阈值计数同样从零起", () => {
-    const rebuilt = rebuildRunLedger(crashed, 1);
+    const rebuilt = rebuildRunLedger(1);
     // 首个 failed 在默认阈值下即翻转——不被崩溃前的 failed 压制
     expect(observeVerdict({ consecutiveFails: rebuilt.consecutiveFails, consecutivePasses: 0, settled: rebuilt.lastVerdict }, "failed").flipped).toBe(true);
   });

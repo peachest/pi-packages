@@ -158,7 +158,7 @@ describe("Subscription origin 两分支数据形状（票 07 断言 4）", () =>
 
 describe("Notification 值对象（billboard 视图）", () => {
 	it("evidence ≤2KB 内联无指针；>2KB 截断 + evidenceRef 指针（= notificationId）", () => {
-		expect(EVIDENCE_INLINE_LIMIT).toBe(2000);
+		expect(EVIDENCE_INLINE_LIMIT).toBe(2048);
 		const small = makeBillboard("n:1", {
 			entityRef: { type: "gitlab:mr", key: "external/https://gitlab.example/api/v4/projects/1/merge_requests/42" },
 			verdict: "passed",
@@ -179,12 +179,27 @@ describe("Notification 值对象（billboard 视图）", () => {
 		expect(big.evidenceRef).toBe("n:2");
 	});
 
+	it("2KB 按 UTF-8 字节计（#31 >2KB 口径）：多字节字符按字节数截断，恰好 2048 字节不截断", () => {
+		const ref = { type: "gitlab:mr", key: "external/https://x" } as const;
+		// 1024 个字符 = 3072 字节 > 2048；字符数口径会漏截
+		const multibyte = "你".repeat(1024);
+		const bb = makeBillboard("n:3", { entityRef: ref, verdict: "failed", evidence: multibyte });
+		expect(Buffer.byteLength(bb.evidence, "utf8")).toBeLessThanOrEqual(2048);
+		expect(bb.evidenceRef).toBe("n:3");
+		// 682×3 + 2 = 2048 字节整 → 不截断
+		const exact = "你".repeat(682) + "xx";
+		const ok = makeBillboard("n:4", { entityRef: ref, verdict: "passed", evidence: exact });
+		expect(ok.evidence).toBe(exact);
+		expect(ok.evidenceRef).toBeUndefined();
+	});
+
 	it("Subscription 聚合形状：probe 资产 + opts + 编址（tsc 形状回归）", () => {
 		const sub: Subscription = {
 			subscriptionId: "sub-1",
 			entityRef: { type: "gitlab:mr", key: "external/https://gitlab.example/api/v4/projects/1/merge_requests/42" },
 			spec: {
 				check: "glab api projects/1/merge_requests/42",
+				source: "poll",
 				schedule: { type: "interval", every: "60s" },
 				failureThreshold: 1,
 				successThreshold: 1,

@@ -221,6 +221,11 @@ describe("ticket 02: op 契约形状与 #31 操作面表一致（断言 4）", (
     expect(protocol.decodeLine(protocol.encodeResult(4, res))).toMatchObject({ kind: "op-response", result: res });
   });
 
+  it("publish 首转换 from=null（domain Transitioned 正典对齐，#31）round-trip", () => {
+    const first: protocol.PublishResponse = { eventSeq: 1, from: null, to: "open" };
+    expect(protocol.decodeLine(protocol.encodeResult(6, first))).toMatchObject({ kind: "op-response", result: first });
+  });
+
   it("错误响应列可用选项（多命中模板报错形态）round-trip", () => {
     const err: protocol.RpcError = {
       code: -32602,
@@ -240,6 +245,13 @@ describe("ticket 02: op 契约形状与 #31 操作面表一致（断言 4）", (
     const res: protocol.OpResponse<"cancel"> = { cancelled: true };
     const sreq: protocol.SubscribeRequest = { url: "https://gl.corp/x", opts: { once: true } };
     expect([req, res, sreq].length).toBe(3);
+  });
+
+  it("opts 类型对齐：ttl number 毫秒 + ad-hoc schedule（interval.every number / cron.expr string）编译期成立", () => {
+    const ms: protocol.SubscribeOpts = { ttl: 60000 };
+    const adhoc: protocol.SubscribeOpts = { schedule: { type: "interval", every: 60000 } };
+    const cron: protocol.SubscribeOpts = { schedule: { type: "cron", expr: "*/5 * * * *", tz: "Asia/Shanghai" } };
+    expect([ms, adhoc, cron].length).toBe(3);
   });
 });
 

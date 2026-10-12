@@ -36,8 +36,8 @@ export type OpName = (typeof OP_NAMES)[number];
 /** JSON-RPC 请求 id。 */
 export type RequestId = string | number;
 
-/** 实体标识：source-system native identifier 字符串（CONTEXT.md EntityRef，agent 不铸造不解析）。 */
-export type EntityRef = string;
+/** 实体线引用单串（EntityRefId）= `${type}:${nativeKey}`（如 gitlab:mr:project/https://...；domain entityRefKeyOf 同形零映射，agent 不铸造不解析）。status op 保留 {type, key} 拆字段形态——wire 单串 ↔ 拆字段两形态，daemon 内归一。 */
+export type EntityRefId = string;
 
 /** schedule spec（#31 正典）：type 枚举即扩展接口。 */
 export type ScheduleSpec = { type: "interval"; every: string } | { type: "cron"; expr: string; tz?: string };
@@ -52,7 +52,7 @@ export type ValidateReport = {
   warnings: string[];
 };
 
-/** subscribe opts（#31 R1 A2 补全 + threshold 裁定）。opts 永不含 shell/schedule（模板形态）。 */
+/** subscribe opts（#31 R1 A2 补全 + threshold 裁定）。shell 永不含；schedule 仅 ad-hoc 形态（模板形态不含——B1：schedule 归模板资产）。 */
 export type SubscribeOpts = {
   /** on 谓词：状态值 / 状态集 / 命名转换（如 digest-changed）。 */
   on?: string | string[];
@@ -63,18 +63,20 @@ export type SubscribeOpts = {
   sessionId?: string;
   /** 两阶段订阅的 flip 判定（缺省沿用 check）。 */
   readyCheck?: string;
-  /** 到期自动关闭（I8）。 */
-  ttl?: string;
+  /** 到期自动关闭（I8）。单位毫秒（milliseconds）。 */
+  ttl?: number;
+  /** ad-hoc 形态探针节奏（缺省 60s interval 由 daemon 内置缺省承载）；every 单位毫秒（60000 = 60s）。 */
+  schedule?: { type: "interval"; every: number } | { type: "cron"; expr: string; tz?: string };
   failureThreshold?: number;
   successThreshold?: number;
 };
 
 /** subscribe：{entityRef | url | check, opts?} → 订阅成功形态。 */
-export type SubscribeRequest = { entityRef?: EntityRef; url?: string; check?: string; opts?: SubscribeOpts };
+export type SubscribeRequest = { entityRef?: EntityRefId; url?: string; check?: string; opts?: SubscribeOpts };
 /** subscribe 成功：{subscriptionId, entityRef, state, validate?, warnings?[]}（state 为 null 直到首个 verdict）。 */
 export type SubscribeOk = {
   subscriptionId: string;
-  entityRef: EntityRef;
+  entityRef: EntityRefId;
   state: string | null;
   validate?: ValidateReport;
   warnings?: string[];
@@ -88,9 +90,9 @@ export type CancelRequest = { subscriptionId: string };
 export type CancelResponse = { cancelled: true };
 
 /** query 读侧归一（吸收 states 查询 / listChildren / backlog / dead-letter 清单）。 */
-export type QueryRequest = { entityRef?: EntityRef; scope?: string; session?: string };
+export type QueryRequest = { entityRef?: EntityRefId; scope?: string; session?: string };
 export type QueryEntity = {
-  entityRef: EntityRef;
+  entityRef: EntityRefId;
   state: string | null;
   payloadSummary?: unknown;
   lastProbedAt?: string;
@@ -101,10 +103,11 @@ export type QueryResponse = { entities: QueryEntity[]; deadLetters: unknown[] };
 
 /** publish：agent 断言 {entityRef, transition:{to, contentIdentity?, payload?}} → {eventSeq, from, to}（非法 to 同步报错）。 */
 export type PublishRequest = {
-  entityRef: EntityRef;
+  entityRef: EntityRefId;
   transition: { to: string; contentIdentity?: string; payload?: unknown };
 };
-export type PublishResponse = { eventSeq: number; from: string; to: string };
+/** from 可空：首转换 from=null（domain Transitioned 正典，#31）。 */
+export type PublishResponse = { eventSeq: number; from: string | null; to: string };
 
 /** drain：兑现 parked，{sessionId?} → {drained, deadLetterSummary}（SESSION_START 自动 + 手动幂等）。 */
 export type DrainRequest = { sessionId?: string };
@@ -114,10 +117,10 @@ export type DrainResponse = { drained: number; deadLetterSummary: { count: numbe
 export type EvidenceRequest = { evidenceRef: string };
 export type EvidenceResponse = { content: string; truncated: boolean };
 
-/** status：登记处写入 {type, key, state?, payload?} → {entityRef, state, event?}（状态变更自动发事件）。 */
+/** status：登记处写入 {type, key, state?, payload?} → {entityRef, state, event?}（状态变更自动发事件）。{type, key} 为拆字段形态：wire entityRef 单串 ↔ 拆字段两形态并存，daemon 内归一。 */
 export type StatusRequest = { type: string; key: string; state?: string; payload?: unknown };
 /** event 形状归 domain（Transitioned 事件族），线层透传。 */
-export type StatusResponse = { entityRef: EntityRef; state: string | null; event?: unknown };
+export type StatusResponse = { entityRef: EntityRefId; state: string | null; event?: unknown };
 
 /** validate：check 体检 {check} → 判定器报告。 */
 export type ValidateRequest = { check: string };
