@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, it } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -455,23 +455,96 @@ describe("票 21 组 10——C1 启动自检 + 全局降级（推送即视为 ac
     expect(await a.verify(REF, "n-1")).toEqual({ verdict: "unknown", reason: "unreadable" });
   });
 
-  it("SQLite 后端自检：注册 session 的库不可读（文件被删）→ 降级；恢复后回正常", async () => {
+  it("SQLite 后端自检：库文件存在但损坏（非 SQLite 库）→ 降级；重建后回正常", async () => {
     const dbPath = tmpDbPath();
-    makeHarnessV2Db(dbPath, "s-1", [{ seq: 1, id: "e1", notificationId: "n-9", verdict: "passed" }]);
-    const fs = new FakeFs({ [SETTINGS_PATH]: SETTINGS_SQLITE });
+    writeFileSync(dbPath, "this is not a sqlite database at all........");
+    // fx 层存在性占位（probe 以 fx Fs 判缺文件；占位非 JSON 保持头采样 unknown）
+    const fs = new FakeFs({ [SETTINGS_PATH]: SETTINGS_SQLITE, [dbPath]: "sqlite-bytes" });
     const a = createTranscriptAdapter(fs, { settingsPath: SETTINGS_PATH });
     const ref = { sessionFile: dbPath, sessionId: "s-1" };
     await a.registerSession(ref);
-    expect((await a.selfCheck()).ok).toBe(true);
-
-    rmSync(dbPath);
-    expect((await a.selfCheck()).ok).toBe(false);
+    expect(await a.selfCheck()).toEqual({ ok: false, reason: expect.stringContaining(dbPath) });
     expect(a.isDegraded()).toBe(true);
     expect(await a.verify(ref, "n-9")).toEqual({ verdict: "unknown", reason: "degraded" });
 
+    rmSync(dbPath);
     makeHarnessV2Db(dbPath, "s-1", [{ seq: 1, id: "e1", notificationId: "n-9", verdict: "passed" }]);
     expect(await a.selfCheck()).toEqual({ ok: true });
     expect(a.isDegraded()).toBe(false);
     expect(await a.verify(ref, "n-9")).toEqual({ verdict: "passed", format: "v4" });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 票 20+21 评审修复——双后端判别与自检语义收口（ocr 1H3M：缺库不降级 / 缓存键定域 /
+// 同库多 session 注册 / 惰性判别 warning 透传）
+// ---------------------------------------------------------------------------
+
+describe("票 20+21 评审修复——双后端判别与自检语义收口（ocr 1H3M）", () => {
+  it("Finding 1：SQLite 库未落盘（新会话）≠ 故障——自检 ok 不降级，单条兜底照旧 unknown+unreadable", async () => {
+    const dbPath = tmpDbPath(); // 库文件从不创建（新会话未落盘常态）
+    const fs = new FakeFs({ [SETTINGS_PATH]: SETTINGS_SQLITE });
+    const a = createTranscriptAdapter(fs, { settingsPath: SETTINGS_PATH });
+    const ref = { sessionFile: dbPath, sessionId: "s-new" };
+    expect(await a.registerSession(ref)).toEqual({ backend: "sqlite" });
+    expect(await a.selfCheck()).toEqual({ ok: true });
+    expect(a.isDegraded()).toBe(false);
+    expect(await a.verify(ref, "n-9")).toEqual({ verdict: "unknown", reason: "unreadable" });
+  });
+
+  it("Finding 2：判别缓存键含 sessionId——无 ID 惰性判别（歧义→JSONL）不得污染同文件带 ID 的 SQLite 路由", async () => {
+    const dbPath = tmpDbPath();
+    makeHarnessV2Db(dbPath, "s-1", [{ seq: 1, id: "e1", notificationId: "n-9", verdict: "passed" }]);
+    const fs = new FakeFs({ [SETTINGS_PATH]: SETTINGS_SQLITE });
+    const a = createTranscriptAdapter(fs, { settingsPath: SETTINGS_PATH });
+    // 先无 ID：settings=sqlite 但 ref 缺 sessionId → 歧义 → JSONL 路径（文件未入 fx → unreadable）+ warning
+    expect(await a.verify({ sessionFile: dbPath }, "n-9")).toEqual({
+      verdict: "unknown",
+      reason: "unreadable",
+      warning: "ambiguous-backend",
+    });
+    // 后带 ID：必须重判走 SQLite 点查，不得复用无 ID 的 JSONL 缓存
+    expect(await a.verify({ sessionFile: dbPath, sessionId: "s-1" }, "n-9")).toEqual({ verdict: "passed", format: "v4" });
+  });
+
+  it("Finding 3：同库多 session 注册不去重覆盖——一坏一好 → 自检报故障且不清除降级，修复后恢复", async () => {
+    const dbPath = tmpDbPath();
+    makeHarnessV2Db(dbPath, "s-good", [{ seq: 1, id: "e-g", notificationId: "n-g", verdict: "passed" }]);
+    const db = new DatabaseSync(dbPath); // 同库第二 session：s-bad 带 corrupt payload（条目级故障）
+    db.prepare("INSERT INTO entries VALUES (?, ?, ?, NULL, 'message', NULL, ?)").run("s-bad", 1, "e-b", "{corrupt");
+    db.prepare("INSERT INTO branch_entries VALUES (?, 'B1', ?, ?, 'message', ?)").run("s-bad", "e-b", 1, "pi-events.notification");
+    db.close();
+    const fs = new FakeFs({ [SETTINGS_PATH]: SETTINGS_SQLITE });
+    const a = createTranscriptAdapter(fs, { settingsPath: SETTINGS_PATH });
+    await a.registerSession({ sessionFile: dbPath, sessionId: "s-bad" });
+    await a.registerSession({ sessionFile: dbPath, sessionId: "s-good" });
+    expect(await a.selfCheck()).toEqual({ ok: false, reason: expect.stringContaining(dbPath) });
+    expect(a.isDegraded()).toBe(true); // s-good 健康 ≠ 全局恢复：s-bad 故障仍在
+
+    const fix = new DatabaseSync(dbPath);
+    fix
+      .prepare("UPDATE entries SET payload = ? WHERE session_id = 's-bad'")
+      .run(
+        JSON.stringify({ role: "custom", customType: "pi-events.notification", content: "billboard: n-b", display: true, details: { notificationId: "n-b", verdict: "passed" } }),
+      );
+    fix.close();
+    expect(await a.selfCheck()).toEqual({ ok: true });
+    expect(a.isDegraded()).toBe(false);
+  });
+
+  it("Finding 4：惰性判别 warning 透传——未注册 ref 直接 verify → 结果带 ambiguous-backend warning；注册路径不重复", async () => {
+    const fs = new FakeFs({
+      [SETTINGS_PATH]: SETTINGS_SQLITE,
+      [REF.sessionFile]: `${V4_HEADER}\n${v4NotificationLine("n-1", "passed", "ev-1")}\n`,
+    });
+    const a = createTranscriptAdapter(fs, { settingsPath: SETTINGS_PATH });
+    expect(await a.verify(REF, "n-1")).toEqual({
+      verdict: "passed",
+      evidenceRef: "ev-1",
+      format: "v4",
+      warning: "ambiguous-backend",
+    });
+    expect(await a.registerSession(REF)).toEqual({ backend: "jsonl", warning: "ambiguous-backend" });
+    expect(await a.verify(REF, "n-1")).toEqual({ verdict: "passed", evidenceRef: "ev-1", format: "v4" });
   });
 });

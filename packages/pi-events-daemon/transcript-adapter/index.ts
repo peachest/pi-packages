@@ -30,8 +30,10 @@
  * ## 双后端分流（票 20，#31 双后端 MVP 裁定 2026-10-10：v3 JSONL 与 harness-v2 SQLite 并存）
  *
  * - 逐 session 后端判别 = pi settings 会话存储信号 + transcript 文件头采样；判别时点 =
- *   daemon 启动 / 新 session 注册（registerSession，结果按 sessionFile 缓存，重复注册重判；
- *   未注册 ref 的 verify 惰性判别一次并缓存，语义与注册路径一致）。
+ *   daemon 启动 / 新 session 注册（registerSession，结果按 (sessionFile, sessionId) 联合键缓存，
+ *   重复注册重判；sessionFile 单键不够——同库多 session 与有无 sessionId 的 ref 各自独立判别，
+ *   评审 Finding 2/3）；未注册 ref 的 verify 惰性判别一次并缓存，语义与注册路径一致，
+ *   判别歧义 warning 透传到该次 verify 结果（评审 Finding 4；注册路径由返回值承载）。
  * - 判别三路：①无 sqlite 信号 → JSONL 扫描（含文件未建的新会话常态，不算歧义）；
  *   ②settings 会话存储 = sqlite 且 ref 带 sessionId 且头采样非 JSONL → SQLite 点查
  *   （node:sqlite 只读，票 22 同款零依赖，sqlite-backend.ts；A 层 IO 禁令按名单生效，
@@ -46,7 +48,8 @@
  * ## C1 启动自检 + 双层降级（票 21，#31 C1 正典语义）
  *
  * - 全局降级（模式级）：selfCheck() 对全部已注册 session 的 transcript 后端做可读性自测
- *   （JSONL：可读+可扫描；SQLite：库可开+点查可执行；ENOENT = 新会话未落盘，不算故障）。
+ *   （JSONL：可读+可扫描；SQLite：库可开+点查可执行；ENOENT = 未落盘不算故障——JSONL 文件与
+ *   SQLite 库同语义，新会话常态，评审 Finding 1；库存在但非库/锁死 = 真故障）。
  *   失败 → 全局降级标志置位：推送即视为 accepted、不再 verify——verify 拒推 verdict
  *   （unknown + "degraded"），重复投递由 billboard notificationId 去重；降级原因经
  *   degradeReason() 携带 warning（doctor/reckon 暴露降级态的数据源）。恢复路径 = 再次
@@ -117,6 +120,8 @@ export interface VerifyResult {
   lane?: string;
   /** verdict 为 waiting/unknown 时的原因码。 */
   reason?: VerifyReason;
+  /** 未注册 ref 惰性判别的判别歧义 warning（评审 Finding 4：不静默吞；注册路径由 registerSession 返回值承载）。 */
+  warning?: "ambiguous-backend";
 }
 
 /** selfCheck 结果：ok=false 的 reason 为降级 warning 事件载荷。 */
@@ -347,54 +352,74 @@ function createTranscriptAdapter(fs: Fs, opts?: TranscriptAdapterOptions): Trans
     return { backend: "jsonl" }; // 无 sqlite 信号：JSONL 扫描最保守（头 unknown 含新会话未落盘常态，不算歧义）
   }
 
-  // 判别结果按 sessionFile 缓存（注册时点判别，票 20；重复注册重判）。
-  const backendByFile = new Map<string, BackendDetection>();
-  const refByFile = new Map<string, SessionRef>(); // 已注册 ref（selfCheck 自检面）
+  // 判别缓存与注册表按 (sessionFile, sessionId) 联合键（评审 Finding 2/3）：sessionFile 单键会把
+  // 无 ID ref 的歧义判别泼给带 ID ref，也会让同库第二 session 覆盖第一 ref（自检漏探）。
+  const backendByKey = new Map<string, BackendDetection>();
+  const refByKey = new Map<string, SessionRef>(); // 已注册 ref（selfCheck 自检面，同库多 session 全保留）
 
-  async function backendFor(sessionRef: SessionRef): Promise<BackendDetection> {
-    const cached = backendByFile.get(sessionRef.sessionFile);
-    if (cached !== undefined) return cached;
+  function refKey(ref: SessionRef): string {
+    return `${ref.sessionFile}\u0000${ref.sessionId ?? ""}`;
+  }
+
+  async function backendFor(sessionRef: SessionRef): Promise<{ detection: BackendDetection; lazy: boolean }> {
+    const key = refKey(sessionRef);
+    const cached = backendByKey.get(key);
+    if (cached !== undefined) return { detection: cached, lazy: false };
     const detection = await detectBackend(sessionRef); // 未注册 ref：惰性判别一次并缓存
-    backendByFile.set(sessionRef.sessionFile, detection);
-    return detection;
+    backendByKey.set(key, detection);
+    return { detection, lazy: true };
   }
 
   async function verifyInternal(sessionRef: SessionRef, notificationId: string): Promise<VerifyResult> {
-    const detection = await backendFor(sessionRef);
+    const { detection, lazy } = await backendFor(sessionRef);
+    const withLazyWarning = (result: VerifyResult): VerifyResult =>
+      lazy && detection.warning !== undefined ? { ...result, warning: detection.warning } : result;
     if (detection.backend === "sqlite") {
-      if (sessionRef.sessionId === undefined) return { verdict: "unknown", reason: "unreadable" }; // 注册判别已保证；防御不一致 ref
+      if (sessionRef.sessionId === undefined) return withLazyWarning({ verdict: "unknown", reason: "unreadable" }); // 注册判别已保证；防御不一致 ref
       let rows: SqliteEntryRow[];
       try {
         rows = queryNotificationEntries(sessionRef.sessionFile, sessionRef.sessionId, NOTIFICATION_CUSTOM_TYPE);
       } catch {
-        return { verdict: "unknown", reason: "unreadable" }; // 缺库/权限/锁 → unreadable（C1 正常返回值）
+        return withLazyWarning({ verdict: "unknown", reason: "unreadable" }); // 缺库/权限/锁 → unreadable（C1 正常返回值）
       }
       const outcome = scanSqlite(rows);
-      return "corrupt" in outcome ? { verdict: "unknown", reason: "corrupt-line" } : decide(outcome.hits, notificationId);
+      return withLazyWarning(
+        "corrupt" in outcome ? { verdict: "unknown", reason: "corrupt-line" } : decide(outcome.hits, notificationId),
+      );
     }
 
     let content: string;
     try {
       content = await fs.readFile(sessionRef.sessionFile);
     } catch {
-      return { verdict: "unknown", reason: "unreadable" };
+      return withLazyWarning({ verdict: "unknown", reason: "unreadable" });
     }
     const outcome = scanJsonl(content);
-    return "corrupt" in outcome ? { verdict: "unknown", reason: "corrupt-line" } : decide(outcome.hits, notificationId);
+    return withLazyWarning(
+      "corrupt" in outcome ? { verdict: "unknown", reason: "corrupt-line" } : decide(outcome.hits, notificationId),
+    );
   }
 
   let degraded = false;
   let degradeReasonValue: string | undefined;
 
-  /** 自检探针：单 session 后端可读性自测 → "ok" 或失败原因。ENOENT = 新会话未落盘，非后端故障。 */
+  /** 自检探针：单 session 后端可读性自测 → "ok" 或失败原因。ENOENT = 未落盘（JSONL 文件与 SQLite 库同语义），非后端故障。 */
   async function probe(sessionRef: SessionRef): Promise<"ok" | string> {
-    const detection = await backendFor(sessionRef);
+    const { detection } = await backendFor(sessionRef);
     if (detection.backend === "sqlite") {
       if (sessionRef.sessionId === undefined) return "session-unscoped";
       let rows: SqliteEntryRow[];
       try {
         rows = queryNotificationEntries(sessionRef.sessionFile, sessionRef.sessionId, NOTIFICATION_CUSTOM_TYPE);
       } catch (err) {
+        // SQLite 打开错误不分缺文件与坏库/无权限（同码 CANTOPEN）——fs 层 ENOENT 复判缺库：
+        // 缺库 = 未落盘（评审 Finding 1，非故障）；文件存在但坏库/锁死 = 真故障。
+        try {
+          await fs.readFile(sessionRef.sessionFile);
+        } catch (fsErr) {
+          if (isEnoent(fsErr)) return "ok";
+          return `unreadable(${errText(fsErr)})`;
+        }
         return `unreadable(${errText(err)})`;
       }
       const outcome = scanSqlite(rows);
@@ -428,13 +453,13 @@ function createTranscriptAdapter(fs: Fs, opts?: TranscriptAdapterOptions): Trans
 
     async registerSession(sessionRef: SessionRef): Promise<BackendDetection> {
       const detection = await detectBackend(sessionRef); // 注册时点重判（重复注册重判，票 20）
-      backendByFile.set(sessionRef.sessionFile, detection);
-      refByFile.set(sessionRef.sessionFile, sessionRef);
+      backendByKey.set(refKey(sessionRef), detection);
+      refByKey.set(refKey(sessionRef), sessionRef);
       return detection;
     },
 
     async selfCheck(): Promise<SelfCheckResult> {
-      for (const sessionRef of refByFile.values()) {
+      for (const sessionRef of refByKey.values()) {
         const failure = await probe(sessionRef);
         if (failure !== "ok") {
           degraded = true;
