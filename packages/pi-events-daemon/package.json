@@ -2,7 +2,7 @@
   "name": "pi-events-daemon",
   "version": "0.0.1",
   "private": true,
-  "description": "pi-events-daemon — 实体状态机事件底座（#31 正典实现，12 模块融合架构）；三契约 JSON Schema 随包发版（schemas/，#31 Schema 策略 R3）",
+  "description": "pi-events-daemon — 实体状态机事件底座（#31 正典实现，11+1 模块（extension 为独立包）融合架构）；三契约 JSON Schema 随包发版（schemas/，#31 Schema 策略 R3）",
   "type": "module",
   "main": "./index.ts",
   "scripts": {
