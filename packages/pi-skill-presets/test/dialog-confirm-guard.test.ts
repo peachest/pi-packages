@@ -39,9 +39,11 @@ function makeFakeDialogCtx(cwd: string, notifyLog: RecordedNotify[]): ExtensionC
   } as unknown as ExtensionCommandContext;
 }
 
-function makeFakePi(): ExtensionAPI {
+function makeFakePi(entries: { action: string; preset: string }[] = []): ExtensionAPI {
   return {
-    appendEntry: () => {},
+    appendEntry: (_type: string, entry: { action: string; preset: string }) => {
+      entries.push(entry);
+    },
   } as unknown as ExtensionAPI;
 }
 
@@ -91,15 +93,15 @@ describe("confirm-callback error guard (ocr R8M)", () => {
     d.handleInput("d");
     expect(d.mode).toBe("confirm");
 
-    // Enter → onConfirm no longer throws on the corrupt read (ocr R9M: the
-    // defaultPreset getter is guarded, so deletePreset reaches saveConfig,
-    // whose existing catch notifies the failure and rolls back). Either way
-    // the dialog must return to browse mode with an error notify.
+    // Enter → deletePreset is gated by the unreadable-config check (ocr R10M):
+    // it refuses before any default comparison or save attempt. The dialog
+    // still returns to browse mode with an error notify, and nothing was
+    // written or rolled back.
     d.handleInput("\r");
     expect(d.mode).toBe("browse");
     const error = notifyLog.find((n) => n.level === "error");
     expect(error).toBeTruthy();
-    expect(error!.message).toContain("Failed to save preset");
+    expect(error!.message).toContain("settings.json unreadable, cannot proceed");
   });
 
   it("corrupt settings after confirm guard: real render degrades, Enter keeps working (ocr R9M)", async () => {
@@ -116,6 +118,7 @@ describe("confirm-callback error guard (ocr R8M)", () => {
     const getDefaultPreset = () => readPresetsConfig(cwd).default;
 
     const notifyLog: RecordedNotify[] = [];
+    const entries: { action: string; preset: string }[] = [];
     let dialog: unknown;
     const ctx = makeFakeDialogCtx(cwd, notifyLog);
     const captureCtx = {
@@ -134,7 +137,7 @@ describe("confirm-callback error guard (ocr R8M)", () => {
         },
       },
     } as unknown as ExtensionCommandContext;
-    await showPresetDialog(captureCtx, makeFakePi(), new PresetState(), config, getDefaultPreset);
+    await showPresetDialog(captureCtx, makeFakePi(entries), new PresetState(), config, getDefaultPreset);
     const d = dialog as { handleInput: (data: string) => void; mode?: string; render: (width: number) => string[] };
     expect(d).toBeTruthy();
 
@@ -161,14 +164,28 @@ describe("confirm-callback error guard (ocr R8M)", () => {
     expect(d.mode).toBe("browse");
 
     // Enter-driven actions in the corrupted state: toggle goes through
-    // togglePreset (default comparison safe), 'd' + Enter through the
-    // deletePreset → saveConfig failure path. Neither may throw uncaught.
+    // togglePreset, 'd' + Enter through deletePreset — both are now gated by
+    // the unreadable-config check (ocr R10M) and refuse with an error notify.
+    // Zero state change, zero entry writes (ocr R10M guarantee).
     expect(() => d.handleInput("\r")).not.toThrow();
     expect(() => d.handleInput("d")).not.toThrow();
     expect(d.mode).toBe("confirm");
     expect(() => d.handleInput("\r")).not.toThrow();
     expect(d.mode).toBe("browse");
-    const saveError = notifyLog.find((n) => n.level === "error" && n.message.includes("Failed to save"));
-    expect(saveError).toBeTruthy();
+    const opError = notifyLog.find((n) => n.level === "error" && n.message.includes("settings.json unreadable, cannot proceed"));
+    expect(opError).toBeTruthy();
+    expect(entries).toEqual([]);
+
+    // Recovery (ocr R10L): restore settings.json and the same dialog instance
+    // renders the normal list again — the stale error line must be cleared by
+    // the successful read, not stuck for the rest of the session.
+    writeFileSync(
+      getGlobalSettingsPath(),
+      JSON.stringify({ presets: { definitions: { gone: { skills: ["one"] } } } }, null, 2),
+      "utf-8",
+    );
+    const recoveredFrame = d.render(60);
+    expect(recoveredFrame.join("\n")).not.toContain("settings.json unreadable");
+    expect(recoveredFrame.join("\n")).toContain("gone");
   });
 });

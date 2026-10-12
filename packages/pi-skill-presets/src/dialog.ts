@@ -216,16 +216,22 @@ class PresetDialog extends Container {
 
   // Live read (ocr N2): the default can change in settings.json while the
   // dialog is open; every default comparison uses the current value.
-  private get defaultPreset(): string | undefined {
-    // ocr R9M: a corrupted settings.json (legal JSON `null`) makes the live
-    // read throw. Guard here so the render path degrades to an error line
-    // instead of throwing — the confirm guard restores browse mode, but a
-    // throwing render would still strand the dialog.
+  // Tri-state (ocr R10M): a corrupted settings.json (legal JSON `null`) makes
+  // the live read throw, and a bare undefined would make operation paths
+  // mistake the always-on default for "no default configured" and proceed to
+  // load/offload it with an entry written. Callers must handle ok:false:
+  // render paths degrade to the error line, operation paths refuse to act.
+  private readDefaultPreset(): { ok: true; name?: string } | { ok: false; error: string } {
     try {
-      return this.getDefaultPreset();
+      const name = this.getDefaultPreset();
+      // ocr R10L: clear a stale error from an earlier corrupt read so the
+      // error line disappears once settings.json is readable again.
+      this.configError = null;
+      return { ok: true, name };
     } catch (err) {
-      this.configError = err instanceof Error ? err.message : String(err);
-      return undefined;
+      const error = err instanceof Error ? err.message : String(err);
+      this.configError = error;
+      return { ok: false, error };
     }
   }
 
@@ -328,9 +334,10 @@ class PresetDialog extends Container {
   private buildBrowseLines(lines: string[], innerWidth: number): void {
     // Read the default once up front: on corrupt settings this populates
     // configError and we render the error state instead of throwing (ocr R9M).
-    const defaultName = this.defaultPreset;
-    if (this.configError) {
-      lines.push(this.theme.fg("warning", `settings.json unreadable: ${this.configError}`));
+    const def = this.readDefaultPreset();
+    const defaultName = def.ok ? def.name : undefined;
+    if (!def.ok) {
+      lines.push(this.theme.fg("warning", `settings.json unreadable: ${def.error}`));
     }
     const names = this.presetNames;
     const maxRows = this.visibleListRows;
@@ -384,9 +391,10 @@ class PresetDialog extends Container {
     if (!name) return;
 
     // ocr R9M: same corrupt-settings guard as buildBrowseLines.
-    const defaultName = this.defaultPreset;
-    if (this.configError) {
-      lines.push(this.theme.fg("warning", `settings.json unreadable: ${this.configError}`));
+    const def = this.readDefaultPreset();
+    const defaultName = def.ok ? def.name : undefined;
+    if (!def.ok) {
+      lines.push(this.theme.fg("warning", `settings.json unreadable: ${def.error}`));
     }
     const isDefault = name === defaultName;
     if (isDefault) {
@@ -698,7 +706,15 @@ class PresetDialog extends Container {
   // --- Actions ---
 
   private togglePreset(name: string): void {
-    if (name === this.defaultPreset) {
+    // ocr R10M: refuse to act while settings.json is unreadable — treating
+    // the always-on default as "no default" would offload/load it and write
+    // a replay entry for a config we cannot even read.
+    const def = this.readDefaultPreset();
+    if (!def.ok) {
+      this.ctx.ui.notify("settings.json unreadable, cannot proceed", "error");
+      return;
+    }
+    if (name === def.name) {
       // Default preset is always-on: it is not a member of the explicit
       // active set, so it can be neither offloaded nor usefully re-loaded.
       this.ctx.ui.notify(`Preset "${name}" is the default preset and cannot be offloaded.`, "warning");
@@ -778,7 +794,13 @@ class PresetDialog extends Container {
   }
 
   private deletePreset(presetName: string): void {
-    if (presetName === this.defaultPreset) {
+    // ocr R10M: same unreadable-config gate as togglePreset.
+    const def = this.readDefaultPreset();
+    if (!def.ok) {
+      this.ctx.ui.notify("settings.json unreadable, cannot proceed", "error");
+      return;
+    }
+    if (presetName === def.name) {
       // Default preset is protected (#63): offload is rejected, so is delete.
       this.ctx.ui.notify(
         `Preset "${presetName}" is the default preset and cannot be deleted.`,
