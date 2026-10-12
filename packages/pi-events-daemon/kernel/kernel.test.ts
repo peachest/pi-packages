@@ -112,6 +112,48 @@ describe("组 1：kernel.transition 唯一写路径——校验（domain）→ �
   });
 });
 
+describe("组 3：B7 状态改名 = 显式迁移 TransitionEvent（唯一写路径，禁原地改名）", () => {
+  it("迁移事件同族：from 旧名 → to 新名，经唯一写路径（确定性 event id + outbox 1:1）", () => {
+    const store = createMemoryStore();
+    seedEntity(store, "alpha");
+    const kernel = new Kernel(store, RENAME_STATES, 0);
+    expect(kernel.migrateState(REF, { from: "alpha", to: "beta" }, at(1))).toEqual({
+      eventSeq: 1,
+      from: "alpha",
+      to: "beta",
+    });
+    expect(store.getEntity(REF.type, REF.key)?.state).toBe("beta");
+    expect(store.outboxBatch(10)).toEqual([{ notificationId: deterministicEventId(REF, 1), eventSeq: 1 }]);
+  });
+
+  it("实体不在旧名态 → null（幂等不产第二事件，零残留）", () => {
+    const store = createMemoryStore();
+    seedEntity(store, "beta"); // 已在新名态
+    const kernel = new Kernel(store, RENAME_STATES, 0);
+    expect(kernel.migrateState(REF, { from: "alpha", to: "beta" }, at(1))).toBeNull();
+    expect(store.outboxBatch(10)).toHaveLength(0);
+  });
+
+  it("新名不在封闭集 → I3 同步拒绝；迁移瞬时故障耗尽 → dead-letter + I1 零残留", () => {
+    const store = createMemoryStore();
+    seedEntity(store, "alpha");
+    const kernel = new Kernel(store, RENAME_STATES, 0);
+    expect(() => kernel.migrateState(REF, { from: "alpha", to: "gamma" }, at(1))).toThrow(
+      /outside profile closed set/,
+    );
+    // 持久故障（重试不可恢复）→ 耗尽 3 次总尝试 → dead-letter；一次性 X1 停点会被重试吸收
+    const down: Store = Object.assign(Object.create(store), {
+      tx: () => {
+        throw new Error("store unavailable");
+      },
+    });
+    const broken = new Kernel(down, RENAME_STATES, 0);
+    expect(() => broken.migrateState(REF, { from: "alpha", to: "beta" }, at(2))).toThrow(/dead-letter/);
+    expect(store.getEntity(REF.type, REF.key)?.state).toBe("alpha");
+    expect(store.outboxBatch(10)).toHaveLength(0);
+  });
+});
+
 describe("组 2：Intent 串行消费——崩溃重放一致（顺序约束）+ 有界重试 + corruption", () => {
   it("顺序约束：N intent → 中断 → 全量重放 → 状态一致（不重新编号）", () => {
     const intents = planChain(4);
