@@ -8,7 +8,11 @@
  *     确认行，不是 op（#31 两段式 ack：Ok = accepted）。
  *
  * 畸形帧（空行/坏 JSON/未知 op/超长行）一律跳过返回 null，绝不抛错。
- * 零依赖：本模块不引入任何其他模块或第三方库（测试有源码断言，depcruise eda-leaf-zero-dep-protocol）。
+ *
+ * 本模块同时拥有 D1a 最小校验器（#31 Schema 策略 R2-final：schema 子集
+ * required/enum/type/正则——profile 注册表校验所需；完整 JSON Schema 校验归 extension 侧）。
+ * 零依赖：本模块不引入任何其他模块或第三方库（测试有源码断言，depcruise eda-leaf-zero-dep-protocol；
+ * 故全部代码单文件，不拆子文件）。
  */
 
 // ---------------------------------------------------------------------------
@@ -280,4 +284,118 @@ function isRequestId(v: unknown): v is RequestId {
 
 function isOpName(method: string): method is OpName {
   return (OP_NAMES as readonly string[]).includes(method);
+}
+
+// ---------------------------------------------------------------------------
+// D1a 最小校验器：schema 子集 required/enum/type/正则（#31 Schema 策略 R2-final）
+// ---------------------------------------------------------------------------
+
+/** 校验器认识的 JSON Schema 基本类型名。 */
+export type MiniType = "object" | "array" | "string" | "number" | "integer" | "boolean" | "null";
+
+/**
+ * 最小校验器 schema 子集：type/enum/pattern/properties/required/items。
+ * schema 节点可直接取自 schemas/ 目录的完整 JSON Schema 文档——子集外关键词
+ * （minimum、minLength、title…）按子集语义忽略，不报错（完整校验归 extension 侧）。
+ */
+export type MiniSchema = {
+  type?: MiniType | MiniType[];
+  /** 标量枚举（=== 相等）。错误信息列可用选项（#31 错误形态）。 */
+  enum?: (string | number | boolean | null)[];
+  /** 正则（ECMAScript 语法，对 string 值做未锚定 search，同 JSON Schema pattern 语义）。 */
+  pattern?: string;
+  properties?: Record<string, MiniSchema>;
+  required?: string[];
+  items?: MiniSchema;
+};
+
+/** 单次未命中：属性路径（点号，根为 ""，数组下标 [n]）+ 原因。 */
+export type MiniIssue = { path: string; message: string };
+
+/**
+ * D1a 最小校验器：按 schema 子集校验 value，命中返回 issue 列表，全部放行返回 []。
+ * 绝不抛错（非法正则按 issue 上报）——与帧解码同一“跳过不崩”精神。
+ */
+export function validateValue(schema: MiniSchema, value: unknown): MiniIssue[] {
+  const issues: MiniIssue[] = [];
+  checkNode(schema, value, "", issues);
+  return issues;
+}
+
+function checkNode(schema: unknown, value: unknown, path: string, out: MiniIssue[]): void {
+  // 非 object 节点 = 无约束（含垃圾输入，never-throw）
+  if (!isRecord(schema)) return;
+
+  const type = schema.type;
+  if (type !== undefined) {
+    const wanted = Array.isArray(type) ? type : [type];
+    if (!wanted.some((t) => typeof t === "string" && typeMatches(t as MiniType, value))) {
+      const names = wanted.map((t) => (typeof t === "string" ? JSON.stringify(t) : String(t))).join("|");
+      out.push({ path, message: `期望类型 ${names}，实际 ${jsonTypeName(value)}` });
+    }
+  }
+
+  const en = schema.enum;
+  if (Array.isArray(en) && !en.some((e) => e === value)) {
+    out.push({ path, message: `值不在枚举 [${en.map(String).join(", ")}] 内` });
+  }
+
+  if (typeof schema.pattern === "string" && typeof value === "string") {
+    let re: RegExp | null = null;
+    try {
+      re = new RegExp(schema.pattern);
+    } catch {
+      // 非法正则按 issue 上报，不抛
+    }
+    if (!re) out.push({ path, message: `schema 正则非法：/${schema.pattern}/` });
+    else if (!re.test(value)) out.push({ path, message: `不匹配正则 /${schema.pattern}/` });
+  }
+
+  if (isRecord(value)) {
+    if (Array.isArray(schema.required)) {
+      for (const key of schema.required) {
+        if (typeof key === "string" && !(key in value)) {
+          out.push({ path, message: `缺少必填字段 ${key}` });
+        }
+      }
+    }
+    if (isRecord(schema.properties)) {
+      for (const [key, sub] of Object.entries(schema.properties)) {
+        if (key in value) checkNode(sub, value[key], childPath(path, key), out);
+      }
+    }
+  }
+
+  if (Array.isArray(value) && schema.items !== undefined) {
+    value.forEach((el, i) => checkNode(schema.items, el, `${path}[${i}]`, out));
+  }
+}
+
+function typeMatches(t: MiniType, v: unknown): boolean {
+  switch (t) {
+    case "object":
+      return isRecord(v);
+    case "array":
+      return Array.isArray(v);
+    case "string":
+      return typeof v === "string";
+    case "number":
+      return typeof v === "number" && Number.isFinite(v);
+    case "integer":
+      return typeof v === "number" && Number.isInteger(v);
+    case "boolean":
+      return typeof v === "boolean";
+    case "null":
+      return v === null;
+  }
+}
+
+function jsonTypeName(v: unknown): string {
+  if (v === null) return "null";
+  if (Array.isArray(v)) return "array";
+  return typeof v;
+}
+
+function childPath(path: string, key: string): string {
+  return path ? `${path}.${key}` : key;
 }

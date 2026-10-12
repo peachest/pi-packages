@@ -76,10 +76,12 @@ describe("ticket 04: required 命中与放行", () => {
     expect(validateValue(schema, { entityRef: "project/x", transition: { to: "done" } })).toEqual([]);
   });
 
-  it("命中：缺必填字段（含嵌套路径）", () => {
-    expect(paths(validateValue(schema, { transition: { to: "done" } }))).toEqual(["entityRef"]);
-    expect(paths(validateValue(schema, { entityRef: "project/x", transition: {} }))).toEqual([
-      "transition.to",
+  it("命中：缺必填字段 issue 落在宿主对象路径，消息含字段名（JSON Schema 语义）", () => {
+    expect(validateValue(schema, { transition: { to: "done" } })).toEqual([
+      { path: "", message: "缺少必填字段 entityRef" },
+    ]);
+    expect(validateValue(schema, { entityRef: "project/x", transition: {} })).toEqual([
+      { path: "transition", message: "缺少必填字段 to" },
     ]);
   });
 
@@ -152,7 +154,12 @@ describe("ticket 04: 综合结构与 never-throw", () => {
       schedule: { every: 60 },
     };
     const issues = validateValue(profileSchema, profile);
-    expect(paths(issues)).toEqual(["entityType", "key", "name", "schedule", "schedule.type", "states[0]"]);
+    expect(paths(issues)).toEqual(["", "", "entityType", "schedule", "schedule.every", "states[1]"]);
+    const missing = issues
+      .filter((i) => i.message.startsWith("缺少必填字段"))
+      .map((i) => i.message)
+      .sort();
+    expect(missing).toEqual(["缺少必填字段 key", "缺少必填字段 name", "缺少必填字段 type"]);
   });
 
   it("子集语义：未知关键词忽略（完整校验归 extension 侧）", () => {
