@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { FakeClock, FakeExec, FakePusher } from "./index.ts";
+import { FakeClock, FakeExec, FakeFs, FakePusher } from "./index.ts";
+import type { Clock, Exec, Fs, Pusher } from "./index.ts";
 
 describe("票 13 FakeClock：manual drive（fx.md 钉死契约：手动推进、到期定时器按序触发后返回）", () => {
   it("step 推进 now；到期定时器按（到期时刻, 调度序）同步触发后返回", () => {
@@ -109,5 +110,38 @@ describe("票 13 FakePusher：push 记录 + 注入投递失败（fx.md 钉死：
     await expect(pusher.push("m2")).rejects.toThrowError("EPIPE");
     await pusher.push("m3");
     expect(pusher.pushed).toEqual(["m3"]);
+  });
+});
+
+describe("票 13 FakeFs：内存树 + 撕裂尾行 fixture（fx.md 钉死契约）", () => {
+  it("readFile 返回内存树内容；树可变（重写后新读生效）", async () => {
+    const ffs = new FakeFs({ "/t/a.jsonl": '{"v":3}\n' });
+    await expect(ffs.readFile("/t/a.jsonl")).resolves.toBe('{"v":3}\n');
+    ffs.files.set("/t/a.jsonl", '{"v":3}\n{"v":4}\n');
+    await expect(ffs.readFile("/t/a.jsonl")).resolves.toBe('{"v":3}\n{"v":4}\n');
+  });
+
+  it("缺失路径 reject code=ENOENT（与 NodeFs 同形，ENOENT 等分类归调用方）", async () => {
+    const ffs = new FakeFs();
+    await expect(ffs.readFile("/t/missing.jsonl")).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("撕裂尾行 fixture：无尾换行的截断行原样往返（transcript-adapter 撕裂场景载体）", async () => {
+    const torn = '{"v":3}\n{"v":4'; // 末条撕裂：截断且无换行
+    const ffs = new FakeFs({ "/t/b.jsonl": torn });
+    await expect(ffs.readFile("/t/b.jsonl")).resolves.toBe(torn);
+  });
+});
+
+describe("票 13 四 fake 经公共面注入各自端口（每端口恰好两 adapter：real + fake）", () => {
+  it("四 fake 满足端口类型且经 fx 入口可用", () => {
+    const clock: Clock = new FakeClock();
+    const exec: Exec = new FakeExec();
+    const pusher: Pusher = new FakePusher();
+    const ffs: Fs = new FakeFs();
+    void clock;
+    void exec;
+    void pusher;
+    void ffs;
   });
 });

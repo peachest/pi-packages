@@ -71,3 +71,20 @@ export class FakePusher implements Pusher {
     this.pushed.push(line);
   }
 }
+
+/** FakeFs——内存树（fx.md 钉死：内存树 + 撕裂尾行 fixture）：files 即 fixture 写入口，撕裂尾行 = 无尾换行的截断字符串。 */
+export class FakeFs implements Fs {
+  readonly files: Map<string, string>;
+
+  constructor(files?: Record<string, string>) {
+    this.files = new Map(Object.entries(files ?? {}));
+  }
+
+  readFile(path: string): Promise<string> {
+    const content = this.files.get(path);
+    // ENOENT 同形 NodeFs（调用方按 error.code 分类）；内容原样返回，撕裂尾行由内容本身承载
+    return content === undefined
+      ? Promise.reject(Object.assign(new Error(`ENOENT: no such file or directory, open '${path}'`), { code: "ENOENT" }))
+      : Promise.resolve(content);
+  }
+}
