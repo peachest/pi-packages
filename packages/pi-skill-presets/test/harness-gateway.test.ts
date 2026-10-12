@@ -65,14 +65,29 @@ describe("pickGatewayFromRaw structure defense (ocr N1)", () => {
     });
   });
 
-  it("hosting pick without a usable baseUrl does not silently fall back", () => {
+  it("hosting pick with an unusable baseUrl falls back to a valid provider (ocr R4M1)", () => {
     const raw = {
       providers: {
         host: { models: [{ id: PINNED }] },
         fb: { baseUrl: "http://fallback.example" },
       },
     };
-    expect(pickGatewayFromRaw(raw, PINNED)).toBeUndefined();
+    expect(pickGatewayFromRaw(raw, PINNED)).toEqual({
+      baseUrl: "http://fallback.example",
+    });
+  });
+
+  it("invalid-URL hoster listed first is skipped for a later valid provider (ocr R4M1)", () => {
+    const raw = {
+      providers: {
+        host: { baseUrl: "httpx://bad", models: [{ id: PINNED }] },
+        good: { baseUrl: "https://good.example", apiKey: "k" },
+      },
+    };
+    expect(pickGatewayFromRaw(raw, PINNED)).toEqual({
+      baseUrl: "https://good.example",
+      apiKey: "k",
+    });
   });
 
   it("skips providers with invalid baseUrl and picks the next valid one (ocr R1)", () => {

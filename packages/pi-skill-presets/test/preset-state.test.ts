@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { PresetState } from "../index.ts";
+import { PresetState, PRESET_OP_CUSTOM_TYPE, rebuildActiveSetFromEntries } from "../index.ts";
 import type { PresetsConfig, PresetOpEntry } from "../index.ts";
 
 describe("PresetState", () => {
@@ -158,5 +158,35 @@ describe("PresetState.resolveSkills", () => {
 
     const result = state.resolveSkills(config);
     expect(result.skillNames).not.toContain("wayfinder");
+  });
+});
+
+describe("rebuildActiveSetFromEntries — compaction-safe replay (ocr R4H)", () => {
+  it("replays preset-ops recorded before a compaction from the full branch", async () => {
+    const { SessionManager } = await import("@earendil-works/pi-coding-agent");
+    const sm = SessionManager.inMemory(process.cwd());
+
+    const first = sm.appendCustomEntry(PRESET_OP_CUSTOM_TYPE, {
+      action: "load",
+      preset: "early",
+      timestamp: Date.now(),
+    } satisfies PresetOpEntry);
+    const second = sm.appendCustomEntry(PRESET_OP_CUSTOM_TYPE, {
+      action: "load",
+      preset: "late",
+      timestamp: Date.now(),
+    } satisfies PresetOpEntry);
+
+    // Compaction keeps entries from `second` onward; buildContextEntries()
+    // therefore drops the first preset-op (correct for LLM context, wrong for replay).
+    sm.appendCompaction("summary", second, 1234);
+
+    expect(sm.buildContextEntries().some((e) => e.id === first)).toBe(false);
+
+    // The extension replays from getBranch() (full history, no truncation).
+    const state = new PresetState();
+    rebuildActiveSetFromEntries(sm.getBranch(), state);
+    expect(state.has("early")).toBe(true);
+    expect(state.has("late")).toBe(true);
   });
 });

@@ -159,8 +159,8 @@ class PresetDialog extends Container {
   private readonly done: (result: void) => void;
   private readonly state: PresetState;
   private config: PresetsConfig;
-  /** Definitions as they were when the dialog opened — the delta base for merging saves. */
-  private readonly originalDefinitions: PresetsConfig["definitions"];
+  /** Delta base for merging saves — refreshed to the merged result after each save (ocr R4M2). */
+  private originalDefinitions: PresetsConfig["definitions"];
   private readonly getDefaultPreset: () => string | undefined;
   private readonly consumeReplayWarning?: (names: string[]) => void;
   private readonly cwd: string;
@@ -238,6 +238,11 @@ class PresetDialog extends Container {
     }
     fresh.definitions = defs;
     this.config = fresh;
+    // Refresh the delta baseline to the merged result (ocr R4M2/M3): later
+    // saves only merge edits not yet on disk, so external changes made after
+    // this save survive, and a preset created-then-deleted in this dialog is
+    // actually deleted (it is now part of the baseline).
+    this.originalDefinitions = structuredClone(fresh.definitions);
     writePresetsConfig(fresh, "global");
   }
 

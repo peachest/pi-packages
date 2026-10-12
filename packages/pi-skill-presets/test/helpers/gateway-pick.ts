@@ -14,8 +14,9 @@ export interface GatewayInfo {
 
 /**
  * Pick a gateway from a parsed models.json value.
- * Preference: the provider hosting `pinnedModelId`, else the first provider
- * with an http(s) baseUrl. Returns undefined when nothing usable exists.
+ * Preference (ocr R4M1): among providers with a valid http(s) baseUrl, the
+ * one hosting `pinnedModelId`, else the first valid provider. Returns
+ * undefined when no provider with a usable baseUrl exists.
  */
 export function pickGatewayFromRaw(
   raw: unknown,
@@ -32,7 +33,15 @@ export function pickGatewayFromRaw(
     (p): p is Record<string, unknown> =>
       p !== null && typeof p === "object" && !Array.isArray(p),
   );
-  const hosting = usable.find((p) => {
+  // URL-validity first (ocr R4M1): a hosting provider with an unusable
+  // baseUrl must not shadow a valid fallback — filter to providers that can
+  // actually be dialed, then apply the hosting-first preference in that set.
+  const hasValidUrl = (
+    p: Record<string, unknown>,
+  ): p is Record<string, unknown> & { baseUrl: string } =>
+    isValidHttpUrl(p.baseUrl);
+  const valid = usable.filter(hasValidUrl);
+  const hosting = valid.find((p) => {
     const models = p.models;
     if (!Array.isArray(models)) return false;
     return models.some(
@@ -43,10 +52,8 @@ export function pickGatewayFromRaw(
         (m as { id: string }).id === pinnedModelId,
     );
   });
-  // Hosting takes priority even when it lacks a usable baseUrl (original
-  // semantics): a hosting pick without http baseUrl yields undefined.
-  const picked = hosting ?? usable.find((p) => isValidHttpUrl(p.baseUrl));
-  if (!picked || !isValidHttpUrl(picked.baseUrl)) return undefined;
+  const picked = hosting ?? valid[0];
+  if (!picked) return undefined;
   const apiKey = picked.apiKey;
   return { baseUrl: picked.baseUrl, ...(typeof apiKey === "string" ? { apiKey } : {}) };
 }

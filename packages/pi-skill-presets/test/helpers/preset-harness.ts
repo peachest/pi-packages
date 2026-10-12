@@ -67,7 +67,7 @@ async function gatewayReachable(): Promise<boolean> {
     if (gateway.apiKey && !gateway.apiKey.startsWith("${")) {
       headers.Authorization = `Bearer ${gateway.apiKey}`;
     }
-    const res = await fetch(`${gateway.baseUrl}/models`, {
+    await fetch(`${gateway.baseUrl}/models`, {
       headers,
       signal: AbortSignal.timeout(3000),
     });

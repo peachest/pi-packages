@@ -201,4 +201,93 @@ describe("dialog load bad-reference warning (ocr-F3)", () => {
       else process.env.PI_CODING_AGENT_DIR = prevAgentDir;
     }
   });
+
+  it("create-then-delete in one dialog leaves the preset absent from config (ocr R4M3)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "preset-dialog-r4m3-"));
+    const prevAgentDir = process.env.PI_CODING_AGENT_DIR;
+    process.env.PI_CODING_AGENT_DIR = dir;
+    try {
+      const settingsPath = join(dir, "settings.json");
+      writeFileSync(
+        settingsPath,
+        JSON.stringify({ presets: { definitions: { a: { skills: ["x"] } } } }),
+      );
+
+      const state = new PresetState();
+      const { pi } = makeFakePi();
+      const fake = makeFakeDialogCtx([], dir);
+      await showPresetDialog(fake.ctx, pi, state, {
+        default: undefined,
+        definitions: { a: { skills: ["x"] } },
+      });
+      const dialog = fake.capture() as {
+        nameInput: { setValue: (v: string) => void };
+        confirmNewPreset: () => void;
+        deletePreset: (name: string) => void;
+      };
+
+      dialog.nameInput.setValue("c");
+      dialog.confirmNewPreset(); // save #1: c lands on disk and in the delta baseline
+      dialog.deletePreset("c"); // save #2: baseline now contains c → deletion applies
+
+      const saved = JSON.parse(readFileSync(settingsPath, "utf-8")) as {
+        presets: { definitions: Record<string, { skills: string[] }> };
+      };
+      expect(saved.presets.definitions.c).toBeUndefined();
+      expect(saved.presets.definitions.a).toEqual({ skills: ["x"] });
+    } finally {
+      if (prevAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = prevAgentDir;
+    }
+  });
+
+  it("second save only merges edits not yet on disk; external changes survive (ocr R4M2)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "preset-dialog-r4m2-"));
+    const prevAgentDir = process.env.PI_CODING_AGENT_DIR;
+    process.env.PI_CODING_AGENT_DIR = dir;
+    try {
+      const settingsPath = join(dir, "settings.json");
+      writeFileSync(
+        settingsPath,
+        JSON.stringify({
+          presets: { definitions: { a: { skills: ["x"] }, b: { skills: ["y"] } } },
+        }),
+      );
+
+      const state = new PresetState();
+      const { pi } = makeFakePi();
+      const fake = makeFakeDialogCtx([], dir);
+      await showPresetDialog(fake.ctx, pi, state, {
+        default: undefined,
+        definitions: { a: { skills: ["x"] }, b: { skills: ["y"] } },
+      });
+      const dialog = fake.capture() as {
+        removeSkillFromPreset: (name: string, index: number) => void;
+        addSkillToPreset: (name: string, skill: string) => void;
+      };
+
+      dialog.removeSkillFromPreset("a", 0); // save #1: a → { skills: [] }
+
+      // External change to A while the dialog is still open.
+      writeFileSync(
+        settingsPath,
+        JSON.stringify({
+          presets: { definitions: { a: { skills: ["external"] }, b: { skills: ["y"] } } },
+        }),
+      );
+
+      dialog.addSkillToPreset("b", "z"); // save #2: only B is edited in the dialog
+
+      const saved = JSON.parse(readFileSync(settingsPath, "utf-8")) as {
+        presets: { definitions: Record<string, { skills: string[] }> };
+      };
+      // A was already persisted in save #1; the stale dialog value must not be
+      // replayed over the external change.
+      expect(saved.presets.definitions.a).toEqual({ skills: ["external"] });
+      expect(saved.presets.definitions.b).toEqual({ skills: ["y", "z"] });
+    } finally {
+      if (prevAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = prevAgentDir;
+    }
+  });
 });
