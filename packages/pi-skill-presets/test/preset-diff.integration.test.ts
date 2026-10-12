@@ -3,149 +3,35 @@
  * 最小 skills section patch（prefix cache 不破坏）。
  *
  * Seam（#62 预定）：createAgentSession + extensionFactories + 自定义 agentDir +
- * 测试技能目录；断言谓词 = sessionManager.getEntries() 中的 system sections 消息。
+ * 测试技能目录；断言谓词 = sessionManager.buildContextEntries() 中的 system
+ * sections 消息（path-aware，#64）。
  *
- * 模型 pin：glm53-flash-internal。若 modelRuntime.getAvailable() 找不到该 id，
- * 回退到第一个可用模型（文件顶部注释即此说明；回退后断言只依赖 fixture 技能，
- * 不依赖具体模型）。
+ * 模型 pin：glm53-flash-internal，严格 pin（#65 B4）——网关不可达或
+ * getAvailable() 找不到该 id 时整组 skip，不回退 available[0]。
  *
- * 网关预检：models.json 中托管 pin 模型的 provider baseUrl 3s 内不可达时整组 skip。
+ * 网关预检与 session factory 见 test/helpers/preset-harness.ts。
  */
 
-import { afterAll, describe, expect, it } from "vitest";
-import { homedir } from "node:os";
+import { afterAll } from "vitest";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import {
-  DefaultResourceLoader,
-  ModelRuntime,
-  SessionManager,
-  createAgentSession,
-} from "@earendil-works/pi-coding-agent";
+import { expect, it } from "vitest";
 import type { AgentSession, SessionEntry } from "@earendil-works/pi-coding-agent";
-import type { Model } from "@earendil-works/pi-ai";
-import type { Api } from "@earendil-works/pi-ai";
-import skillPresetsExtension from "../index.ts";
+import {
+  PINNED_MODEL_ID,
+  PROMPT,
+  cleanupMadeDirs,
+  createTestSession,
+  gatewayUp,
+  makeSkill,
+  makeTempDir,
+  suite,
+} from "./helpers/preset-harness.ts";
 
-const PINNED_MODEL_ID = "glm53-flash-internal";
-const PROMPT = "Reply with exactly one word: ok";
-
-// Capture the real agent dir before tests override PI_CODING_AGENT_DIR.
-const REAL_AGENT_DIR =
-  process.env.PI_CODING_AGENT_DIR?.trim() || join(homedir(), ".pi", "agent");
-
-// ---------------------------------------------------------------------------
-// Gateway precheck (3s timeout) against the provider hosting the pinned model.
-// ---------------------------------------------------------------------------
-
-function findGatewayProvider(): { baseUrl: string; apiKey?: string } | undefined {
-  let raw: unknown;
-  try {
-    raw = JSON.parse(readFileSync(join(REAL_AGENT_DIR, "models.json"), "utf-8"));
-  } catch {
-    return undefined;
-  }
-  const providers = Object.values(
-    (raw as { providers?: Record<string, { baseUrl?: string; apiKey?: string; models?: Array<{ id?: string }> }> })
-      .providers ?? {},
-  );
-  const hosting = providers.find((p) =>
-    (p.models ?? []).some((m) => m.id === PINNED_MODEL_ID),
-  );
-  const fallback = providers.find(
-    (p) => typeof p.baseUrl === "string" && p.baseUrl.startsWith("http"),
-  );
-  const picked = hosting ?? fallback;
-  if (!picked?.baseUrl) return undefined;
-  return { baseUrl: picked.baseUrl, apiKey: picked.apiKey };
-}
-
-const gateway = findGatewayProvider();
-
-async function gatewayReachable(): Promise<boolean> {
-  if (!gateway) return false;
-  try {
-    const headers: Record<string, string> = {};
-    if (gateway.apiKey && !gateway.apiKey.startsWith("${")) {
-      headers.Authorization = `Bearer ${gateway.apiKey}`;
-    }
-    const res = await fetch(`${gateway.baseUrl}/models`, {
-      headers,
-      signal: AbortSignal.timeout(3000),
-    });
-    return res.ok;
-  } catch {
-    return false;
-  }
-}
-
-const gatewayUp = await gatewayReachable();
-
-// ---------------------------------------------------------------------------
-// Fixtures + session factory
-// ---------------------------------------------------------------------------
-
-const madeDirs: string[] = [];
-
-function makeTempDir(prefix: string): string {
-  const dir = mkdtempSync(join(tmpdir(), prefix));
-  madeDirs.push(dir);
-  return dir;
-}
-
-/** Write a minimal skill fixture: <root>/<name>/SKILL.md with name/description frontmatter. */
-function makeSkill(root: string, name: string, description: string): void {
-  mkdirSync(join(root, name), { recursive: true });
-  writeFileSync(
-    join(root, name, "SKILL.md"),
-    `---\nname: ${name}\ndescription: ${description}\n---\n\n${description}\n`,
-  );
-}
-
-interface SessionOpts {
-  settings: Record<string, unknown>;
-  /** Extra skills dir passed as additionalSkillPaths (bypasses settings `-` filtering). */
-  skillRoot?: string;
-  /** Skills placed in <agentDir>/skills for auto-discovery (settings `-` applies). */
-  agentDirSkills?: boolean;
-}
-
-async function createTestSession(opts: SessionOpts): Promise<AgentSession> {
-  const agentDir = makeTempDir("t62-agent-");
-  const cwd = makeTempDir("t62-cwd-");
-  writeFileSync(join(agentDir, "settings.json"), JSON.stringify(opts.settings, null, 2));
-  if (opts.agentDirSkills) {
-    const skillsDir = join(agentDir, "skills");
-    mkdirSync(skillsDir, { recursive: true });
-    makeSkill(skillsDir, "alpha", "fixture skill one");
-    makeSkill(skillsDir, "beta", "fixture skill two");
-    makeSkill(skillsDir, "gamma", "fixture skill three");
-  }
-  // The extension reads presets via PI_CODING_AGENT_DIR; align the whole stack.
-  process.env.PI_CODING_AGENT_DIR = agentDir;
-
-  const loader = new DefaultResourceLoader({
-    cwd,
-    agentDir,
-    additionalSkillPaths: opts.skillRoot ? [opts.skillRoot] : [],
-    extensionFactories: [{ name: "skill-presets", factory: skillPresetsExtension }],
-  });
-  await loader.reload();
-
-  const { session } = await createAgentSession({
-    cwd,
-    modelRuntime,
-    model,
-    tools: ["read"],
-    resourceLoader: loader,
-    sessionManager: SessionManager.inMemory(cwd),
-  });
-  // SDK mode: session_start (and command context) only fires via bindExtensions,
-  // which the TUI normally calls. Empty bindings use pi's no-op UI context.
-  await session.bindExtensions({});
-  return session;
-}
+afterAll(() => {
+  delete process.env.PI_CODING_AGENT_DIR;
+  cleanupMadeDirs();
+});
 
 const PRESET_SETTINGS = {
   presets: {
@@ -190,43 +76,10 @@ function countOccurrences(haystack: string, needle: string): number {
 }
 
 // ---------------------------------------------------------------------------
-// Shared runtime
-// ---------------------------------------------------------------------------
-
-const modelRuntime = await ModelRuntime.create({
-  authPath: join(REAL_AGENT_DIR, "auth.json"),
-  modelsPath: join(REAL_AGENT_DIR, "models.json"),
-});
-const available = await modelRuntime.getAvailable();
-// Pin glm53-flash-internal; fall back to the first available model when absent.
-const model: Model<Api> | undefined =
-  available.find((m) => m.id === PINNED_MODEL_ID) ?? available[0];
-
-afterAll(() => {
-  delete process.env.PI_CODING_AGENT_DIR;
-  for (const dir of madeDirs) {
-    try {
-      rmSync(dir, { recursive: true, force: true });
-    } catch {
-      // best-effort cleanup
-    }
-  }
-});
-
-const suite = gatewayUp && model ? describe : describe.skip;
-
-if (!available.some((m) => m.id === PINNED_MODEL_ID)) {
-  // Documented fallback: pinned model absent from getAvailable() → first available.
-  console.warn(
-    `[preset-diff.integration] model "${PINNED_MODEL_ID}" not available; using fallback ${model?.provider}/${model?.id}`,
-  );
-}
-
-// ---------------------------------------------------------------------------
 // Scenarios
 // ---------------------------------------------------------------------------
 
-suite(`preset-diff integration (gateway ${gateway?.baseUrl ?? "n/a"}, model ${PINNED_MODEL_ID})`, () => {
+suite(`preset-diff integration (gateway up=${gatewayUp}, model ${PINNED_MODEL_ID})`, () => {
   it(
     "baseline → load → offload: full sections, skills-only patch, rollback",
     async () => {
@@ -313,6 +166,95 @@ suite(`preset-diff integration (gateway ${gateway?.baseUrl ?? "n/a"}, model ${PI
       expect(views.length).toBe(1);
       const skills = views[0].text("skills");
       expect(skills).toContain("<name>alpha</name>");
+      expect(skills).toContain("<name>beta</name>");
+      expect(skills).toContain("<name>gamma</name>");
+    },
+    180_000,
+  );
+
+  it(
+    "loading an empty-skills preset clears advertised skills (no passthrough, #65 B1)",
+    async () => {
+      const skillRoot = makeTempDir("t62-skills-");
+      makeSkill(skillRoot, "alpha", "fixture skill one");
+      makeSkill(skillRoot, "beta", "fixture skill two");
+      makeSkill(skillRoot, "gamma", "fixture skill three");
+
+      // No default preset; the active set only becomes non-empty after the
+      // explicit load, but presets ARE configured — the strict passthrough
+      // condition must not kick in.
+      const session = await createTestSession({
+        settings: {
+          presets: {
+            definitions: { empty: { skills: [] } },
+          },
+        },
+        skillRoot,
+      });
+
+      await session.prompt(PROMPT);
+      // Presets are configured but nothing is loaded — strict passthrough must
+      // NOT kick in: advertised skills are already cleared (#65 B1).
+      const before = systemSectionMessages(session);
+      expect(before[before.length - 1].text("skills")).not.toContain("<name>alpha</name>");
+
+      await session.prompt("/preset-load empty");
+      await session.prompt(PROMPT);
+
+      const after = systemSectionMessages(session);
+      const skills = after[after.length - 1].text("skills");
+      expect(skills).not.toContain("<name>alpha</name>");
+      expect(skills).not.toContain("<name>beta</name>");
+      expect(skills).not.toContain("<name>gamma</name>");
+    },
+    180_000,
+  );
+
+  it(
+    "default preset change mid-session is refreshed per-turn (#65 B2)",
+    async () => {
+      const skillRoot = makeTempDir("t62-skills-");
+      makeSkill(skillRoot, "alpha", "fixture skill one");
+      makeSkill(skillRoot, "beta", "fixture skill two");
+      makeSkill(skillRoot, "gamma", "fixture skill three");
+
+      let agentDir = "";
+      const session = await createTestSession({
+        settings: PRESET_SETTINGS, // default = base → alpha only
+        skillRoot,
+        onCreated: (p) => {
+          agentDir = p.agentDir;
+        },
+      });
+
+      await session.prompt(PROMPT);
+      const before = systemSectionMessages(session);
+      expect(before[before.length - 1].text("skills")).toContain("<name>alpha</name>");
+      expect(before[before.length - 1].text("skills")).not.toContain("<name>beta</name>");
+
+      // Mid-session: settings.json default switches from base to extra.
+      // Per-turn refresh must pull extra into the active set without any
+      // explicit /preset-load.
+      writeFileSync(
+        join(agentDir, "settings.json"),
+        JSON.stringify(
+          {
+            presets: {
+              default: "extra",
+              definitions: {
+                base: { skills: ["alpha"] },
+                extra: { skills: ["beta", "gamma"] },
+              },
+            },
+          },
+          null,
+          2,
+        ),
+      );
+      await session.prompt(PROMPT);
+
+      const after = systemSectionMessages(session);
+      const skills = after[after.length - 1].text("skills");
       expect(skills).toContain("<name>beta</name>");
       expect(skills).toContain("<name>gamma</name>");
     },

@@ -8,126 +8,26 @@
  */
 
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
-import { homedir } from "node:os";
-import { join } from "node:path";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import {
-  DefaultResourceLoader,
-  ModelRuntime,
-  SessionManager,
-  createAgentSession,
-} from "@earendil-works/pi-coding-agent";
 import type { AgentSession, SessionEntry } from "@earendil-works/pi-coding-agent";
-import type { Model, Api } from "@earendil-works/pi-ai";
-import skillPresetsExtension from "../index.ts";
 import {
-  notificationLog,
-  resetNotificationLog,
-} from "../src/notify.ts";
-import { PRESET_OP_CUSTOM_TYPE } from "../src/types.ts";
+  PINNED_MODEL_ID,
+  PROMPT,
+  cleanupMadeDirs,
+  createTestSession,
+  gatewayUp,
+  suite,
+} from "./helpers/preset-harness.ts";
+import { notificationLog, resetNotificationLog } from "../index.ts";
+import { PRESET_OP_CUSTOM_TYPE } from "../index.ts";
 
-const PINNED_MODEL_ID = "glm53-flash-internal";
-const PROMPT = "Reply with exactly one word: ok";
+afterAll(() => {
+  delete process.env.PI_CODING_AGENT_DIR;
+  cleanupMadeDirs();
+});
 
-const REAL_AGENT_DIR =
-  process.env.PI_CODING_AGENT_DIR?.trim() || join(homedir(), ".pi", "agent");
-
-// ---------------------------------------------------------------------------
-// Gateway precheck (same as preset-diff.integration)
-// ---------------------------------------------------------------------------
-
-function findGatewayProvider(): { baseUrl: string; apiKey?: string } | undefined {
-  let raw: unknown;
-  try {
-    raw = JSON.parse(readFileSync(join(REAL_AGENT_DIR, "models.json"), "utf-8"));
-  } catch {
-    return undefined;
-  }
-  const providers = Object.values(
-    (raw as { providers?: Record<string, { baseUrl?: string; apiKey?: string; models?: Array<{ id?: string }> }> })
-      .providers ?? {},
-  );
-  const hosting = providers.find((p) =>
-    (p.models ?? []).some((m) => m.id === PINNED_MODEL_ID),
-  );
-  const fallback = providers.find(
-    (p) => typeof p.baseUrl === "string" && p.baseUrl.startsWith("http"),
-  );
-  const picked = hosting ?? fallback;
-  if (!picked?.baseUrl) return undefined;
-  return { baseUrl: picked.baseUrl, apiKey: picked.apiKey };
-}
-
-const gateway = findGatewayProvider();
-
-async function gatewayReachable(): Promise<boolean> {
-  if (!gateway) return false;
-  try {
-    const headers: Record<string, string> = {};
-    if (gateway.apiKey && !gateway.apiKey.startsWith("${")) {
-      headers.Authorization = `Bearer ${gateway.apiKey}`;
-    }
-    const res = await fetch(`${gateway.baseUrl}/models`, {
-      headers,
-      signal: AbortSignal.timeout(3000),
-    });
-    return res.ok;
-  } catch {
-    return false;
-  }
-}
-
-const gatewayUp = await gatewayReachable();
-
-// ---------------------------------------------------------------------------
-// Fixtures + session factory (trimmed preset-diff harness)
-// ---------------------------------------------------------------------------
-
-const madeDirs: string[] = [];
-
-function makeTempDir(prefix: string): string {
-  const dir = mkdtempSync(join(tmpdir(), prefix));
-  madeDirs.push(dir);
-  return dir;
-}
-
-function makeSkill(root: string, name: string, description: string): void {
-  mkdirSync(join(root, name), { recursive: true });
-  writeFileSync(
-    join(root, name, "SKILL.md"),
-    `---\nname: ${name}\ndescription: ${description}\n---\n\n${description}\n`,
-  );
-}
-
-async function createTestSession(settings: Record<string, unknown>): Promise<AgentSession> {
-  const agentDir = makeTempDir("t63-agent-");
-  const cwd = makeTempDir("t63-cwd-");
-  writeFileSync(join(agentDir, "settings.json"), JSON.stringify(settings, null, 2));
-  const skillsDir = join(agentDir, "skills");
-  mkdirSync(skillsDir, { recursive: true });
-  makeSkill(skillsDir, "alpha", "fixture skill one");
-  makeSkill(skillsDir, "beta", "fixture skill two");
-  process.env.PI_CODING_AGENT_DIR = agentDir;
-
-  const loader = new DefaultResourceLoader({
-    cwd,
-    agentDir,
-    extensionFactories: [{ name: "skill-presets", factory: skillPresetsExtension }],
-  });
-  await loader.reload();
-
-  const { session } = await createAgentSession({
-    cwd,
-    modelRuntime,
-    model,
-    tools: ["read"],
-    resourceLoader: loader,
-    sessionManager: SessionManager.inMemory(cwd),
-  });
-  await session.bindExtensions({});
-  return session;
-}
+beforeEach(() => {
+  resetNotificationLog();
+});
 
 // "ghost" is referenced by presets but never discovered as a skill.
 const BASE_SETTINGS = {
@@ -181,39 +81,14 @@ function notificationsOf(level: string): string[] {
 }
 
 // ---------------------------------------------------------------------------
-// Shared runtime
+// Scenarios
 // ---------------------------------------------------------------------------
 
-const modelRuntime = await ModelRuntime.create({
-  authPath: join(REAL_AGENT_DIR, "auth.json"),
-  modelsPath: join(REAL_AGENT_DIR, "models.json"),
-});
-const available = await modelRuntime.getAvailable();
-const model: Model<Api> | undefined =
-  available.find((m) => m.id === PINNED_MODEL_ID) ?? available[0];
-
-afterAll(() => {
-  delete process.env.PI_CODING_AGENT_DIR;
-  for (const dir of madeDirs) {
-    try {
-      rmSync(dir, { recursive: true, force: true });
-    } catch {
-      // best-effort cleanup
-    }
-  }
-});
-
-beforeEach(() => {
-  resetNotificationLog();
-});
-
-const suite = gatewayUp && model ? describe : describe.skip;
-
-suite(`command semantics integration (gateway ${gateway?.baseUrl ?? "n/a"}, model ${PINNED_MODEL_ID})`, () => {
+suite(`command semantics integration (gateway up=${gatewayUp}, model ${PINNED_MODEL_ID})`, () => {
   it(
     "unknown preset name: error notify with available names, no entry, no skills change",
     async () => {
-      const session = await createTestSession(BASE_SETTINGS);
+      const session = await createTestSession({ settings: BASE_SETTINGS, agentDirSkills: true });
       await session.prompt(PROMPT);
       const opsBefore = presetOpCount(session);
 
@@ -233,7 +108,7 @@ suite(`command semantics integration (gateway ${gateway?.baseUrl ?? "n/a"}, mode
   it(
     "bad-reference load: aggregated warning, load proceeds, repeat load warns again",
     async () => {
-      const session = await createTestSession(BASE_SETTINGS);
+      const session = await createTestSession({ settings: BASE_SETTINGS, agentDirSkills: true });
       await session.prompt(PROMPT);
 
       await session.prompt("/preset-load broken");
@@ -264,7 +139,7 @@ suite(`command semantics integration (gateway ${gateway?.baseUrl ?? "n/a"}, mode
   it(
     "offloading the default preset is rejected: error, no entry, active set unchanged",
     async () => {
-      const session = await createTestSession(BASE_SETTINGS);
+      const session = await createTestSession({ settings: BASE_SETTINGS, agentDirSkills: true });
       await session.prompt(PROMPT);
       const opsBefore = presetOpCount(session);
 
@@ -283,10 +158,13 @@ suite(`command semantics integration (gateway ${gateway?.baseUrl ?? "n/a"}, mode
     "replayed bad references (default preset) warn once, not every turn",
     async () => {
       const session = await createTestSession({
-        presets: {
-          default: "base",
-          definitions: { base: { skills: ["alpha", "ghost"] } },
+        settings: {
+          presets: {
+            default: "base",
+            definitions: { base: { skills: ["alpha", "ghost"] } },
+          },
         },
+        agentDirSkills: true,
       });
 
       await session.prompt(PROMPT);

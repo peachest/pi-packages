@@ -643,6 +643,15 @@ class PresetDialog extends Container {
   }
 
   private deletePreset(presetName: string): void {
+    if (presetName === this.defaultPreset) {
+      // Default preset is protected (#63): offload is rejected, so is delete.
+      this.ctx.ui.notify(
+        `Preset "${presetName}" is the default preset and cannot be deleted.`,
+        "warning",
+      );
+      return;
+    }
+
     delete this.config.definitions[presetName];
 
     if (this.config.default === presetName) {

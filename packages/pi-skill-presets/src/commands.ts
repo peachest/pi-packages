@@ -31,8 +31,6 @@ function findBadRefs(
   return (getPresetSkills(config, presetName) ?? []).filter((s) => !platform.has(s));
 }
 
-/** The custom type for preset operation entries. */
-
 /**
  * Create command handlers with shared state.
  *
@@ -46,6 +44,8 @@ export function createCommands(
   state: PresetState,
   getCwd: () => string,
   getDefaultPreset: () => string | undefined,
+  /** Optional: marks a pending replay warning as consumed (#65 B3). */
+  consumeReplayWarning?: () => void,
 ) {
   /** /preset — TUI dialog */
   async function presetCommand(_args: string, ctx: ExtensionCommandContext): Promise<void> {
@@ -85,6 +85,7 @@ export function createCommands(
           `Preset "${name}" is already loaded, but these skills are unavailable (missing or disabled): ${badRefs.join(", ")}`,
           "warning",
         );
+        consumeReplayWarning?.();
       }
       ctx.ui.notify(`Preset "${name}" is already loaded.`, "info");
       return;
@@ -96,6 +97,9 @@ export function createCommands(
         `Preset "${name}" loaded, but these skills are unavailable (missing or disabled): ${badRefs.join(", ")}`,
         "warning",
       );
+      // This load consumed the warning opportunity — the next turn must not
+      // repeat the same bad-reference warning via the replay path.
+      consumeReplayWarning?.();
     }
 
     doLoad(pi, ctx, state, name);

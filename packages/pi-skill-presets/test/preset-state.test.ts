@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { PresetState } from "../src/preset-state.js";
-import type { PresetsConfig, PresetOpEntry } from "../src/types.js";
+import { PresetState } from "../index.ts";
+import type { PresetsConfig, PresetOpEntry } from "../index.ts";
 
 describe("PresetState", () => {
   it("loads and offloads presets", () => {
@@ -107,12 +107,12 @@ describe("PresetState.resolveSkills", () => {
     expect(result.skillNames).toEqual([]);
   });
 
-  it("reports missing presets", () => {
+  it("reports missing presets (preset-level, v3 semantics)", () => {
     const state = new PresetState();
     state.load("nonexistent");
 
     const result = state.resolveSkills(config);
-    expect(result.missing).toContain("preset:nonexistent");
+    expect(result.missingPresets).toContain("nonexistent");
     expect(result.skillNames).toEqual([]);
   });
 });

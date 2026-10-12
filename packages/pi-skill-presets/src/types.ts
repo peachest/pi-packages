@@ -23,16 +23,12 @@ export interface PresetOpEntry {
   timestamp: number;
 }
 
-/** Result of resolving the full active set. */
+/** Result of resolving the full active set (v3 semantics). */
 export interface ResolvedActiveSet {
   /** All skill names from active presets (deduplicated). */
   skillNames: string[];
-  /** Skills that could not be resolved to a file path. */
-  missing: string[];
-  /** Reserved: v3 never reads skill-manager toggle state directly. */
-  disabled: string[];
-  /** Skills appearing in multiple loaded presets (deduplicated, informational). */
-  duplicates: string[];
+  /** Preset names in the active set that have no definition in config. */
+  missingPresets: string[];
 }
 
 /** Custom entry type for preset operations (shared by commands and dialog). */

@@ -1,9 +1,9 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { createCommands } from "../src/commands.ts";
-import { PRESET_OP_CUSTOM_TYPE } from "../src/types.ts";
-import { PresetState } from "../src/preset-state.ts";
+import { createCommands } from "../index.ts";
+import { PRESET_OP_CUSTOM_TYPE } from "../index.ts";
+import { PresetState } from "../index.ts";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import type { PresetOpEntry } from "../src/types.ts";
+import type { PresetOpEntry } from "../index.ts";
 import * as os from "node:os";
 import * as fs from "node:fs";
 import * as path from "node:path";

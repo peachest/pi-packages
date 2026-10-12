@@ -40,6 +40,8 @@ export class PresetState {
   /**
    * Replay persistent entries to rebuild the active set.
    * Entries are processed in chronological order.
+   * Kept because preset-state.test.ts exercises it; index.ts replays entries
+   * inline (path-aware, #64) instead of calling this.
    */
   replayEntries(entries: PresetOpEntry[]): void {
     this.clear();
@@ -53,55 +55,33 @@ export class PresetState {
   }
 
   /**
-   * Get all skill names from all presets in the active set.
-   * Used by before_agent_start to filter available_skills.
-   */
-  getActiveSkillNames(config: PresetsConfig): Set<string> {
-    const names = new Set<string>();
-    for (const presetName of this.activePresets) {
-      const skills = getPresetSkills(config, presetName);
-      if (skills) {
-        for (const s of skills) names.add(s);
-      }
-    }
-    return names;
-  }
-
-  /**
    * Resolve the active set to a deduplicated list of skill names.
-   * In v2, default preset is in active set, so no exclusion is needed.
-   * Used by per-turn skills mutation in before_agent_start.
+   *
+   * v3 semantics: the default preset is always part of the active set, so its
+   * skills are included without special-casing. A loaded preset name absent
+   * from config is reported in missingPresets (preset-level); skill-level bad
+   * references (listed names absent from pi's discovery) are computed by the
+   * caller against the discovered skill set, not here.
    *
    * @param config - Presets configuration
-   * @returns Resolved active set with skill names, missing skills, and warnings
    */
   resolveSkills(config: PresetsConfig): ResolvedActiveSet {
     const skillSet = new Set<string>();
-    const skillCount = new Map<string, number>();
-    const missing: string[] = [];
+    const missingPresets: string[] = [];
 
     for (const presetName of this.activePresets) {
       const skills = getPresetSkills(config, presetName);
       if (!skills) {
-        missing.push(`preset:${presetName}`);
+        missingPresets.push(presetName);
         continue;
       }
 
-      for (const skill of skills) {
-        skillSet.add(skill);
-        skillCount.set(skill, (skillCount.get(skill) ?? 0) + 1);
-      }
+      for (const skill of skills) skillSet.add(skill);
     }
-
-    const duplicates = [...skillCount.entries()]
-      .filter(([, count]) => count > 1)
-      .map(([name]) => name);
 
     return {
       skillNames: [...skillSet],
-      missing,
-      disabled: [],
-      duplicates,
+      missingPresets,
     };
   }
 }

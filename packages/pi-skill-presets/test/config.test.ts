@@ -3,13 +3,13 @@ import { writeFileSync, readFileSync, mkdirSync, rmSync, existsSync } from "node
 import { resolve } from "node:path";
 import * as os from "node:os";
 import {
+  getAgentDir,
+  getDefaultPresetName,
+  getPresetSkills,
   readPresetsConfig,
   writePresetsConfig,
-  getPresetSkills,
-  getDefaultPresetName,
-  getAgentDir,
-} from "../src/config.js";
-import type { PresetsConfig } from "../src/types.js";
+} from "../index.ts";
+import type { PresetsConfig } from "../index.ts";
 
 // Use a temp directory for test settings
 const TMP_DIR = resolve(os.tmpdir(), `skill-presets-test-${Date.now()}`);

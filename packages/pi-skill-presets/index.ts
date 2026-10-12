@@ -8,7 +8,9 @@
  *   discovered skills by name, written back as a new array; returns undefined so
  *   pi renders the section diff itself (prefix cache stays intact)
  * - Load/offload operations persisted as custom entries for restart recovery
- * - Does NOT touch settings.json — skill-manager owns +/- exclusively
+ * - Does not write settings.skills — skill-manager owns +/- exclusively; this
+ *   package only reads the `-` patterns (pi excludes them at discovery) and
+ *   manages its own presets block
  *
  * Commands:
  *   /preset            — Open TUI dialog for browsing/toggling presets
@@ -96,17 +98,30 @@ export default function skillPresetsExtension(pi: ExtensionAPI) {
   // --- before_agent_start: stateless per-turn skills mutation ---
   pi.on("before_agent_start", (event, _ctx) => {
     const config = readPresetsConfig(cwd);
+
+    // Per-turn default refresh: settings.json can change mid-session; keep
+    // defaultPresetName and the active set in sync. state.load is idempotent
+    // and side-effect free, so calling it every turn is safe.
+    defaultPresetName = config.default;
+    if (config.default) {
+      state.load(config.default);
+    }
+
     const resolved = state.resolveSkills(config);
 
-    // Zero-config passthrough: no presets configured and empty active set →
-    // leave pi's discovered skills untouched.
-    if (resolved.skillNames.length === 0) return undefined;
+    // Zero-config passthrough (strict): only when no presets are configured
+    // AND the active set is empty. A configured preset that resolves to zero
+    // skills (empty skills list or all-missing) still writes back an empty
+    // array to clear pi's advertised skills.
+    const noPresetsConfigured =
+      Object.keys(config.definitions).length === 0 && config.default === undefined;
+    if (noPresetsConfigured && state.getLoaded().length === 0) return undefined;
 
     const allowed = new Set(resolved.skillNames);
     const present = new Set<string>();
     // Dedup by name (a skill listed by multiple presets renders once); keep
     // pi's discovery order for the skills pi already found.
-    const nextSkills = event.systemPromptOptions.skills.filter((skill) => {
+    const nextSkills = (event.systemPromptOptions.skills ?? []).filter((skill) => {
       if (!allowed.has(skill.name) || present.has(skill.name)) return false;
       present.add(skill.name);
       return true;
@@ -126,6 +141,11 @@ export default function skillPresetsExtension(pi: ExtensionAPI) {
     state,
     () => cwd,
     () => defaultPresetName,
+    // A load-time bad-reference warning consumes the pending replay warning
+    // so the next turn does not repeat it.
+    () => {
+      replayWarningPending = false;
+    },
   );
 
   pi.registerCommand("preset", {
@@ -153,3 +173,28 @@ export default function skillPresetsExtension(pi: ExtensionAPI) {
     handler: commands.presetPromptCommand,
   });
 }
+
+// --- Programmatic surface -------------------------------------------------
+// Tests and external consumers import from this entry (packages/README.md
+// rule 3: no deep imports into src/). Selected exports, not a barrel.
+export { PresetState } from "./src/preset-state.ts";
+export { createCommands } from "./src/commands.ts";
+export {
+  getAgentDir,
+  getDefaultPresetName,
+  getPresetSkills,
+  readPresetsConfig,
+  writePresetsConfig,
+} from "./src/config.ts";
+export {
+  notificationLog,
+  recordNotify,
+  resetNotificationLog,
+} from "./src/notify.ts";
+export { PRESET_OP_CUSTOM_TYPE } from "./src/types.ts";
+export type {
+  PresetDefinition,
+  PresetOpEntry,
+  PresetsConfig,
+  ResolvedActiveSet,
+} from "./src/types.ts";
