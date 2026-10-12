@@ -28,7 +28,7 @@ import type { ExtensionContext, ExtensionCommandContext, ExtensionAPI, Theme, Sk
 import { loadSkills } from "@earendil-works/pi-coding-agent";
 import type { PresetState } from "./preset-state.ts";
 import type { PresetsConfig, PresetOpEntry } from "./types.ts";
-import { getPresetSkills, writePresetsConfig, getAgentDir } from "./config.ts";
+import { getPresetSkills, readPresetsConfig, writePresetsConfig, getAgentDir } from "./config.ts";
 import { findBadRefs } from "./bad-refs.ts";
 import { PRESET_OP_CUSTOM_TYPE } from "./types.ts";
 
@@ -159,6 +159,8 @@ class PresetDialog extends Container {
   private readonly done: (result: void) => void;
   private readonly state: PresetState;
   private config: PresetsConfig;
+  /** Definitions as they were when the dialog opened — the delta base for merging saves. */
+  private readonly originalDefinitions: PresetsConfig["definitions"];
   private readonly getDefaultPreset: () => string | undefined;
   private readonly consumeReplayWarning?: (names: string[]) => void;
   private readonly cwd: string;
@@ -190,6 +192,7 @@ class PresetDialog extends Container {
     this.pi = pi;
     this.state = state;
     this.config = config;
+    this.originalDefinitions = structuredClone(config.definitions);
     this.theme = theme;
     this.tui = tui;
     this.done = done;
@@ -217,7 +220,25 @@ class PresetDialog extends Container {
   }
 
   private saveConfig(): void {
-    writePresetsConfig(this.config, "global");
+    // Merge dialog edits onto a fresh read (ocr R2): settings.json can change
+    // while the dialog is open (e.g. a new default written externally); writing
+    // the stale snapshot whole would clobber it. Only the definitions this
+    // dialog actually touched (added, edited, deleted) are applied — the fresh
+    // default and all externally-modified/untouched definitions survive.
+    const fresh = readPresetsConfig(this.cwd);
+    const defs = { ...fresh.definitions };
+    for (const name of Object.keys(this.originalDefinitions)) {
+      if (!this.config.definitions[name]) delete defs[name]; // deleted in dialog
+    }
+    for (const [name, def] of Object.entries(this.config.definitions)) {
+      const original = this.originalDefinitions[name];
+      if (!original || JSON.stringify(original) !== JSON.stringify(def)) {
+        defs[name] = def; // added or edited in dialog
+      }
+    }
+    fresh.definitions = defs;
+    this.config = fresh;
+    writePresetsConfig(fresh, "global");
   }
 
   private loadAllSkills(): void {
@@ -293,11 +314,14 @@ class PresetDialog extends Container {
 
         const prefix = isSelected ? this.theme.fg("accent", "→ ") : "  ";
         const namePart = name;
-        const status = isDefault
-          ? " " + this.theme.fg("accent", "[always-on]")
-          : loaded
-            ? " " + this.theme.fg("success", "[loaded]")
-            : " " + this.theme.fg("dim", "[─]");
+        let status: string;
+        if (isDefault) {
+          status = " " + this.theme.fg("accent", "[always-on]");
+        } else if (loaded) {
+          status = " " + this.theme.fg("success", "[loaded]");
+        } else {
+          status = " " + this.theme.fg("dim", "[─]");
+        }
         const star = isDefault ? " " + this.theme.fg("accent", "★") : "";
         const skills = getPresetSkills(this.config, name) ?? [];
         const count = this.theme.fg("dim", ` (${skills.length})`);
@@ -697,10 +721,9 @@ class PresetDialog extends Container {
     }
 
     delete this.config.definitions[presetName];
-
-    if (this.config.default === presetName) {
-      this.config.default = undefined;
-    }
+    // No default clearing here: default protection is judged against the live
+    // getter above, and saveConfig preserves whatever default is fresh on disk
+    // (ocr R2 — the dialog's snapshot default may be stale).
 
     if (this.state.has(presetName)) {
       this.state.offload(presetName);

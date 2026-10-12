@@ -14,10 +14,14 @@ export interface RecordedNotification {
 }
 
 /** Module-level log: one extension instance per test file, reset per scenario. */
-export const notificationLog: RecordedNotification[] = [];
+export type NotifyObserver = (n: RecordedNotification) => void;
 
-export function resetNotificationLog(): void {
-  notificationLog.length = 0;
+// Test-only capture (ocr R3): production never stores notifications (zero
+// memory growth); tests arm an observer via setNotifyObserver.
+let observer: NotifyObserver | null = null;
+
+export function setNotifyObserver(fn: NotifyObserver | null): void {
+  observer = fn;
 }
 
 export function recordNotify(
@@ -25,6 +29,6 @@ export function recordNotify(
   msg: string,
   level: NotifyLevel,
 ): void {
-  notificationLog.push({ msg, level });
+  observer?.({ msg, level });
   ui.notify(msg, level);
 }

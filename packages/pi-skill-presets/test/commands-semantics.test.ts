@@ -19,7 +19,7 @@ import {
   gatewayUp,
   suite,
 } from "./helpers/preset-harness.ts";
-import { notificationLog, resetNotificationLog } from "../index.ts";
+import { notificationLog, resetNotificationLog } from "./helpers/preset-harness.ts";
 import { PRESET_OP_CUSTOM_TYPE } from "../index.ts";
 
 afterAll(() => {

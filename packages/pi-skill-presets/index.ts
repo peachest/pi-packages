@@ -187,10 +187,10 @@ export {
   writePresetsConfig,
 } from "./src/config.ts";
 export {
-  notificationLog,
   recordNotify,
-  resetNotificationLog,
+  setNotifyObserver,
 } from "./src/notify.ts";
+export type { NotifyLevel, RecordedNotification } from "./src/notify.ts";
 export { PRESET_OP_CUSTOM_TYPE } from "./src/types.ts";
 export type {
   PresetDefinition,

@@ -74,4 +74,17 @@ describe("pickGatewayFromRaw structure defense (ocr N1)", () => {
     };
     expect(pickGatewayFromRaw(raw, PINNED)).toBeUndefined();
   });
+
+  it("skips providers with invalid baseUrl and picks the next valid one (ocr R1)", () => {
+    const raw = {
+      providers: {
+        bad: { baseUrl: "httpx://bad" },
+        good: { baseUrl: "https://good.example", apiKey: "k" },
+      },
+    };
+    expect(pickGatewayFromRaw(raw, PINNED)).toEqual({
+      baseUrl: "https://good.example",
+      apiKey: "k",
+    });
+  });
 });

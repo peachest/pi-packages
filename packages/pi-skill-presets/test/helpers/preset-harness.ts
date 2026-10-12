@@ -22,6 +22,8 @@ import type { AgentSession } from "@earendil-works/pi-coding-agent";
 import type { Model, Api } from "@earendil-works/pi-ai";
 import { pickGatewayFromRaw } from "./gateway-pick.ts";
 import skillPresetsExtension from "../../index.ts";
+import { setNotifyObserver } from "../../index.ts";
+import type { RecordedNotification } from "../../index.ts";
 
 // Pinned per spec #40 Testing Decisions (charting ruling 2026-09-20). When the
 // pinned model is absent from the gateway (e.g. renamed upstream), tests skip
@@ -80,6 +82,18 @@ async function gatewayReachable(): Promise<boolean> {
 }
 
 export const gatewayUp = await gatewayReachable();
+
+// ---------------------------------------------------------------------------
+// Notify capture (ocr R3) — production notify.ts stores nothing; tests arm an
+// observer that records into this module-level array.
+// ---------------------------------------------------------------------------
+
+export const notificationLog: RecordedNotification[] = [];
+setNotifyObserver((n) => notificationLog.push(n));
+
+export function resetNotificationLog(): void {
+  notificationLog.length = 0;
+}
 
 // ---------------------------------------------------------------------------
 // Fixtures + session factory

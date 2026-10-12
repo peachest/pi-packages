@@ -16,7 +16,6 @@ import { readPresetsConfig, getPresetSkills } from "./config.ts";
 import { showPresetDialog } from "./dialog.ts";
 import { findBadRefs } from "./bad-refs.ts";
 import { recordNotify } from "./notify.ts";
-import type { PresetsConfig } from "./types.ts";
 
 /**
  * Create command handlers with shared state.

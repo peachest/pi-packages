@@ -45,14 +45,20 @@ export function pickGatewayFromRaw(
   });
   // Hosting takes priority even when it lacks a usable baseUrl (original
   // semantics): a hosting pick without http baseUrl yields undefined.
-  const picked = hosting ?? usable.find(httpProvider);
-  if (!picked) return undefined;
-  const baseUrl = picked.baseUrl;
-  if (typeof baseUrl !== "string" || !baseUrl.startsWith("http")) return undefined;
+  const picked = hosting ?? usable.find((p) => isValidHttpUrl(p.baseUrl));
+  if (!picked || !isValidHttpUrl(picked.baseUrl)) return undefined;
   const apiKey = picked.apiKey;
-  return { baseUrl, ...(typeof apiKey === "string" ? { apiKey } : {}) };
+  return { baseUrl: picked.baseUrl, ...(typeof apiKey === "string" ? { apiKey } : {}) };
 }
 
-function httpProvider(p: Record<string, unknown>): boolean {
-  return typeof p.baseUrl === "string" && p.baseUrl.startsWith("http");
+// Strict http(s) check (ocr R1): startsWith("http") accepts junk like
+// "httpx://bad"; parse and pin the protocol instead.
+function isValidHttpUrl(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
 }

@@ -1,4 +1,7 @@
 import { describe, it, expect } from "vitest";
+import { mkdtempSync, writeFileSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { showPresetDialog, PresetState } from "../index.ts";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import type { PresetOpEntry } from "../index.ts";
@@ -22,7 +25,10 @@ function makeFakePi(): { pi: ExtensionAPI; entries: PresetOpEntry[] } {
   return { pi, entries };
 }
 
-function makeFakeDialogCtx(platformSkills: string[]): {
+function makeFakeDialogCtx(
+  platformSkills: string[],
+  cwd: string = process.cwd(),
+): {
   ctx: ExtensionCommandContext;
   notifications: Array<{ msg: string; type: string }>;
   capture: () => unknown;
@@ -48,7 +54,7 @@ function makeFakeDialogCtx(platformSkills: string[]): {
       },
     },
     hasUI: true,
-    cwd: process.cwd(),
+    cwd,
     getSystemPromptOptions: () => ({
       skills: platformSkills.map((name) => ({ name, description: "", filePath: "" })),
     }),
@@ -143,5 +149,56 @@ describe("dialog load bad-reference warning (ocr-F3)", () => {
     dialog.togglePreset("ddd"); // now default → rejected, no offload
     expect(state.has("ddd")).toBe(true);
     expect(entries.filter((e) => e.action === "offload")).toHaveLength(0);
+  });
+
+  it("saveConfig merges onto fresh config: external default change survives deletion (ocr R2)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "preset-dialog-r2-"));
+    const prevAgentDir = process.env.PI_CODING_AGENT_DIR;
+    process.env.PI_CODING_AGENT_DIR = dir;
+    try {
+      const settingsPath = join(dir, "settings.json");
+      writeFileSync(
+        settingsPath,
+        JSON.stringify({
+          presets: {
+            default: "a",
+            definitions: { a: { skills: ["x"] }, keep: { skills: ["y"] } },
+          },
+        }),
+      );
+
+      const state = new PresetState();
+      const { pi } = makeFakePi();
+      const fake = makeFakeDialogCtx([], dir);
+      await showPresetDialog(fake.ctx, pi, state, {
+        default: "a",
+        definitions: { a: { skills: ["x"] }, keep: { skills: ["y"] } },
+      });
+      const dialog = fake.capture() as { deletePreset: (name: string) => void };
+
+      // External change while the dialog is open: default A→B, keep modified.
+      writeFileSync(
+        settingsPath,
+        JSON.stringify({
+          presets: {
+            default: "b",
+            definitions: { b: { skills: ["z"] }, keep: { skills: ["y-modified"] } },
+          },
+        }),
+      );
+
+      dialog.deletePreset("a");
+
+      const saved = JSON.parse(readFileSync(settingsPath, "utf-8")) as {
+        presets: { default?: string; definitions: Record<string, { skills: string[] }> };
+      };
+      expect(saved.presets.default).toBe("b");
+      expect(saved.presets.definitions.a).toBeUndefined();
+      expect(saved.presets.definitions.b).toEqual({ skills: ["z"] });
+      expect(saved.presets.definitions.keep).toEqual({ skills: ["y-modified"] });
+    } finally {
+      if (prevAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = prevAgentDir;
+    }
   });
 });
