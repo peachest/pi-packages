@@ -82,9 +82,10 @@ export class FakePusher implements Pusher {
   }
 }
 
-/** FakeFs——内存树（fx.md 钉死：内存树 + 撕裂尾行 fixture）：files 即 fixture 写入口，撕裂尾行 = 无尾换行的截断字符串。 */
+/** FakeFs——内存树（fx.md 钉死：内存树 + 撕裂尾行 fixture）：files 即 fixture 写入口，撕裂尾行 = 无尾换行的截断字符串。watch 同步扩展（票 18）：watch 登记、change 写入并同步通知该 path 监听者（同步 = 无定时器确定性）；files 直改不通知，change 是唯一事件注入面。 */
 export class FakeFs implements Fs {
   readonly files: Map<string, string>;
+  private readonly watchers: { path: string; onEvent: () => void }[] = [];
 
   constructor(files?: Record<string, string>) {
     this.files = new Map(Object.entries(files ?? {}));
@@ -96,5 +97,17 @@ export class FakeFs implements Fs {
     return content === undefined
       ? Promise.reject(Object.assign(new Error(`ENOENT: no such file or directory, open '${path}'`), { code: "ENOENT" }))
       : Promise.resolve(content);
+  }
+
+  /** 变更注入：写 content（缺省 = touch 保持现值）并同步通知该 path 的 watch 监听者。 */
+  change(path: string, content?: string): void {
+    if (content !== undefined) this.files.set(path, content);
+    for (const w of [...this.watchers]) if (w.path === path) w.onEvent();
+  }
+
+  watch(path: string, onEvent: () => void): { close(): void } {
+    const w = { path, onEvent };
+    this.watchers.push(w);
+    return { close: () => this.watchers.splice(this.watchers.indexOf(w), 1) };
   }
 }

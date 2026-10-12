@@ -78,6 +78,24 @@ describe("fx 真壳存在性证明（票 12 断言 1）", () => {
     await expect(f.readFile(path.join(dir, "missing.jsonl"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
+  it("NodeFs.watch: 真原生推送（fs.watch，票 18 停点存在性证明）——写入触发 onEvent，close 后不再触发", async () => {
+    const dir = tmpDir("eda-fx-watch-");
+    const file = path.join(dir, "wm");
+    fs.writeFileSync(file, "0");
+    const f: fx.Fs = new fx.NodeFs();
+    let events = 0;
+    let failures = 0;
+    const handle = f.watch(file, () => events++, () => failures++);
+    fs.writeFileSync(file, "1");
+    await vi.waitFor(() => expect(events).toBeGreaterThanOrEqual(1), { timeout: 2_000 });
+    const seen = events;
+    handle.close();
+    fs.writeFileSync(file, "2");
+    await new Promise((resolve) => setTimeout(resolve, 100)); // 给可能迟到的内核事件留窗口
+    expect(events).toBe(seen); // close 后不再回流（资源清理）
+    expect(failures).toBe(0);
+  });
+
   it("SocketPusher: 真 unix socket 推送，客户端逐行收到；同路径重启可用", async () => {
     const sockPath = path.join(tmpDir("eda-fx-sock-"), "wake.sock");
     const line = '{"jsonrpc":"2.0","method":"wake/test"}';
@@ -119,7 +137,10 @@ describe("fx 端口契约（票 12 断言 2：端口类型零业务泄漏 + Fs �
   });
 
   it("端口签名只用原始值（零业务泄漏）", () => {
-    expectTypeOf<fx.Fs>().toEqualTypeOf<{ readFile(path: string): Promise<string> }>();
+    expectTypeOf<fx.Fs>().toEqualTypeOf<{
+      readFile(path: string): Promise<string>;
+      watch(path: string, onEvent: () => void, onError?: (err: unknown) => void): { close(): void };
+    }>();
     expectTypeOf<fx.Pusher>().toEqualTypeOf<{ push(line: string): Promise<void> }>();
     expectTypeOf<fx.Clock["now"]>().toEqualTypeOf<() => number>();
     expectTypeOf<fx.Clock["setTimeout"]>().toEqualTypeOf<

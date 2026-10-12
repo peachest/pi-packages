@@ -38,7 +38,9 @@ export interface Pusher {
   push(line: string): Promise<void>;
 }
 
-/** 只读文件面（fx.md“文件读写”的收窄裁定：MVP 消费者全部只读——transcript-adapter 只读、daemon-main 配置读）：接口无写方法。 */
+/** 只读文件面（fx.md“文件读写”的收窄裁定：MVP 消费者全部只读——transcript-adapter 只读、daemon-main 配置读）：接口无写方法。watch 是观察非写（票 18 fs-watch 原生推送停点）。 */
 export interface Fs {
   readFile(path: string): Promise<string>;
+  /** 文件监听（fs.watch 薄包装，内核原生推送非轮询）：变更即调 onEvent（无事件载荷，命中过滤归消费方）；error 经 onError 上抛（缺省收尾 close，防未处理 error 崩进程），处理语义归消费方。句柄 close() 后回调不再触发（资源清理归调用方）。 */
+  watch(path: string, onEvent: () => void, onError?: (err: unknown) => void): { close(): void };
 }

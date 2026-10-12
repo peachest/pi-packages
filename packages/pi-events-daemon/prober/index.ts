@@ -5,15 +5,17 @@
  * 执行面（#31 B3 清单）本模块全部拥有：checker 池 ≤8 并发（第 9 个排队）、超时缺省 10s
  * 上限 300s（fx Clock 计时 + Exec timeoutMs 双停点）、三态映射（0=passed / 2=failed 断言 /
  * 其他=waiting；verdict 一律语义名，退出码只进 reason 文本）、no_proxy 全局注入（B2②）、
- * token 脱敏（B2③）。checker 本体是 shell 命令字符串，来自 profile 模板资产 / ad-hoc 声明
- * （shell 是唯一判定原语，HTTP 经 curl -sf 包装）——本模块只含执行引擎，不含 checker 实现。
+ * token 脱敏（B2③）、fs-watch 原生推送（票 18：监听建立/关闭归执行引擎，推送事件触发 check
+ * 执行、结果经同一 completion queue 回流）。checker 本体是 shell 命令字符串，来自 profile
+ * 模板资产 / ad-hoc 声明（shell 是唯一判定原语，HTTP 经 curl -sf 包装）——本模块只含执行
+ * 引擎，不含 checker 实现。
  */
-import type { Clock, Exec, ExecResult } from "../fx/index.ts";
+import type { Clock, Exec, ExecResult, Fs } from "../fx/index.ts";
 
 /** 判定三态（#31 正典命名）。与 domain.Verdict 同字面量联合：D4 禁 import，结构兼容即 seam。 */
 export type Verdict = "passed" | "failed" | "waiting";
 
-/** 探针源（#31 A3 构造块，随 checker 声明携带）；fs-watch/k8s-watch 原生推送的监听建立/关闭归 watch 票。 */
+/** 探针源（#31 A3 构造块，随 checker 声明携带）：poll=调度触发；fs-watch=文件变化原生推送触发（票 18）；k8s-watch=同待遇接口，MVP 实现待票。 */
 export type ProbeSource = "poll" | "fs-watch" | "k8s-watch";
 
 /** probe 执行请求：slotKey 是调用方（loops RunnerSlot）定义的关联键，回流原样带回。 */
@@ -24,6 +26,8 @@ export type ProbeSlot = {
   /** 超时：缺省 10s，上限 300s（prober 执行面策略，fx 不持）。 */
   timeoutMs?: number;
   source?: ProbeSource;
+  /** fs-watch 源监听目标（checker 声明携带；source=fs-watch 必填）。 */
+  watchPath?: string;
 };
 
 /** probe 结果（completion queue 回流行）。 */
@@ -66,6 +70,8 @@ export type ProberDeps = {
   noProxy?: string;
   /** B2③ 脱敏 pattern（替换内置集）。 */
   tokenPatterns?: readonly RegExp[];
+  /** watch 停点（票 18 fs-watch 源必填；poll-only 装配可省）。 */
+  fs?: Fs;
 };
 
 export class Prober {
@@ -77,6 +83,8 @@ export class Prober {
   /** 回流稳序缓冲：结果先按 seq 落位，前序全部结算后才交付（回流序=提交序，票面验收）。 */
   private readonly buffered = new Map<number, ProbeResult>();
   private nextDeliverSeq = 0;
+  /** fs-watch 活跃监听（slotKey → 句柄）：建立/关闭归执行引擎（票 18）。 */
+  private readonly watchers = new Map<string, { close(): void }>();
 
   constructor(deps: ProberDeps) {
     this.deps = deps;
@@ -88,17 +96,64 @@ export class Prober {
 
   /**
    * 提交 probe：入池即返（不 await）。并发 ≤8，第 9 个起排队；结果经 onResult 回流。
-   * 非 poll source 同步拒绝——watch 监听建立/关闭归 watch 票，静默按 poll 执行是错语义。
+   * poll（缺省）立即执行一次；fs-watch 建立原生推送监听（声明 ≠ 执行），文件变化触发 check
+   * 执行、结果经同一 completion queue 回流（与 poll 结果同一消费面，票 18）；k8s-watch 一等
+   * 构造块已裁（#31 A3）、MVP 实现待票——同步拒绝，静默按 poll 执行是错语义。
    * timeoutMs 在分配 seq 与容量前校验/规范化（非法即抛参数错，不占序位不占池）。
    */
   probe(slot: ProbeSlot): void {
-    if (slot.source !== undefined && slot.source !== "poll") {
-      throw new Error(`prober: source "${slot.source}" 的 watch 执行未落地（#31 A3 构造块已裁，MVP 待 watch 票）——现仅支持 poll`);
-    }
     const timeoutMs = normalizeTimeoutMs(slot.timeoutMs);
+    if (slot.source === "k8s-watch") {
+      throw new Error(`prober: source "k8s-watch" 一等构造块已裁（#31 A3），MVP 实现待票——静默按 poll 执行是错语义`);
+    }
+    if (slot.source === "fs-watch") {
+      if (slot.watchPath === undefined) {
+        throw new Error("prober: source fs-watch 需要 watchPath（监听目标由 checker 声明携带）");
+      }
+      if (this.deps.fs === undefined) throw new Error("prober: source fs-watch 需要 deps.fs（fx watch 停点）");
+      this.establishWatch(slot, timeoutMs);
+      return;
+    }
+    this.submitRun(slot, timeoutMs);
+  }
+
+  /** poll 立即执行与 watch 事件触发共用的入池路径：seq 分配、池 ≤8、第 9 个起排队。 */
+  private submitRun(slot: ProbeSlot, timeoutMs: number): void {
     const seq = this.nextSeq++;
     if (this.inflight < PROBE_POOL_MAX) this.start(seq, slot, timeoutMs);
     else this.queued.push({ seq, slot, timeoutMs });
+  }
+
+  /**
+   * fs-watch 监听建立（票 18，监听建立/关闭归执行引擎）：声明即建立，不立即执行；同 slotKey
+   * 重复 probe = 关旧开新（subscribe 换参同构语义）。watch() 同步抛错（路径不存在等）原样
+   * 上抛 = 参数错（与 timeoutMs 校验同面）。
+   */
+  private establishWatch(slot: ProbeSlot, timeoutMs: number): void {
+    this.watchers.get(slot.slotKey)?.close();
+    const t0 = this.deps.clock.now();
+    let handle: { close(): void } | undefined;
+    const onEvent = (): void => this.submitRun(slot, timeoutMs);
+    const onError = (err: unknown): void => {
+      // 监听器故障：同 failExec 语义可见回流（waiting + 掩码 reason）并关闭监听（坏源不再触发）
+      handle?.close();
+      this.watchers.delete(slot.slotKey);
+      this.deliver(this.nextSeq++, {
+        slotKey: slot.slotKey,
+        verdict: "waiting",
+        reason: `watch error: ${this.maskText(err instanceof Error ? err.message : String(err))}`,
+        evidence: "",
+        durationMs: this.deps.clock.now() - t0,
+      });
+    };
+    handle = this.deps.fs!.watch(slot.watchPath!, onEvent, onError);
+    this.watchers.set(slot.slotKey, handle);
+  }
+
+  /** 关闭 watch 源监听（资源清理归执行引擎，幂等）：关闭后文件变化不再触发回流。 */
+  closeWatch(slotKey: string): void {
+    this.watchers.get(slotKey)?.close();
+    this.watchers.delete(slotKey);
   }
 
   private start(seq: number, slot: ProbeSlot, timeoutMs: number): void {

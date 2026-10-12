@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { FakeFs } from "../fx/index.ts";
+import { FakeFs, NodeFs } from "../fx/index.ts";
 import { createTranscriptAdapter } from "./index.ts";
 
 /**
@@ -231,10 +231,19 @@ describe("票 19 组 6——只读断言（无写调用）：fx Fs 接口无写�
     for (const [k, v] of before) expect(fs.files.get(k)).toBe(v); // 逐键同串：零写入零改写
   });
 
-  it("fx Fs 接口面本身无写方法（类型层只读，票 12 收窄裁定）", () => {
-    // 编译层断言：Fs 唯一方法 readFile；运行时键集同构证明无写入通道。
-    const fs = new FakeFs({});
-    expect(Object.getOwnPropertyNames(Object.getPrototypeOf(fs)).filter((m) => m !== "constructor")).toEqual(["readFile"]);
+  it("fx Fs 接口面无写方法（类型层只读，票 12 收窄裁定；票 18 增 watch=观察非写）", () => {
+    // 运行时键集：端口面（NodeFs）= readFile + watch（原生推送观察，无写通道）；
+    // FakeFs 额外只有 change（fixture/事件注入面，测试用，非端口方法）。
+    const portMethods = Object.getOwnPropertyNames(Object.getPrototypeOf(new NodeFs())).filter((m) => m !== "constructor");
+    expect(portMethods).toEqual(["readFile", "watch"]);
+    const fakeMethods = Object.getOwnPropertyNames(Object.getPrototypeOf(new FakeFs({})))
+      .filter((m) => m !== "constructor")
+      .sort();
+    expect(fakeMethods).toEqual(["change", "readFile", "watch"]);
+    for (const write of ["writeFile", "appendFile", "mkdir", "rm", "unlink", "truncate"]) {
+      expect(portMethods).not.toContain(write);
+      expect(fakeMethods).not.toContain(write);
+    }
   });
 });
 

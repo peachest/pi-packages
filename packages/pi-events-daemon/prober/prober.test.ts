@@ -66,13 +66,12 @@ describe("票 16 — 三态映射（#31 正典：0=passed / 2=failed 断言 / �
     ]);
   });
 
-  it("非 poll source 同步拒绝（watch 监听建立/关闭归 watch 票，静默按 poll 执行是错语义）", () => {
+  it("k8s-watch 同步拒绝（一等构造块已裁 #31 A3、MVP 实现待票——静默按 poll 执行是错语义；fs-watch 已由票 18 落地）", () => {
     const p = new prober.Prober({
       exec: new fx.FakeExec(),
       clock: new fx.FakeClock(),
       onResult: () => undefined,
     });
-    expect(() => p.probe({ slotKey: "w", check: "x", source: "fs-watch" })).toThrow(/fs-watch/);
     expect(() => p.probe({ slotKey: "w", check: "x", source: "k8s-watch" })).toThrow(/k8s-watch/);
   });
 });
@@ -479,6 +478,101 @@ describe("票 16 复核 — Finding 3：补位调度入微任务（同步抛错�
     expect(results.map((r) => r.slotKey)).toEqual([...Array(N).keys()].map((i) => `s${i}`));
     expect(results.slice(0, 8).every((r) => r.verdict === "passed")).toBe(true);
     expect(results.slice(8).every((r) => r.verdict === "waiting" && r.reason === "exec error: spawn ENOENT")).toBe(true);
+  });
+});
+
+describe("票 18 — fs-watch 原生推送（监听建立/关闭归执行引擎，推送事件经同一 completion queue 回流）", () => {
+  it("文件变化 → check 执行 → 结果经同一 completion queue 回流；时间流逝零触发（原生推送非轮询，毫秒级同步）", async () => {
+    const fs = new fx.FakeFs({ "/share/wm": "600G" });
+    const clock = new fx.FakeClock();
+    const exec = new fx.FakeExec();
+    exec.enqueue({ exitCode: 2, stdout: "beegfs 412G left" });
+    const results: prober.ProbeResult[] = [];
+    new prober.Prober({ exec, clock, fs, onResult: (r) => results.push(r) }).probe({
+      slotKey: "wm",
+      check: "df /share | parse-wm",
+      source: "fs-watch",
+      watchPath: "/share/wm",
+    });
+    clock.step(3_600_000); // 1h：无文件变化零执行零定时器——触发只来自 fs 推送，无轮询扫描
+    expect(exec.calls).toHaveLength(0);
+    expect(results).toHaveLength(0);
+    fs.change("/share/wm", "412G"); // 原生推送：同步触发，不依赖任何定时器
+    await tick();
+    expect(results).toEqual([
+      { slotKey: "wm", verdict: "failed", reason: "exit 2", evidence: "beegfs 412G left", durationMs: 0 },
+    ]);
+    expect(exec.calls).toHaveLength(1);
+    expect(exec.calls[0]?.command).toBe("df /share | parse-wm");
+  });
+
+  it("watch 关闭后不再回流（资源清理）：closeWatch 后 change 不触发 check，重复/未知 slotKey 幂等无害", async () => {
+    const fs = new fx.FakeFs({ "/share/wm": "600G" });
+    const exec = new fx.FakeExec();
+    const results: prober.ProbeResult[] = [];
+    const p = new prober.Prober({ exec, clock: new fx.FakeClock(), fs, onResult: (r) => results.push(r) });
+    p.probe({ slotKey: "wm", check: "x", source: "fs-watch", watchPath: "/share/wm" });
+    p.closeWatch("wm");
+    p.closeWatch("wm");
+    p.closeWatch("nope");
+    fs.change("/share/wm", "1G");
+    await tick();
+    expect(exec.calls).toHaveLength(0);
+    expect(results).toHaveLength(0);
+  });
+
+  it("source 类型由 checker 声明携带（数据面）：fs-watch 声明只建监听不执行、监听绑定声明路径；同引擎 poll 声明照旧立即执行", async () => {
+    const fs = new fx.FakeFs({ "/share/wm": "600G" });
+    const exec = new fx.FakeExec();
+    exec.enqueue({ exitCode: 0 });
+    const results: prober.ProbeResult[] = [];
+    const p = new prober.Prober({ exec, clock: new fx.FakeClock(), fs, onResult: (r) => results.push(r) });
+    p.probe({ slotKey: "wm", check: "wm-check", source: "fs-watch", watchPath: "/share/wm" });
+    expect(exec.calls).toHaveLength(0); // 声明 ≠ 执行：fs-watch 由推送事件驱动
+    fs.change("/share/other"); // 未声明路径不串扰（监听绑定声明路径）
+    await tick();
+    expect(exec.calls).toHaveLength(0);
+    fs.change("/share/wm");
+    await tick();
+    expect(exec.calls.map((c) => c.command)).toEqual(["wm-check"]);
+    p.probe({ slotKey: "poll-s", check: "poll-check" }); // 同一引擎：poll 声明（缺省）照旧立即执行
+    expect(exec.calls.map((c) => c.command)).toEqual(["wm-check", "poll-check"]);
+  });
+
+  it("监听器故障（watch error）→ waiting 回流（同 failExec 语义：reason 掩码）+ 监听关闭不再触发", async () => {
+    let fireError: ((err: unknown) => void) | undefined;
+    const stubFs: fx.Fs = {
+      readFile: () => Promise.resolve(""),
+      watch: (_path, _onEvent, onError) => {
+        fireError = onError;
+        return { close: () => undefined };
+      },
+    };
+    const exec = new fx.FakeExec();
+    const results: prober.ProbeResult[] = [];
+    new prober.Prober({ exec, clock: new fx.FakeClock(), fs: stubFs, onResult: (r) => results.push(r) }).probe({
+      slotKey: "wm",
+      check: "x",
+      source: "fs-watch",
+      watchPath: "/gone",
+    });
+    fireError?.(new Error("watcher ENOSPC glpat-AbCdEf123456"));
+    await tick();
+    expect(results).toEqual([
+      { slotKey: "wm", verdict: "waiting", reason: "watch error: watcher ENOSPC ***", evidence: "", durationMs: 0 },
+    ]);
+  });
+
+  it("fs-watch 缺 watchPath / 缺 fs 停点 → 同步参数错（不建监听不执行）", () => {
+    const noFs = new prober.Prober({ exec: new fx.FakeExec(), clock: new fx.FakeClock(), onResult: () => undefined });
+    expect(() => noFs.probe({ slotKey: "w", check: "x", source: "fs-watch", watchPath: "/t" })).toThrow(/deps\.fs/);
+    const withFs = new prober.Prober({
+      exec: new fx.FakeExec(),
+      clock: new fx.FakeClock(),
+      fs: new fx.FakeFs(),
+      onResult: () => undefined,
+    });
+    expect(() => withFs.probe({ slotKey: "w", check: "x", source: "fs-watch" })).toThrow(/watchPath/);
   });
 });
 

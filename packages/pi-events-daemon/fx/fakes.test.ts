@@ -164,6 +164,24 @@ describe("票 13 FakeFs：内存树 + 撕裂尾行 fixture（fx.md 钉死契约�
   });
 });
 
+describe("票 18 FakeFs：watch 同步扩展（登记/同步通知/close 生效）", () => {
+  it("change 写入并同步通知该 path 监听者；close 后不再通知；其他 path 不串扰；files 直改不通知（change 是唯一事件注入面）", () => {
+    const ffs = new FakeFs({ "/t/wm": "0" });
+    let events = 0;
+    const handle = ffs.watch("/t/wm", () => events++);
+    ffs.change("/t/wm", "1");
+    expect(events).toBe(1);
+    expect(ffs.files.get("/t/wm")).toBe("1");
+    ffs.files.set("/t/wm", "2"); // fixture 直改：状态变化不产生事件
+    expect(events).toBe(1);
+    ffs.change("/t/other"); // touch 语义：不写内容，仅路径不匹配不串扰
+    expect(events).toBe(1);
+    handle.close();
+    ffs.change("/t/wm", "3");
+    expect(events).toBe(1);
+  });
+});
+
 describe("票 13 四 fake 经公共面注入各自端口（每端口恰好两 adapter：real + fake）", () => {
   it("四 fake 满足端口类型且经 fx 入口可用", () => {
     const clock: Clock = new FakeClock();
