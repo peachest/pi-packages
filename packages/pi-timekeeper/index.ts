@@ -6,12 +6,12 @@ import {
   anchorLine,
   computeInjection,
   configFromEnv,
+  MESSAGE_CUSTOM_TYPE,
   restoreState,
   STATE_ENTRY,
+  type StateEntry,
   type TKState,
 } from "./state.ts";
-
-const MESSAGE_CUSTOM_TYPE = "timekeeper.environment";
 
 export default function timekeeperExtension(pi: ExtensionAPI) {
   const config = configFromEnv();
@@ -21,36 +21,46 @@ export default function timekeeperExtension(pi: ExtensionAPI) {
   pi.on("session_start", async (_event, ctx) => {
     // Restore from the active branch: survives resume/fork/restart (C2/C4: state lives
     // in tree-side custom entries, never in hook returns or process variables alone).
-    try {
-      const entries = (ctx.sessionManager.getBranch() ??
-        ctx.sessionManager.getEntries()) as unknown as Array<Record<string, unknown>>;
-      state = restoreState(
-        entries.map((e) => ({
-          customType: e?.customType as string | undefined,
-          data: e?.data,
-        })),
-      );
-    } catch {
-      state = {};
-    }
+    restoreFromBranch(ctx);
     // A fresh session has no anchor yet; the first run injects (Codex is_new_window).
+  });
+
+  pi.on("session_tree", async (_event, ctx) => {
+    // Q3: /tree navigation does not re-fire session_start (pi 1.1.0 dist: agent-session.js
+    // emits session_tree only) — re-restore so in-memory state follows the new branch.
+    restoreFromBranch(ctx);
   });
 
   pi.on("session_compact", async () => {
     // Compaction rebuilds context (prefix miss is free); the next run must re-anchor
     // because the summary may have dropped the previous time line.
+    // Q4: unconditional — before_agent_start fires once per run (prompt path only), so
+    // an overflow-retry turn inside the same run never re-injects; adding a willRetry
+    // branch would lose the re-anchor instead of fixing it.
+    // B2: persist the pending flag alongside state so the re-anchor promise survives
+    // a process restart between compaction and the next run.
     forceReanchor = true;
+    pi.appendEntry(STATE_ENTRY, { ...state, forcePending: true });
   });
 
   pi.on("before_agent_start", async () => {
-    const now = Date.now();
-    const result = computeInjection(state, now, config, { force: forceReanchor });
+    // Q2 clock guard: the Intl formatting inside computeInjection is the thrower, not
+    // Date.now. On failure: no injection this run, state and force untouched — the
+    // pending re-anchor is consumed only by a successful injection.
+    let result;
+    try {
+      result = computeInjection(state, Date.now(), config, { force: forceReanchor });
+    } catch {
+      return;
+    }
     if (!result.injected || result.content == null) {
       return;
     }
     state = result.state;
-    forceReanchor = false;
     pi.appendEntry(STATE_ENTRY, state);
+    // Clear only after the state is persisted — a failure before this point must not
+    // consume the pending re-anchor.
+    forceReanchor = false;
     return {
       message: {
         customType: MESSAGE_CUSTOM_TYPE,
@@ -59,6 +69,15 @@ export default function timekeeperExtension(pi: ExtensionAPI) {
       },
     };
   });
+
+  function restoreFromBranch(ctx: { sessionManager: { getBranch(): unknown; getEntries(): unknown } }) {
+    try {
+      const entries = (ctx.sessionManager.getBranch() ?? ctx.sessionManager.getEntries()) as StateEntry[];
+      state = restoreState(entries);
+    } catch {
+      state = {};
+    }
+  }
 }
 
 // Re-export for tests and downstream consumers.
