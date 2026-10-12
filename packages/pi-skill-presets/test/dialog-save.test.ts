@@ -432,4 +432,66 @@ describe("browse index realign after save (ocr R12L)", () => {
       rmSync(agentDir, { recursive: true, force: true });
     }
   });
+
+  // ocr R13L: name-based realign — with three presets, selecting b (index 1)
+  // and externally deleting a must land on b in [b, c], not on whatever name
+  // now sits at the stale index 1 (the pre-R13 bug re-selected c).
+  it("keyboard flow: [a,b,c] selecting b, external delete of a lands on b (not c)", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "preset-dialog-realign3-cwd-"));
+    const agentDir = mkdtempSync(join(tmpdir(), "preset-dialog-realign3-agent-"));
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    mkdirSync(join(agentDir, "skills", "foo"), { recursive: true });
+    writeFileSync(
+      join(agentDir, "skills", "foo", "SKILL.md"),
+      "---\nname: foo\ndescription: Test skill\n---\n\nBody.\n",
+      "utf-8",
+    );
+    writeFileSync(
+      join(agentDir, "settings.json"),
+      JSON.stringify({
+        presets: { definitions: { a: { skills: [] }, b: { skills: [] }, c: { skills: [] } } },
+      }),
+      "utf-8",
+    );
+
+    try {
+      const config = readPresetsConfig(cwd);
+      const notifyLog: RecordedNotify[] = [];
+      const dialog = await buildDialog(cwd, config, { notifyLog });
+      const d = dialog as unknown as {
+        handleInput: (data: string) => void;
+        browseIndex: number;
+        mode: string;
+        presetNames: string[];
+      };
+
+      // Browse: select b (index 1), enter edit mode.
+      d.handleInput("\x1b[B"); // down
+      d.handleInput("e");
+      expect(d.mode).toBe("preset-edit");
+
+      // External deletion of preset a while the dialog is open.
+      writeFileSync(
+        join(agentDir, "settings.json"),
+        JSON.stringify({ presets: { definitions: { b: { skills: [] }, c: { skills: [] } } } }),
+        "utf-8",
+      );
+
+      // Add a skill to b and save.
+      d.handleInput("a");
+      d.handleInput("\r");
+      d.handleInput("\x1b");
+      d.handleInput("\x1b");
+
+      expect(d.mode).toBe("browse");
+      // Selection must follow the name b — the stale index 1 would point at c.
+      expect(d.presetNames).toEqual(["b", "c"]);
+      expect(d.browseIndex).toBe(0);
+      expect(d.presetNames[d.browseIndex]).toBe("b");
+    } finally {
+      delete process.env.PI_CODING_AGENT_DIR;
+      rmSync(cwd, { recursive: true, force: true });
+      rmSync(agentDir, { recursive: true, force: true });
+    }
+  });
 });

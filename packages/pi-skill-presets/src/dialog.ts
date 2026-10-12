@@ -268,13 +268,17 @@ class PresetDialog extends Container {
       this.ctx.ui.notify(`Failed to save ${label}: ${reason}`, "error");
       return false;
     }
+    // ocr R13L: capture the selected name BEFORE swapping in fresh —
+    // presetNames derives from this.config, so reading it after the swap
+    // yields the NEW list's name at the old index (e.g. [a,b,c] selecting b,
+    // external delete of a → [b,c] would silently re-select c).
+    const oldSelected = this.presetNames[this.browseIndex];
     this.config = fresh;
-    // ocr R12L: fresh is the merged on-disk state — the browse-selected preset
-    // may have been externally deleted while editing. Realign browseIndex to
-    // the selected name (clamped when gone) so returning to browse always has
-    // a valid selection instead of pointing past the end of the list.
-    const selected = this.presetNames[this.browseIndex];
-    const idx = selected ? this.presetNames.indexOf(selected) : -1;
+    // Realign browseIndex to the captured name in the merged on-disk state
+    // (ocr R12L): the selected preset may have been externally deleted while
+    // editing — fall back to clamping only when the name is gone, so
+    // returning to browse always has a valid selection.
+    const idx = oldSelected ? this.presetNames.indexOf(oldSelected) : -1;
     this.browseIndex = idx >= 0
       ? idx
       : Math.min(this.browseIndex, Math.max(0, this.presetNames.length - 1));

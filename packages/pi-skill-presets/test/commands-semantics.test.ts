@@ -17,13 +17,14 @@ import {
   cleanupMadeDirs,
   createTestSession,
   gatewayUp,
+  restoreAgentDirEnv,
   suite,
 } from "./helpers/preset-harness.ts";
 import { notificationLog, resetNotificationLog } from "./helpers/preset-harness.ts";
 import { PRESET_OP_CUSTOM_TYPE } from "../index.ts";
 
 afterAll(() => {
-  delete process.env.PI_CODING_AGENT_DIR;
+  restoreAgentDirEnv();
   cleanupMadeDirs();
 });
 

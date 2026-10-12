@@ -119,6 +119,20 @@ export function cleanupMadeDirs(): void {
   }
 }
 
+// ocr R13M: createTestSession overwrites the process-level PI_CODING_AGENT_DIR.
+// Capture the original value (undefined = not set) on the first call so the
+// shared teardown restores it exactly — callers must NOT bare-delete, or a
+// pre-existing value would be lost.
+let savedAgentDirEnv: string | undefined;
+let savedAgentDirEnvValid = false;
+
+/** Shared teardown: restore PI_CODING_AGENT_DIR to its pre-test value. Register via afterAll. */
+export function restoreAgentDirEnv(): void {
+  if (!savedAgentDirEnvValid) return;
+  if (savedAgentDirEnv === undefined) delete process.env.PI_CODING_AGENT_DIR;
+  else process.env.PI_CODING_AGENT_DIR = savedAgentDirEnv;
+}
+
 /** Write a minimal skill fixture: <root>/<name>/SKILL.md with name/description frontmatter. */
 export function makeSkill(root: string, name: string, description: string): void {
   mkdirSync(join(root, name), { recursive: true });
@@ -151,6 +165,12 @@ export async function createTestSession(opts: SessionOpts): Promise<AgentSession
     makeSkill(skillsDir, "gamma", "fixture skill three");
   }
   // The extension reads presets via PI_CODING_AGENT_DIR; align the whole stack.
+  // The variable must survive the whole session lifetime, so it is only
+  // restored by restoreAgentDirEnv() in afterAll (ocr R13M).
+  if (!savedAgentDirEnvValid) {
+    savedAgentDirEnv = process.env.PI_CODING_AGENT_DIR;
+    savedAgentDirEnvValid = true;
+  }
   process.env.PI_CODING_AGENT_DIR = agentDir;
 
   const loader = new DefaultResourceLoader({
@@ -159,20 +179,26 @@ export async function createTestSession(opts: SessionOpts): Promise<AgentSession
     additionalSkillPaths: opts.skillRoot ? [opts.skillRoot] : [],
     extensionFactories: [{ name: "skill-presets", factory: skillPresetsExtension }],
   });
-  await loader.reload();
+  try {
+    await loader.reload();
 
-  const { session } = await createAgentSession({
-    cwd,
-    modelRuntime,
-    model,
-    tools: ["read"],
-    resourceLoader: loader,
-    sessionManager: SessionManager.inMemory(cwd),
-  });
-  // SDK mode: session_start (and command context) only fires via bindExtensions,
-  // which the TUI normally calls. Empty bindings use pi's no-op UI context.
-  await session.bindExtensions({});
-  return session;
+    const { session } = await createAgentSession({
+      cwd,
+      modelRuntime,
+      model,
+      tools: ["read"],
+      resourceLoader: loader,
+      sessionManager: SessionManager.inMemory(cwd),
+    });
+    // SDK mode: session_start (and command context) only fires via bindExtensions,
+    // which the TUI normally calls. Empty bindings use pi's no-op UI context.
+    await session.bindExtensions({});
+    return session;
+  } catch (err) {
+    // ocr R13M: failure paths must not leave the env pointing at the temp dir.
+    restoreAgentDirEnv();
+    throw err;
+  }
 }
 
 // ---------------------------------------------------------------------------

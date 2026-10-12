@@ -25,11 +25,12 @@ import {
   gatewayUp,
   makeSkill,
   makeTempDir,
+  restoreAgentDirEnv,
   suite,
 } from "./helpers/preset-harness.ts";
 
 afterAll(() => {
-  delete process.env.PI_CODING_AGENT_DIR;
+  restoreAgentDirEnv();
   cleanupMadeDirs();
 });
 
