@@ -56,10 +56,10 @@ export default function timekeeperExtension(pi: ExtensionAPI) {
     if (!result.injected || result.content == null) {
       return;
     }
+    // OCR O2：先持久化再提交内存状态——appendEntry 失败时内存里的 pending（forcePending 或
+    // forceReanchor）原封不动，下个 run 重试；先改 state 会把待重锚信号消费掉。
+    pi.appendEntry(STATE_ENTRY, result.state);
     state = result.state;
-    pi.appendEntry(STATE_ENTRY, state);
-    // Clear only after the state is persisted — a failure before this point must not
-    // consume the pending re-anchor.
     forceReanchor = false;
     return {
       message: {
@@ -71,12 +71,16 @@ export default function timekeeperExtension(pi: ExtensionAPI) {
   });
 
   // sessionManager 的完整类型未从 pi 公共入口导出；用结构子集 + 边界 cast（review S1 判定接受）。
+  // OCR O1：restore 后同步 forceReanchor 归属当前分支——分支 A 的 compact 残留不得泄漏到分支 B；
+  // 异常回退同样清零（无 state 即无 pending）。
   function restoreFromBranch(ctx: { sessionManager: { getBranch(): unknown; getEntries(): unknown } }) {
     try {
       const entries = (ctx.sessionManager.getBranch() ?? ctx.sessionManager.getEntries()) as StateEntry[];
       state = restoreState(entries);
+      forceReanchor = state.forcePending === true;
     } catch {
       state = {};
+      forceReanchor = false;
     }
   }
 }
