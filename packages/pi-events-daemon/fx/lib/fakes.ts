@@ -24,7 +24,7 @@ export class FakeClock implements Clock {
     return { cancel: () => void (timer.cancelled = true) };
   }
 
-  /** 手动推进 ms 毫秒：到期定时器按序同步触发后返回。触发时虚拟时间走到该定时器的到期时刻（回调内 now() 与新调度均相对触发时刻），全部结算后 now() 停在推进终点。 */
+  /** 手动推进 ms 毫秒：到期定时器按序同步触发后返回。触发时虚拟时间走到该定时器的到期时刻（回调内 now() 与新调度均相对触发时刻），全部结算后 now() 停在推进终点；回调内重入 step 推进更远时保留最大值（now() 单调不减）。 */
   step(ms = 0): void {
     const target = this.time + Math.max(0, ms);
     for (;;) {
@@ -36,7 +36,8 @@ export class FakeClock implements Clock {
       this.time = Math.max(this.time, next.due);
       next.fn();
     }
-    this.time = target;
+    // 结算取最大值：回调内重入 step 已推进超过本步终点时不得倒退（单调契约）
+    this.time = Math.max(this.time, target);
     this.timers = this.timers.filter((t) => !t.cancelled);
   }
 }

@@ -58,6 +58,21 @@ describe("票 13 FakeClock：manual drive（fx.md 钉死契约：手动推进、
     expect(clock.pendingCount).toBe(0);
     expect(fired).toEqual([1, 2]);
   });
+
+  it("重入 step：回调内 step 推进超过本步终点时保留最大值，now() 单调不减", () => {
+    const clock = new FakeClock();
+    const seenNow: number[] = [];
+
+    clock.setTimeout(() => {
+      seenNow.push(clock.now()); // 触发时刻 10
+      clock.step(15); // 内层重入推进到 25
+      seenNow.push(clock.now());
+    }, 10);
+    clock.step(10); // 外层终点 10——不得把 25 拉回 10
+
+    expect(seenNow).toEqual([10, 25]);
+    expect(clock.now()).toBe(25);
+  });
 });
 
 describe("票 13 FakeExec：脚本化响应序列（fx.md 钉死契约）", () => {
