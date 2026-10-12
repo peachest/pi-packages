@@ -200,6 +200,25 @@ describe("票 19 组 5——歧义保守降级（C1：unknown 是正常返回值
   });
 });
 
+describe("票 19 Finding 修复——形态归类按命中条目字段路径（header 仅提示；ocr 评审 medium：无 header 的 v4 文件不误报 v3）", () => {
+  it("无 header 的 v4 文件（无 lane 信封）：v4 路径命中 → format v4", async () => {
+    const fs = new FakeFs({ [REF.sessionFile]: `${v4NotificationLine("n-h4", "passed", "ev-h4")}\n` });
+    expect(await createTranscriptAdapter(fs).verify(REF, "n-h4")).toEqual({
+      verdict: "passed",
+      evidenceRef: "ev-h4",
+      format: "v4",
+    });
+  });
+
+  it("无 header 的 v3 文件：v3 路径命中 → format v3（对称钉住）", async () => {
+    const fs = new FakeFs({ [REF.sessionFile]: `${v3NotificationLine("n-h3", "failed")}\n` });
+    expect(await createTranscriptAdapter(fs).verify(REF, "n-h3")).toEqual({
+      verdict: "failed",
+      format: "v3",
+    });
+  });
+});
+
 describe("票 19 组 6——只读断言（无写调用）：fx Fs 接口无写方法 + adapter 调用前后文件面不变", () => {
   it("locate/verify 前后 FakeFs 文件面逐字节不变", async () => {
     const fs = new FakeFs({ [REF.sessionFile]: `${V3_HEADER}\n${v3NotificationLine("n-r", "passed", "ev-r")}\n{torn` });

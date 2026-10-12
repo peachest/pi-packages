@@ -20,6 +20,8 @@
  * - verdict 语义 = 通知条目自带的判定（billboard 的实体判定 / 派发回执的 turn 判定），
  *   取值域与 domain Verdict 同串（"passed"|"failed"|"waiting"，#31 判定三态）；adapter 不
  *   import domain（fx-only），结构同形即合约（store 先例 D3）。
+ * - 形态标记（verify）：按命中条目的字段路径归类（v3 路径命中=v3、v4 路径命中=v4），
+ *   header 仅 locate 面提示——不依赖文件头单点（ocr 评审 medium：无 header 的 v4 文件不误报 v3）。
  * - 保守降级（C1）：无法唯一确定 → "unknown" + reason；不抛异常。条目未出现 → "waiting"
  *   + "not-found"（撕裂尾行期间不产生假阴性：未落盘 ≠ 不存在）。
  * - 撕裂尾行（harness-v2：JSONL 无 fsync，尾行 = 未确认写入可截断）：仅最后一个非空行
@@ -107,11 +109,13 @@ function isNotificationV4(record: Record<string, unknown>): boolean {
   return isRecord(message) && message.role === "custom" && message.customType === NOTIFICATION_CUSTOM_TYPE;
 }
 
-/** 命中通知条目的抽取面（字段路径表逐条落地；lane 信封单列）。 */
+/** 命中通知条目的抽取面（字段路径表逐条落地；lane 信封单列；format 按命中路径归类）。 */
 interface NotificationHit {
   notificationId: unknown;
   verdict: unknown;
   evidenceRef: unknown;
+  /** 命中条目所处形态代 = 命中字段路径（v3 载体/v4 载体），不依赖文件头单点。 */
+  format: TranscriptFormat;
   lane?: string;
 }
 
@@ -121,6 +125,7 @@ function hitOfV3(record: Record<string, unknown>): NotificationHit {
     notificationId: isRecord(details) ? details.notificationId : undefined,
     verdict: isRecord(details) ? details.verdict : undefined,
     evidenceRef: isRecord(details) ? details.evidenceRef : undefined,
+    format: "v3",
   };
 }
 
@@ -135,6 +140,7 @@ function hitOfV4(record: Record<string, unknown>): NotificationHit {
     notificationId: isRecord(details) ? details.notificationId : undefined,
     verdict: isRecord(details) ? details.verdict : undefined,
     evidenceRef: isRecord(details) ? details.evidenceRef : undefined,
+    format: "v4",
     ...(lane !== undefined ? { lane } : {}),
   };
 }
@@ -181,7 +187,6 @@ function createTranscriptAdapter(fs: Fs): TranscriptAdapter {
         if (lines[i].trim() !== "") lastMeaningful = i;
       }
 
-      let format: TranscriptFormat | undefined;
       let corrupt = false; // 中段坏行（≠ 撕裂尾行）→ 整文件不可信，保守降级
       const hits: NotificationHit[] = [];
 
@@ -199,20 +204,11 @@ function createTranscriptAdapter(fs: Fs): TranscriptAdapter {
           break;
         }
         if (!isRecord(entry)) continue;
-        if (format === undefined) {
-          if (isHeaderV4(entry)) format = "v4";
-          else if (isHeaderV3(entry)) format = "v3";
-        }
         if (isNotificationV3(entry)) hits.push(hitOfV3(entry));
         else if (isNotificationV4(entry)) hits.push(hitOfV4(entry));
       }
 
       if (corrupt) return { verdict: "unknown", reason: "corrupt-line" };
-
-      // 形态兜底：头行不可判时由命中条目自身形态代标记（lane 信封仅 v4 载体形态有）。
-      if (format === undefined && hits.length > 0) {
-        format = hits.some((h) => h.lane !== undefined) ? "v4" : "v3";
-      }
 
       const matched = hits.filter((h) => h.notificationId === notificationId);
       if (matched.length === 0) return { verdict: "waiting", reason: "not-found" };
@@ -227,7 +223,7 @@ function createTranscriptAdapter(fs: Fs): TranscriptAdapter {
       return {
         verdict: winner.verdict as Exclude<AdapterVerdict, "unknown">,
         ...(typeof winner.evidenceRef === "string" ? { evidenceRef: winner.evidenceRef } : {}),
-        ...(format !== undefined ? { format } : {}),
+        format: winner.format, // 形态标记按命中路径归类（header 仅 locate 提示，不参与 verify 归类）
         ...(winner.lane !== undefined ? { lane: winner.lane } : {}),
       };
     },
