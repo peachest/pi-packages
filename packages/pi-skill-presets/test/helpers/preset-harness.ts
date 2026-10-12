@@ -21,6 +21,7 @@ import {
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
 import type { Model, Api } from "@earendil-works/pi-ai";
 import { pickGatewayFromRaw } from "./gateway-pick.ts";
+import type { GatewayInfo } from "./gateway-pick.ts";
 import skillPresetsExtension from "../../index.ts";
 import { setNotifyObserver } from "../../index.ts";
 import type { RecordedNotification } from "../../index.ts";
@@ -41,7 +42,7 @@ export const REAL_AGENT_DIR =
 // Gateway precheck
 // ---------------------------------------------------------------------------
 
-function findGatewayProvider(): { baseUrl: string; apiKey?: string } | undefined {
+function findGatewayProvider(): GatewayInfo | undefined {
   let raw: unknown;
   try {
     raw = JSON.parse(readFileSync(join(REAL_AGENT_DIR, "models.json"), "utf-8"));
@@ -183,9 +184,20 @@ export const modelRuntime = await ModelRuntime.create({
   modelsPath: join(REAL_AGENT_DIR, "models.json"),
 });
 const available = await modelRuntime.getAvailable();
-export const model: Model<Api> | undefined = available.find(
-  (m) => m.id === PINNED_MODEL_ID,
-);
+// Provider-consistent pick (ocr R5M1): the probed gateway names a provider;
+// prefer the pinned model under that same provider so the probe's
+// reachability verdict actually applies to the model we select. Only when
+// the pinned model does not exist under the probed provider do we fall back
+// to any provider carrying it — and say so loudly.
+export const model: Model<Api> | undefined =
+  available.find(
+    (m) => m.provider === gateway?.provider && m.id === PINNED_MODEL_ID,
+  ) ?? available.find((m) => m.id === PINNED_MODEL_ID);
+if (model && gateway && model.provider !== gateway.provider) {
+  console.warn(
+    `[preset-harness] provider mismatch: gateway probe picked "${gateway.provider}" but pinned model "${PINNED_MODEL_ID}" resolved from provider "${model.provider}" — probe reachability may not reflect the model's provider`,
+  );
+}
 
 // Whole group skips when the gateway is unreachable OR the pinned model is
 // absent — same treatment as network unreachability, never a silent fallback.

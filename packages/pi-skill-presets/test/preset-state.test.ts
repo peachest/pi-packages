@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { PresetState, PRESET_OP_CUSTOM_TYPE, rebuildActiveSetFromEntries } from "../index.ts";
 import type { PresetsConfig, PresetOpEntry } from "../index.ts";
+import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 
 describe("PresetState", () => {
   it("loads and offloads presets", () => {
@@ -188,5 +189,31 @@ describe("rebuildActiveSetFromEntries — compaction-safe replay (ocr R4H)", () 
     rebuildActiveSetFromEntries(sm.getBranch(), state);
     expect(state.has("early")).toBe(true);
     expect(state.has("late")).toBe(true);
+  });
+
+  it("skips custom entries with null data without aborting the replay (ocr R5M3)", () => {
+    // state.clear() has already run by the time entries are filtered, so a
+    // single malformed entry must not throw and leave the active set empty.
+    const nullEntry = {
+      type: "custom",
+      customType: PRESET_OP_CUSTOM_TYPE,
+      data: null,
+    } as unknown as SessionEntry;
+    const legit = (action: "load" | "offload", preset: string): SessionEntry =>
+      ({
+        type: "custom",
+        customType: PRESET_OP_CUSTOM_TYPE,
+        data: { action, preset, timestamp: Date.now() },
+      }) as unknown as SessionEntry;
+
+    const state = new PresetState();
+    expect(() =>
+      rebuildActiveSetFromEntries(
+        [legit("load", "before"), nullEntry, legit("load", "after")],
+        state,
+      ),
+    ).not.toThrow();
+    expect(state.has("before")).toBe(true);
+    expect(state.has("after")).toBe(true);
   });
 });

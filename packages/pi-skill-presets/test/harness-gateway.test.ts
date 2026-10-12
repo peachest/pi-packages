@@ -46,6 +46,7 @@ describe("pickGatewayFromRaw structure defense (ocr N1)", () => {
     };
     expect(pickGatewayFromRaw(raw, PINNED)).toEqual({
       baseUrl: "https://host.example",
+      provider: "host",
       apiKey: "sk-test",
     });
   });
@@ -61,6 +62,7 @@ describe("pickGatewayFromRaw structure defense (ocr N1)", () => {
     };
     expect(pickGatewayFromRaw(raw, PINNED)).toEqual({
       baseUrl: "http://fallback.example",
+      provider: "fb",
       apiKey: "k",
     });
   });
@@ -74,6 +76,7 @@ describe("pickGatewayFromRaw structure defense (ocr N1)", () => {
     };
     expect(pickGatewayFromRaw(raw, PINNED)).toEqual({
       baseUrl: "http://fallback.example",
+      provider: "fb",
     });
   });
 
@@ -86,6 +89,7 @@ describe("pickGatewayFromRaw structure defense (ocr N1)", () => {
     };
     expect(pickGatewayFromRaw(raw, PINNED)).toEqual({
       baseUrl: "https://good.example",
+      provider: "good",
       apiKey: "k",
     });
   });
@@ -99,7 +103,35 @@ describe("pickGatewayFromRaw structure defense (ocr N1)", () => {
     };
     expect(pickGatewayFromRaw(raw, PINNED)).toEqual({
       baseUrl: "https://good.example",
+      provider: "good",
       apiKey: "k",
+    });
+  });
+
+  it("a hosting provider with credentials in the URL falls back to a valid provider (ocr R5M2)", () => {
+    const raw = {
+      providers: {
+        host: { baseUrl: "https://user:pass@host.example", models: [{ id: PINNED }] },
+        fb: { baseUrl: "http://fallback.example" },
+      },
+    };
+    expect(pickGatewayFromRaw(raw, PINNED)).toEqual({
+      baseUrl: "http://fallback.example",
+      provider: "fb",
+    });
+  });
+
+  it("rejects username-only and password-only credential URLs (ocr R5M2)", () => {
+    const raw = {
+      providers: {
+        userOnly: { baseUrl: "https://user@host.example" },
+        passOnly: { baseUrl: "https://:pass@host.example" },
+        good: { baseUrl: "https://good.example" },
+      },
+    };
+    expect(pickGatewayFromRaw(raw, PINNED)).toEqual({
+      baseUrl: "https://good.example",
+      provider: "good",
     });
   });
 });

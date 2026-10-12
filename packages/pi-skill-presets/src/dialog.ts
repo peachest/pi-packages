@@ -237,13 +237,18 @@ class PresetDialog extends Container {
       }
     }
     fresh.definitions = defs;
+    // Write first, refresh state after (ocr R5M4): if the write throws, the
+    // error propagates to the caller and this.config/originalDefinitions
+    // still hold the pre-save edits, so a retry re-merges and re-writes them.
+    // Refreshing the baseline before the write would silently drop the edits
+    // on a failed save.
+    writePresetsConfig(fresh, "global");
     this.config = fresh;
     // Refresh the delta baseline to the merged result (ocr R4M2/M3): later
     // saves only merge edits not yet on disk, so external changes made after
     // this save survive, and a preset created-then-deleted in this dialog is
     // actually deleted (it is now part of the baseline).
     this.originalDefinitions = structuredClone(fresh.definitions);
-    writePresetsConfig(fresh, "global");
   }
 
   private loadAllSkills(): void {

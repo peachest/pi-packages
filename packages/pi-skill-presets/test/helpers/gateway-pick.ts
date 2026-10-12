@@ -9,6 +9,8 @@
 
 export interface GatewayInfo {
   baseUrl: string;
+  /** Provider name (models.json providers-map key) this gateway was picked from (ocr R5M1). */
+  provider: string;
   apiKey?: string;
 }
 
@@ -27,21 +29,24 @@ export function pickGatewayFromRaw(
     return undefined;
   }
   // Validate each provider value individually: null, arrays and primitives
-  // are all legal JSON shapes that must be skipped, not dereferenced.
-  const providers: unknown[] = Object.values(providersMap as Record<string, unknown>);
-  const usable = providers.filter(
-    (p): p is Record<string, unknown> =>
-      p !== null && typeof p === "object" && !Array.isArray(p),
-  );
+  // are all legal JSON shapes that must be skipped, not dereferenced. Keep
+  // the map key — it is the provider name consumers need to stay
+  // provider-consistent (ocr R5M1).
+  const usable = Object.entries(providersMap as Record<string, unknown>)
+    .filter(
+      (entry): entry is [string, Record<string, unknown>] =>
+        entry[1] !== null &&
+        typeof entry[1] === "object" &&
+        !Array.isArray(entry[1]),
+    );
   // URL-validity first (ocr R4M1): a hosting provider with an unusable
   // baseUrl must not shadow a valid fallback — filter to providers that can
   // actually be dialed, then apply the hosting-first preference in that set.
-  const hasValidUrl = (
-    p: Record<string, unknown>,
-  ): p is Record<string, unknown> & { baseUrl: string } =>
-    isValidHttpUrl(p.baseUrl);
-  const valid = usable.filter(hasValidUrl);
-  const hosting = valid.find((p) => {
+  const valid = usable.filter(
+    (entry): entry is [string, Record<string, unknown> & { baseUrl: string }] =>
+      isValidHttpUrl(entry[1].baseUrl),
+  );
+  const hosting = valid.find(([, p]) => {
     const models = p.models;
     if (!Array.isArray(models)) return false;
     return models.some(
@@ -54,16 +59,24 @@ export function pickGatewayFromRaw(
   });
   const picked = hosting ?? valid[0];
   if (!picked) return undefined;
-  const apiKey = picked.apiKey;
-  return { baseUrl: picked.baseUrl, ...(typeof apiKey === "string" ? { apiKey } : {}) };
+  const [provider, p] = picked;
+  const apiKey = p.apiKey;
+  return {
+    baseUrl: p.baseUrl,
+    provider,
+    ...(typeof apiKey === "string" ? { apiKey } : {}),
+  };
 }
 
 // Strict http(s) check (ocr R1): startsWith("http") accepts junk like
-// "httpx://bad"; parse and pin the protocol instead.
+// "httpx://bad"; parse and pin the protocol instead. Credentials embedded
+// in the URL (ocr R5M2) make fetch reject the request outright, so they
+// count as unusable.
 function isValidHttpUrl(value: unknown): value is string {
   if (typeof value !== "string") return false;
   try {
     const url = new URL(value);
+    if (url.username !== "" || url.password !== "") return false;
     return url.protocol === "http:" || url.protocol === "https:";
   } catch {
     return false;
