@@ -18,7 +18,7 @@ export interface Exec {
 }
 
 export interface ExecOptions {
-  /** 超时杀进程；缺省不超时（10s 默认 / 300s 上限是 prober 执行面策略，不在 fx）。 */
+  /** 超时杀进程；缺省不超时（10s 默认 / 300s 上限是 prober 执行面策略，不在 fx）。契约：timeoutMs 后 run 必结算（成功/失败/超时终止三选一）——实现须升级杀（ShellExec：SIGTERM 后宽限期 SIGKILL 整进程组），忽略 TERM 的 hung checker 不得挂死承诺。 */
   timeoutMs?: number;
   /** 叠加在 process.env 之上（no_proxy 全局注入等策略经此传入）。 */
   env?: Record<string, string>;

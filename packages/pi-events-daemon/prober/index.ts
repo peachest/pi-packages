@@ -44,10 +44,14 @@ export const PROBE_TIMEOUT_DEFAULT_MS = 10_000;
 /** 超时上限（#31 B3：hung checker 不得 wedge 池）。 */
 export const PROBE_TIMEOUT_MAX_MS = 300_000;
 
-/** 内置 token 脱敏 pattern（B2③ 执行点）：glab token / Bearer 头 / 赋值形机密。 */
+/** 内置 token 脱敏 pattern（B2③ 执行点）：glab token / Bearer 头 / 赋值形机密。引号双形态（响应体场景）须排在通配赋值形之前——通配形遇引号值只掩到首个空格、遇引号字段名不命中。 */
 const DEFAULT_TOKEN_PATTERNS: readonly RegExp[] = [
   /\bglpat-[\w-]{8,}\b/g,
   /\bBearer\s+[\w.~+/=-]{8,}/gi,
+  // 引号字段名形态（JSON 响应体）："token":"..." → 连值整体掩码（值内 \" 转义段不截断）
+  /"(?:token|password|secret|api[-_]?key)"\s*:\s*"(?:[^"\\]|\\.)*"/gi,
+  // 引号值形态（shell/env 赋值）：password="..." → 值含空格/转义整体掩码
+  /\b(?:token|password|secret|api[-_]?key)\s*=\s*"(?:[^"\\]|\\.)*"/gi,
   /\b(?:token|password|secret|api[-_]?key)\s*[=:]\s*\S+/gi,
 ];
 
@@ -109,7 +113,8 @@ export class Prober {
       released = true;
       this.inflight--;
       const next = this.queued.shift();
-      if (next) this.start(next.seq, next.slot, next.timeoutMs);
+      // 补位经微任务：同步抛错的 run 否则会形成 release→start→failExec→release 无界同步递归，栈溢出点不定且静默卡死剩余容量与序号
+      if (next) queueMicrotask(() => this.start(next.seq, next.slot, next.timeoutMs));
     };
     const emit = (result: ProbeResult) => {
       if (settled) return; // 超时到点后迟到的 exec 结果丢弃，不二次回流

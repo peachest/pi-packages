@@ -404,6 +404,60 @@ describe("票 16 修复 — ocr 评审 Finding 5：run 同步抛错转 waiting",
   });
 });
 
+describe("票 16 复核 — Finding 2：默认掩码覆盖响应体凭据形态（引号字段名/引号值含空格转义）", () => {
+  it('JSON 响应体 {"token":"abcdefgh123456"}：引号字段名形态掩码，值明文不出模块', async () => {
+    const exec = new fx.FakeExec();
+    exec.enqueue({ exitCode: 0, stdout: 'resp {"token":"abcdefgh123456"} end' });
+    const results: prober.ProbeResult[] = [];
+    new prober.Prober({ exec, clock: new fx.FakeClock(), onResult: (r) => results.push(r) }).probe({ slotKey: "s", check: "x" });
+    await tick();
+    expect(results[0].evidence).toBe("resp {***} end");
+  });
+
+  it('password="alpha beta gamma"：引号值整体（含空格/转义）掩码，不只剩前半', async () => {
+    const exec = new fx.FakeExec();
+    exec.enqueue({ exitCode: 3, stdout: "status ok", stderr: 'denied password="alpha beta gamma" and token="x\\"y z" retry' });
+    const results: prober.ProbeResult[] = [];
+    new prober.Prober({ exec, clock: new fx.FakeClock(), onResult: (r) => results.push(r) }).probe({ slotKey: "s", check: "x" });
+    await tick();
+    expect(results[0].evidence).toBe('status ok\ndenied *** and *** retry');
+  });
+
+  it('rejection 通道同套规则：错误消息携带响应体凭据形态也掩码（同步异常共用 failExec 路径）', async () => {
+    const exec = new fx.FakeExec();
+    exec.enqueueFailure(new Error('body: {"token":"abcdefgh123456"} leak'));
+    const results: prober.ProbeResult[] = [];
+    new prober.Prober({ exec, clock: new fx.FakeClock(), onResult: (r) => results.push(r) }).probe({ slotKey: "s", check: "x" });
+    await tick();
+    expect(results[0].reason).toBe("exec error: body: {***} leak");
+  });
+});
+
+describe("票 16 复核 — Finding 3：补位调度入微任务（同步抛错递归栈深有界）", () => {
+  it("连续同步抛错的 run + 大队列：不栈溢出，全部按提交序 waiting 回流（无序号缺口、无容量泄漏）", async () => {
+    const resolvers: ((r: fx.ExecResult) => void)[] = [];
+    let started = 0;
+    const exec: fx.Exec = {
+      run() {
+        started++;
+        if (started <= 8) return new Promise<fx.ExecResult>((resolve) => resolvers.push(resolve)); // 前 8 个占槽挂起
+        throw new Error("spawn ENOENT"); // 补位启动的队列任务全部同步抛错
+      },
+    };
+    const results: prober.ProbeResult[] = [];
+    const p = new prober.Prober({ exec, clock: new fx.FakeClock(), onResult: (r) => results.push(r) });
+    const N = 50_000;
+    for (let i = 0; i < N; i++) p.probe({ slotKey: `s${i}`, check: "x" });
+    expect(started).toBe(8); // 大队列尚未启动
+    for (const resolve of resolvers) resolve({ exitCode: 0, signal: null, stdout: "", stderr: "", timedOut: false });
+    await tick();
+    expect(results).toHaveLength(N);
+    expect(results.map((r) => r.slotKey)).toEqual([...Array(N).keys()].map((i) => `s${i}`));
+    expect(results.slice(0, 8).every((r) => r.verdict === "passed")).toBe(true);
+    expect(results.slice(8).every((r) => r.verdict === "waiting" && r.reason === "exec error: spawn ENOENT")).toBe(true);
+  });
+});
+
 describe("票 16 — 真 spawn 冒烟（真执行器 adapter 存在性证明，fx-ports-real 先例不跳过）", () => {
   it("ShellExec + SystemClock 全链：exit 0 → passed / exit 2 → failed", async () => {
     const results: prober.ProbeResult[] = [];
@@ -417,4 +471,20 @@ describe("票 16 — 真 spawn 冒烟（真执行器 adapter 存在性证明，f
     await vi.waitFor(() => expect(results).toHaveLength(2));
     expect(results.map((r) => r.verdict).sort()).toEqual(["failed", "passed"]);
   });
+
+  it("hung checker（trap 忽略 SIGTERM）：宽限期后 SIGKILL 升级使 exec 结算 → 池释放补位，8 连坐不 wedge", async () => {
+    const results: prober.ProbeResult[] = [];
+    const p = new prober.Prober({
+      exec: new fx.ShellExec(),
+      clock: new fx.SystemClock(),
+      onResult: (r) => results.push(r),
+    });
+    for (let i = 0; i < 8; i++) {
+      p.probe({ slotKey: `hung${i}`, check: "trap '' TERM; while :; do sleep 1; done", timeoutMs: 100 });
+    }
+    p.probe({ slotKey: "s8", check: "true" }); // 第 9 个：排队，仅在池空位释放后启动
+    await vi.waitFor(() => expect(results).toHaveLength(9), { timeout: 15_000 });
+    expect(results[8].slotKey).toBe("s8");
+    expect(results[8].verdict).toBe("passed"); // hung 组被杀 → 槽位释放 → 补位跑完 → 不 wedge
+  }, 20_000);
 });
