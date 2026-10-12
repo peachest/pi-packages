@@ -155,6 +155,91 @@ export function appendIfMissing(
   return { log: [...log, event], outcome: { kind: "appended", event } };
 }
 
+// --- verdict 计数（k8s probe 阈值语义，#31 R2 裁定）---
+
+export interface ThresholdConfig {
+  failureThreshold: number;
+  successThreshold: number;
+}
+
+export const DEFAULT_THRESHOLDS: ThresholdConfig = { failureThreshold: 1, successThreshold: 1 };
+
+/** 阈值评估状态：settled = 已到达的判定（null = 尚无翻转）；计数期内不翻转不发事件。 */
+export interface ThresholdState {
+  consecutiveFails: number;
+  consecutivePasses: number;
+  settled: Verdict | null;
+}
+
+export const INITIAL_THRESHOLD_STATE: ThresholdState = { consecutiveFails: 0, consecutivePasses: 0, settled: null };
+
+/**
+ * 单次 verdict 观测：
+ * - failed：连续失败 +1（清成功计数），计满 failureThreshold 且 settled≠failed → 翻转沿（flipped=true，到达事件）
+ * - passed：对称，计满 successThreshold 且 settled≠passed → 恢复翻转
+ * - waiting：中性断连——清两侧连续计数，永不翻转（"连续"字面语义）
+ * 翻转沿才发事件；持续同态不重复发。
+ */
+export function observeVerdict(
+  state: ThresholdState,
+  verdict: Verdict,
+  cfg: ThresholdConfig = DEFAULT_THRESHOLDS,
+): { state: ThresholdState; flipped: boolean } {
+  if (verdict === "waiting") {
+    return { state: { consecutiveFails: 0, consecutivePasses: 0, settled: state.settled }, flipped: false };
+  }
+  if (verdict === "failed") {
+    const consecutiveFails = state.consecutiveFails + 1;
+    const flip = consecutiveFails >= cfg.failureThreshold && state.settled !== "failed";
+    return {
+      state: { consecutiveFails, consecutivePasses: 0, settled: flip ? "failed" : state.settled },
+      flipped: flip,
+    };
+  }
+  const consecutivePasses = state.consecutivePasses + 1;
+  const flip = consecutivePasses >= cfg.successThreshold && state.settled !== "passed";
+  return {
+    state: { consecutiveFails: 0, consecutivePasses, settled: flip ? "passed" : state.settled },
+    flipped: flip,
+  };
+}
+
+// --- 订阅判定：once / readyCheck / I7 终态关闭收窄 ---
+
+export type SubPhase = "startup" | "flip";
+
+/** 订阅形态：once = 单发等待（wait 形态）；twoStage = readyCheck 两阶段（startup → flip）。 */
+export interface SubShape {
+  once: boolean;
+  twoStage: boolean;
+}
+
+export type VerdictAction =
+  | { action: "stay-open" }
+  | { action: "advance"; phase: "flip" }
+  | { action: "close"; reason: "once-passed" | "failed-terminal" };
+
+/**
+ * verdict 到达时的订阅判定真值表（I7 收窄）。
+ * wait 形态 = once 订阅 或 twoStage 的 startup 阶段（含 ad-hoc 一次性等待）：failed 到达即终态关闭
+ * （等待的事实已定局，agent 自行重订）；flip 监视形态 failed = not-ready 翻转沿发事件，不关闭，
+ * 只经 ttl/cancel 退出。startup passed → 推进 flip（readyCheck 接管判定）；once 首 passed 关闭。
+ */
+export function onVerdict(shape: SubShape, phase: SubPhase, verdict: Verdict): VerdictAction {
+  if (verdict === "waiting") return { action: "stay-open" };
+  if (verdict === "failed") {
+    const waitForm = shape.once || (shape.twoStage && phase === "startup");
+    return waitForm ? { action: "close", reason: "failed-terminal" } : { action: "stay-open" };
+  }
+  if (shape.twoStage && phase === "startup") return { action: "advance", phase: "flip" };
+  return shape.once ? { action: "close", reason: "once-passed" } : { action: "stay-open" };
+}
+
+/** readyCheck：flip 阶段的第二判定 check；缺省沿用 startup check（两阶段订阅，US-8）。 */
+export function checkForPhase(spec: { check: string; readyCheck?: string }, phase: SubPhase): string {
+  return phase === "flip" ? (spec.readyCheck ?? spec.check) : spec.check;
+}
+
 /** 实体状态 = 其转换事件的纯归约（按 eventSeq 写入序取末次 to；无事件即 null，无 unprobed 前置态）。 */
 export function reduceState(log: readonly Transitioned[], ref: EntityRef): string | null {
   let latest: Transitioned | undefined;

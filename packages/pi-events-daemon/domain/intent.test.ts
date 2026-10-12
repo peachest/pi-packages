@@ -232,3 +232,160 @@ describe("I3：封闭集状态——消费侧同步拒绝集合外状态（查�
     expect(appendIfMissing([], ok).outcome.kind).toBe("appended");
   });
 });
+
+import {
+  DEFAULT_THRESHOLDS,
+  INITIAL_THRESHOLD_STATE,
+  observeVerdict,
+  onVerdict,
+  checkForPhase,
+  type Verdict,
+} from "./intent.ts";
+
+describe("verdict 阈值计数（k8s probe 语义）：N-1 不翻转、第 N 次翻转；成功恢复对称", () => {
+  const drive = (verdicts: Verdict[], cfg = DEFAULT_THRESHOLDS) => {
+    let state = INITIAL_THRESHOLD_STATE;
+    const flips: boolean[] = [];
+    for (const v of verdicts) {
+      const step = observeVerdict(state, v, cfg);
+      state = step.state;
+      flips.push(step.flipped);
+    }
+    return { state, flips };
+  };
+
+  it("failureThreshold=3：F,F 不翻不发；第 3 次 F 翻转为 failed", () => {
+    const { state, flips } = drive(["failed", "failed", "failed"], { failureThreshold: 3, successThreshold: 1 });
+    expect(flips).toEqual([false, false, true]);
+    expect(state.settled).toBe("failed");
+    expect(state.consecutiveFails).toBe(3);
+  });
+
+  it("成功恢复对称：先 failed 到达，再 P,P 不翻；第 3 次 P 翻回 passed", () => {
+    const drive = (verdicts: Verdict[], cfg = DEFAULT_THRESHOLDS) => {
+      let st = INITIAL_THRESHOLD_STATE;
+      const flips: boolean[] = [];
+      for (const v of verdicts) {
+        const step = observeVerdict(st, v, cfg);
+        st = step.state;
+        flips.push(step.flipped);
+      }
+      return { state: st, flips };
+    };
+    const arrived = drive(["failed", "failed", "failed"], { failureThreshold: 3, successThreshold: 1 });
+    expect(arrived.state.settled).toBe("failed");
+    const recovery = drive(["passed", "passed", "passed"], { failureThreshold: 1, successThreshold: 3 });
+    expect(recovery.flips).toEqual([false, false, true]);
+    expect(recovery.state.settled).toBe("passed");
+  });
+
+  it("默认阈值 1/1：首个 failed/passed 即翻转", () => {
+    expect(drive(["failed"]).state.settled).toBe("failed");
+    expect(drive(["passed"]).state.settled).toBe("passed");
+  });
+
+  it("计数期内不翻转不发事件：F,F 后 waiting 断连，重新计数", () => {
+    const { state, flips } = drive(
+      ["failed", "failed", "waiting", "failed"],
+      { failureThreshold: 3, successThreshold: 1 },
+    );
+    expect(flips).toEqual([false, false, false, false]);
+    expect(state.settled).toBeNull();
+    expect(state.consecutiveFails).toBe(1);
+  });
+
+  it("持续失败不重复发：翻转后继续 failed 不再 flipped", () => {
+    const { flips } = drive(
+      ["failed", "failed", "failed", "failed"],
+      { failureThreshold: 2, successThreshold: 1 },
+    );
+    expect(flips).toEqual([false, true, false, false]);
+  });
+
+  it("passed 与 failed 计数互斥重置（迟滞不对称场景）", () => {
+    const { state, flips } = drive(
+      ["failed", "passed", "failed", "failed", "failed"],
+      { failureThreshold: 3, successThreshold: 2 },
+    );
+    expect(flips).toEqual([false, false, false, false, true]);
+    expect(state.settled).toBe("failed");
+  });
+});
+
+describe("I7 收窄：wait/flip 双形态 failed 处理差异（onVerdict 真值表 + 阈值联动逐例）", () => {
+  it("onVerdict 真值表（once/twoStage/phase × verdict）", () => {
+    const cases: Array<{
+      shape: { once: boolean; twoStage: boolean };
+      phase: "startup" | "flip";
+      verdict: Verdict;
+      want: { action: string; reason?: string };
+    }> = [
+      // waiting 永不关闭、不推进
+      { shape: { once: true, twoStage: false }, phase: "flip", verdict: "waiting", want: { action: "stay-open" } },
+      { shape: { once: false, twoStage: true }, phase: "startup", verdict: "waiting", want: { action: "stay-open" } },
+      // failed：wait 形态（once 或 startup 阶段）终态关闭；flip 监视不关闭
+      { shape: { once: true, twoStage: false }, phase: "flip", verdict: "failed", want: { action: "close", reason: "failed-terminal" } },
+      { shape: { once: false, twoStage: true }, phase: "startup", verdict: "failed", want: { action: "close", reason: "failed-terminal" } },
+      { shape: { once: false, twoStage: true }, phase: "flip", verdict: "failed", want: { action: "stay-open" } },
+      { shape: { once: false, twoStage: false }, phase: "flip", verdict: "failed", want: { action: "stay-open" } },
+      // passed：startup 通过 → 推进 flip；once 首 passed 关闭；普通监视不关闭
+      { shape: { once: false, twoStage: true }, phase: "startup", verdict: "passed", want: { action: "advance" } },
+      { shape: { once: true, twoStage: false }, phase: "flip", verdict: "passed", want: { action: "close", reason: "once-passed" } },
+      { shape: { once: true, twoStage: true }, phase: "flip", verdict: "passed", want: { action: "close", reason: "once-passed" } },
+      { shape: { once: false, twoStage: true }, phase: "flip", verdict: "passed", want: { action: "stay-open" } },
+      { shape: { once: false, twoStage: false }, phase: "flip", verdict: "passed", want: { action: "stay-open" } },
+    ];
+    for (const c of cases) {
+      const got = onVerdict(c.shape, c.phase, c.verdict);
+      expect(got.action).toBe(c.want.action);
+      if (c.want.reason) expect(got).toEqual({ action: "close", reason: c.want.reason });
+    }
+  });
+
+  it("逐例：failureThreshold=3 时 wait 形态第 3 次 failed = 事件+终态关闭；flip 形态 = 翻转沿事件+继续监视", () => {
+    const cfg = { failureThreshold: 3, successThreshold: 1 };
+    let state = INITIAL_THRESHOLD_STATE;
+    const waitCloses: boolean[] = [];
+    const flipEvents: boolean[] = [];
+    for (const v of ["failed", "failed", "failed", "failed"] as Verdict[]) {
+      const step = observeVerdict(state, v, cfg);
+      state = step.state;
+      // wait 形态（ad-hoc 一次性等待）：failed 翻转到达即终态关闭
+      waitCloses.push(step.flipped && onVerdict({ once: true, twoStage: false }, "flip", v).action === "close");
+      // flip 形态：翻转沿发事件（flipped=true），订阅不关
+      flipEvents.push(step.flipped && onVerdict({ once: false, twoStage: false }, "flip", v).action === "stay-open");
+    }
+    expect(waitCloses).toEqual([false, false, true, false]);
+    expect(flipEvents).toEqual([false, false, true, false]);
+  });
+
+  it("flip 形态持续 failed 不重复发事件（翻转沿语义）", () => {
+    const cfg = { failureThreshold: 1, successThreshold: 1 };
+    let state = INITIAL_THRESHOLD_STATE;
+    const flips: boolean[] = [];
+    for (const v of ["failed", "failed", "failed"] as Verdict[]) {
+      const step = observeVerdict(state, v, cfg);
+      state = step.state;
+      flips.push(step.flipped);
+      expect(onVerdict({ once: false, twoStage: false }, "flip", v).action).toBe("stay-open");
+    }
+    expect(flips).toEqual([true, false, false]);
+  });
+});
+
+describe("once / readyCheck 判定真值表", () => {
+  it("once：首 passed 关闭判定已含于 onVerdict 表（once-passed / failed-terminal / waiting 不关）", () => {
+    expect(onVerdict({ once: true, twoStage: false }, "flip", "passed")).toEqual({ action: "close", reason: "once-passed" });
+    expect(onVerdict({ once: true, twoStage: false }, "flip", "failed")).toEqual({ action: "close", reason: "failed-terminal" });
+    expect(onVerdict({ once: true, twoStage: false }, "flip", "waiting")).toEqual({ action: "stay-open" });
+  });
+
+  it("readyCheck：flip 判定第二 check，缺省沿用 check", () => {
+    const spec = { check: "curl -sf localhost:8080/healthz", readyCheck: "curl -sf localhost:8080/ready" };
+    expect(checkForPhase(spec, "startup")).toBe("curl -sf localhost:8080/healthz");
+    expect(checkForPhase(spec, "flip")).toBe("curl -sf localhost:8080/ready");
+    const noReady = { check: "curl -sf localhost:8080/healthz" };
+    expect(checkForPhase(noReady, "startup")).toBe("curl -sf localhost:8080/healthz");
+    expect(checkForPhase(noReady, "flip")).toBe("curl -sf localhost:8080/healthz");
+  });
+});
