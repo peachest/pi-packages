@@ -105,6 +105,22 @@ describe("票 13 FakeExec：脚本化响应序列（fx.md 钉死契约）", () =
     await exec.run("only-scripted");
     await expect(exec.run("un-scripted")).rejects.toThrowError(/script exhausted.*un-scripted/s);
   });
+
+  it("enqueueFailure 注入 Promise 拒绝：与 enqueue 同队按调用序混排消费", async () => {
+    const exec = new FakeExec();
+    exec.enqueue({ exitCode: 0 });
+    exec.enqueueFailure(new Error("boom"));
+    exec.enqueue({ exitCode: 2 });
+    await expect(exec.run("first")).resolves.toMatchObject({ exitCode: 0 });
+    await expect(exec.run("second")).rejects.toThrowError("boom");
+    await expect(exec.run("third")).resolves.toMatchObject({ exitCode: 2 });
+  });
+
+  it("enqueueFailure(err, true) 同步抛错——run 不返回 Promise（调用方 try/catch 面的 fake 载体，票 13 契约延续）", () => {
+    const exec = new FakeExec();
+    exec.enqueueFailure(new Error("sync boom"), true);
+    expect(() => exec.run("x")).toThrowError("sync boom");
+  });
 });
 
 describe("票 13 FakePusher：push 记录 + 注入投递失败（fx.md 钉死：close/reject 路径）", () => {

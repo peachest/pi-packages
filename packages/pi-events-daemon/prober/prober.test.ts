@@ -165,14 +165,20 @@ describe("票 16 — checker 池 ≤8（第 9 个排队，空位释放才启动�
     expect(exec.calls[8].command).toBe("c8");
   });
 
-  it("8 并发满载时超时结算同样释放空位（hung checker 不 wedge 池）", async () => {
+  it("超时结算不释放执行容量：exec 未终止不补位（实际并发不超 8），Exec 终止（超时杀形）后才补位", async () => {
     const exec = new DeferredExec();
     const clock = new fx.FakeClock();
-    const p = new prober.Prober({ exec, clock, onResult: () => undefined });
+    const results: prober.ProbeResult[] = [];
+    const p = new prober.Prober({ exec, clock, onResult: (r) => results.push(r) });
     for (let i = 0; i < 9; i++) p.probe({ slotKey: `s${i}`, check: `c${i}` });
     expect(exec.calls).toHaveLength(8);
-    clock.step(10_000); // 8 个全部超时结算
-    expect(exec.calls).toHaveLength(9); // 第 9 个补位
+    clock.step(10_000); // 8 个全部超时结算：结果回流，但进程（fake 挂起未决）仍在「跑」
+    expect(results).toHaveLength(8); // 超时结果照常回流
+    expect(exec.calls).toHaveLength(8); // 未确认执行终止：不补位
+    exec.resolve(0, { exitCode: null, timedOut: true }); // ShellExec 超时杀形终止（fx Exec 契约）
+    await tick();
+    expect(exec.calls).toHaveLength(9); // 执行终止 → 此时才补位
+    expect(exec.calls[8].command).toBe("c8");
   });
 });
 
@@ -257,6 +263,144 @@ describe("票 16 — B2② no_proxy 全局注入 / B2③ token 脱敏", () => {
     }).probe({ slotKey: "s", check: "x" });
     await tick();
     expect(results[0].evidence).toBe("glpat-AbCdEf123456 ***");
+  });
+});
+
+describe("票 16 修复 — ocr 评审 Finding 1：rejection reason 同套掩码", () => {
+  it("exec 拒绝携带凭据 → reason 掩码，明文不出模块（拒绝路径与 evidence 同一规则）", async () => {
+    const exec = new fx.FakeExec();
+    exec.enqueueFailure(new Error("authorization: Bearer abc123.XYZ expired"));
+    const results: prober.ProbeResult[] = [];
+    new prober.Prober({ exec, clock: new fx.FakeClock(), onResult: (r) => results.push(r) }).probe({
+      slotKey: "s",
+      check: "x",
+    });
+    await tick();
+    expect(results[0].verdict).toBe("waiting");
+    expect(results[0].reason).toBe("exec error: authorization: *** expired");
+  });
+
+  it("自定义 tokenPatterns 对拒绝路径同样生效（替换内置集）", async () => {
+    const exec = new fx.FakeExec();
+    exec.enqueueFailure(new Error("dump: sk-zebra-99 leaked"));
+    const results: prober.ProbeResult[] = [];
+    new prober.Prober({
+      exec,
+      clock: new fx.FakeClock(),
+      onResult: (r) => results.push(r),
+      tokenPatterns: [/sk-[\w-]+/g],
+    }).probe({ slotKey: "s", check: "x" });
+    await tick();
+    expect(results[0].reason).toBe("exec error: dump: *** leaked");
+  });
+});
+
+describe("票 16 修复 — ocr 评审 Finding 2：onResult 回调异常隔离", () => {
+  it("onResult 抛错：该条目不重复投递，后续缓冲照常排空", async () => {
+    const exec = new fx.FakeExec();
+    exec.enqueue({ exitCode: 0 }, { exitCode: 0 });
+    const delivered: string[] = [];
+    let calls = 0;
+    const p = new prober.Prober({
+      exec,
+      clock: new fx.FakeClock(),
+      onResult: (r) => {
+        calls++;
+        if (calls === 1) throw new Error("consumer boom");
+        delivered.push(r.slotKey);
+      },
+    });
+    p.probe({ slotKey: "a", check: "c1" });
+    p.probe({ slotKey: "b", check: "c2" });
+    await tick();
+    expect(calls).toBe(2); // a 只投递一次（抛错即消费，不重投）
+    expect(delivered).toEqual(["b"]); // b 未被卡死
+  });
+
+  it("超时回流遇 onResult 抛错：异常不逃逸 Clock 定时器，后续到期定时器照常结算", () => {
+    const exec = new DeferredExec();
+    const clock = new fx.FakeClock();
+    const delivered: string[] = [];
+    let calls = 0;
+    const p = new prober.Prober({
+      exec,
+      clock,
+      onResult: (r) => {
+        calls++;
+        if (calls === 1) throw new Error("consumer boom");
+        delivered.push(r.slotKey);
+      },
+    });
+    p.probe({ slotKey: "a", check: "c1" });
+    p.probe({ slotKey: "b", check: "c2" });
+    clock.step(10_000); // a、b 定时器同刻到期，按调度序先后触发；首抛不得中断 step 循环
+    expect(calls).toBe(2);
+    expect(delivered).toEqual(["b"]);
+    expect(clock.pendingCount).toBe(0); // 两笔定时器都取消（都结算）
+  });
+});
+
+describe("票 16 修复 — ocr 评审 Finding 4：timeoutMs 分配前校验/规范化", () => {
+  it("timeoutMs 非法（0/负数/NaN/Infinity）→ probe 同步抛参数错，不启动 exec 不占容量", () => {
+    const exec = new DeferredExec();
+    const p = new prober.Prober({ exec, clock: new fx.FakeClock(), onResult: () => undefined });
+    expect(() => p.probe({ slotKey: "s", check: "x", timeoutMs: 0 })).toThrow(/timeoutMs/);
+    expect(() => p.probe({ slotKey: "s", check: "x", timeoutMs: -1 })).toThrow(/timeoutMs/);
+    expect(() => p.probe({ slotKey: "s", check: "x", timeoutMs: Number.NaN })).toThrow(/timeoutMs/);
+    expect(() => p.probe({ slotKey: "s", check: "x", timeoutMs: Number.POSITIVE_INFINITY })).toThrow(/timeoutMs/);
+    expect(exec.calls).toHaveLength(0);
+  });
+
+  it("timeoutMs 小数规范化为整数毫秒（向上取整，不短于请求值）后再封顶 300s", () => {
+    const exec = new DeferredExec();
+    const p = new prober.Prober({ exec, clock: new fx.FakeClock(), onResult: () => undefined });
+    p.probe({ slotKey: "a", check: "x", timeoutMs: 0.5 });
+    p.probe({ slotKey: "b", check: "x", timeoutMs: 1500.7 });
+    p.probe({ slotKey: "c", check: "x", timeoutMs: 300_000.9 });
+    expect(exec.calls.map((c) => c.opts?.timeoutMs)).toEqual([1, 1501, prober.PROBE_TIMEOUT_MAX_MS]);
+  });
+});
+
+describe("票 16 修复 — ocr 评审 Finding 5：run 同步抛错转 waiting", () => {
+  it("第 9 个 run 同步抛错：该任务 waiting 回流，前后任务按提交序照常回流（前任务 seq 不缺失）", async () => {
+    const exec = new fx.FakeExec();
+    for (let i = 0; i < 8; i++) exec.enqueue({ exitCode: 0 });
+    exec.enqueueFailure(new Error("spawn ENOENT"), true); // 补位启动的 s8 同步抛
+    const results: prober.ProbeResult[] = [];
+    const p = new prober.Prober({ exec, clock: new fx.FakeClock(), onResult: (r) => results.push(r) });
+    for (let i = 0; i < 9; i++) p.probe({ slotKey: `s${i}`, check: `c${i}` });
+    await tick();
+    expect(results.map((r) => r.slotKey)).toEqual(["s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8"]);
+    expect(results[8].verdict).toBe("waiting");
+    expect(results[8].reason).toBe("exec error: spawn ENOENT");
+  });
+
+  it("onResult 内重入 probe + 抛错：重入任务取后续 seq 照常执行，队列不卡死", async () => {
+    const exec = new fx.FakeExec();
+    exec.enqueue({ exitCode: 0 }, { exitCode: 0 }, { exitCode: 0 }, { exitCode: 2 });
+    const delivered: string[] = [];
+    let reentered = false;
+    const p = new prober.Prober({
+      exec,
+      clock: new fx.FakeClock(),
+      onResult: (r) => {
+        if (r.slotKey === "a") {
+          if (!reentered) {
+            reentered = true;
+            p.probe({ slotKey: "d", check: "c4" }); // 重入
+          }
+          throw new Error("consumer boom"); // a 的每次投递都抛
+        }
+        delivered.push(r.slotKey);
+      },
+    });
+    p.probe({ slotKey: "a", check: "c1" });
+    p.probe({ slotKey: "b", check: "c2" });
+    p.probe({ slotKey: "c", check: "c3" });
+    await tick();
+    expect(reentered).toBe(true);
+    expect(exec.calls.map((c) => c.command)).toEqual(["c1", "c2", "c3", "c4"]); // 重入 probe 照常执行
+    expect(delivered).toEqual(["b", "c", "d"]); // a 抛错即消费不重投；b、c、d 按序排空
   });
 });
 
