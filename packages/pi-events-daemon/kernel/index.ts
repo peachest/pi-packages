@@ -25,6 +25,7 @@ import type { IntentSequences } from "../domain/intent.ts";
 import {
   type SubscriptionAddressing,
   type SubscriptionScope,
+  EVIDENCE_INLINE_LIMIT,
   deliveryTargets,
   makeBillboard,
   transitionDelivery,
@@ -112,6 +113,30 @@ export type QueryEntityEntry = {
 export type QueryResult = {
   entities: QueryEntityEntry[];
   deadLetters: ReadonlyArray<{ notificationId: string; sessionId: string; entityRef: EntityRef }>;
+};
+
+/** validate 请求（静态面）：profile 路由 + 模板形态/ ad-hoc 形态二选一。 */
+export type ValidateRequest = {
+  profile: string;
+  template?: string;
+  params?: Record<string, unknown>;
+  check?: string;
+};
+
+/** validate 结果：三类静态错误（同步拒）| ok + ADR 0004 副作用 warning（不阻断）。
+ *  op 表的 live-run 形状（verdict/durationMs/evidence）归 prober 执行面后续票。 */
+export type ValidateResult =
+  | { ok: false; error: "profile-not-found" | "invalid-params" | "checker-declaration"; reason: string }
+  | { ok: true; warnings: readonly string[] };
+
+export type TemplateMeta = {
+  profileId: string;
+  name: string;
+  entityType: string;
+  states: readonly string[];
+  params?: readonly string[];
+  schedule?: unknown;
+  usage?: string;
 };
 
 /** eventSeq 事件流尾恢复（首版）：outbox 行与 transition 1:1，取 eventSeq 最大值；空库 = 0。 */
@@ -420,6 +445,78 @@ export class Kernel {
       ? joins.deadList.filter((d) => sameEntityRef(d.entityRef, filter.entityRef!))
       : joins.deadList;
     return { entities: selected.map((e) => entryOf(e, true)), deadLetters };
+  }
+
+  /**
+   * evidence（票 11）：FTS5 点查（B 层 = store.evidenceSearch 朴素子串 + 精确 ref 收口）。
+   * 双 ref 形态：直接 evidence 行 ref，或 billboard 截断指针（= notificationId）→ 事件
+   * evidenceRef → 全文（截断只发生在 billboard 内联，指针解引用不被吞）。truncated =
+   * 全文超 2KB 内联上限（EVIDENCE_INLINE_LIMIT，UTF-8 字节）。
+   */
+  evidence(evidenceRef: string): { content: string; truncated: boolean } {
+    const direct = this.store.evidenceSearch(evidenceRef).find((e) => e.evidenceRef === evidenceRef);
+    const row =
+      direct ??
+      (() => {
+        const event = this.store.tx((tx) => tx.getEvent(evidenceRef));
+        return event?.evidenceRef
+          ? this.store.evidenceSearch(event.evidenceRef).find((e) => e.evidenceRef === event.evidenceRef)
+          : undefined;
+      })();
+    if (!row) throw new Error(`evidence not found: ${evidenceRef}`);
+    return { content: row.content, truncated: Buffer.byteLength(row.content, "utf8") > EVIDENCE_INLINE_LIMIT };
+  }
+
+  /**
+   * validate（票 11，静态面）：三类错误同步拒（错误信息一律列可用选项）+ ADR 0004 已知
+   * 副作用 pattern 命中出 warning 不阻断。数据全部来自构造注入注册表（I-01）；live-run
+   * 执行（verdict/durationMs）归 prober 后续票，kernel 不 spawn。
+   */
+  validate(req: ValidateRequest): ValidateResult {
+    const entry = this.registry.find((r) => r.profileId === req.profile);
+    if (!entry) {
+      return {
+        ok: false,
+        error: "profile-not-found",
+        reason: `profile "${req.profile}" 未找到 — 可用: [${this.registry.map((r) => r.profileId).sort().join(", ")}]`,
+      };
+    }
+    if (req.template !== undefined) {
+      const tpl = entry.templates.find((t) => t.name === req.template);
+      if (!tpl) {
+        return {
+          ok: false,
+          error: "profile-not-found",
+          reason: `template "${req.template}" 未找到 — 可用: [${entry.templates.map((t) => t.name).join(", ")}]`,
+        };
+      }
+      const missing = (tpl.params ?? []).filter((p) => req.params?.[p] === undefined);
+      if (missing.length > 0) {
+        return { ok: false, error: "invalid-params", reason: `缺少必填参数: ${missing.join(", ")}` };
+      }
+    }
+    const check = req.check;
+    if (check !== undefined && check.trim() === "") {
+      return { ok: false, error: "checker-declaration", reason: "check 声明为空" };
+    }
+    if (check === undefined && req.template === undefined) {
+      return { ok: false, error: "checker-declaration", reason: "ad-hoc 形态必须显式声明 check（模板形态由模板派生）" };
+    }
+    const warnings = (entry.sideEffectPatterns ?? [])
+      .filter((p) => (check ?? "").includes(p))
+      .map((p) => `check 命中已知副作用 pattern "${p}"（ADR 0004：探测零副作用，不阻断）`);
+    return { ok: true, warnings };
+  }
+
+  /** templates（票 11）：模板元数据清单，全部来自注册表注入内容（渐进式披露面）。 */
+  templates(profile?: string): { templates: readonly TemplateMeta[] } {
+    if (profile !== undefined && !this.registry.some((r) => r.profileId === profile)) {
+      throw new Error(`profile "${profile}" 未找到 — 可用: [${this.registry.map((r) => r.profileId).sort().join(", ")}]`);
+    }
+    const templates = this.registry
+      .filter((r) => profile === undefined || r.profileId === profile)
+      .flatMap((r) => r.templates.map((t) => ({ profileId: r.profileId, ...t })));
+    return { templates };
   }
 
   /**

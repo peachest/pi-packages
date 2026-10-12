@@ -548,3 +548,99 @@ describe("票 11 组 3：query——listChildren 单层 + per-entity backlog/dea
     expect(bare.entities[0].lastProbedAt).toBeNull();
   });
 });
+
+// --- 票 11 fake registry（静态面数据注入，I-01：零 profile import、零具体 profile 名）---
+const REGISTRY = [
+  {
+    profileId: "fixture-profile",
+    templates: [
+      {
+        name: "fixture-tpl",
+        entityType: "fixture:widget",
+        states: ["passed", "failed", "waiting"],
+        params: ["target"],
+        usage: "fixture usage",
+      },
+      { name: "fixture-tpl-b", entityType: "fixture:gadget", states: ["passed", "failed"], usage: "b" },
+    ],
+    sideEffectPatterns: ["fixture-destructive"],
+  },
+] as const;
+const kernelWithRegistry = (store: MemStore) => new Kernel(store, VERDICT_STATES, 0, { registry: REGISTRY });
+
+describe("票 11 组 4：evidence FTS5 点查 + validate 三类错误 + templates 注册表清单", () => {
+  it("evidence 点查：直接 ref 命中（truncated 按 2KB 内联上限判定）；未找到拒绝", () => {
+    const store = createMemoryStore();
+    const kernel = kernelWithRegistry(store);
+    store.putEvidence({ evidenceRef: "ev-short", content: "probe ok", recordedAt: 1 });
+    store.putEvidence({ evidenceRef: "ev-big", content: "y".repeat(3000), recordedAt: 2 });
+    expect(kernel.evidence("ev-short")).toEqual({ content: "probe ok", truncated: false });
+    expect(kernel.evidence("ev-big").truncated).toBe(true);
+    expect(() => kernel.evidence("ev-missing")).toThrow(/ev-missing/);
+  });
+
+  it("evidence 经 billboard 截断指针解引用：ref=notificationId → 事件 evidenceRef → 全文（指针不被截断吞掉）", () => {
+    const store = createMemoryStore();
+    const kernel = kernelWithRegistry(store);
+    store.appendEventIfMissing({
+      eventId: EVT1,
+      eventSeq: 1,
+      entityRefType: REF.type,
+      entityRefKey: REF.key,
+      from: "passed",
+      to: "failed",
+      occurredAt: at(1),
+      evidenceRef: "ev-full",
+    });
+    store.putEvidence({ evidenceRef: "ev-full", content: "z".repeat(3000), recordedAt: 1 });
+    expect(kernel.evidence(EVT1)).toEqual({ content: "z".repeat(3000), truncated: true });
+  });
+
+  it("validate 三类错误：profile/template 未找到（列可用选项）/缺必填参数/ad-hoc 缺 check 声明", () => {
+    const store = createMemoryStore();
+    const kernel = kernelWithRegistry(store);
+    expect(kernel.validate({ profile: "nope", check: "true" })).toMatchObject({
+      ok: false,
+      error: "profile-not-found",
+    });
+    expect((kernel.validate({ profile: "nope", check: "true" }) as { reason: string }).reason).toContain("fixture-profile");
+    expect(kernel.validate({ profile: "fixture-profile", template: "nope-tpl" })).toMatchObject({
+      ok: false,
+      error: "profile-not-found",
+    });
+    expect(kernel.validate({ profile: "fixture-profile", template: "fixture-tpl" })).toMatchObject({
+      ok: false,
+      error: "invalid-params",
+    });
+    expect(kernel.validate({ profile: "fixture-profile" })).toMatchObject({
+      ok: false,
+      error: "checker-declaration",
+    });
+  });
+
+  it("validate ADR 0004：已知副作用 pattern 命中 → warning 不阻断（ok:true）；干净 check 零 warning", () => {
+    const store = createMemoryStore();
+    const kernel = kernelWithRegistry(store);
+    expect(kernel.validate({ profile: "fixture-profile", check: "fixture-destructive-cmd --force" })).toEqual({
+      ok: true,
+      warnings: [expect.stringContaining("fixture-destructive")],
+    });
+    expect(kernel.validate({ profile: "fixture-profile", check: "curl -sf http://x/health" })).toEqual({
+      ok: true,
+      warnings: [],
+    });
+  });
+
+  it("templates：注册表注入内容的元数据清单（profileId 附带）+ profile 过滤 + 未知 profile 拒绝", () => {
+    const store = createMemoryStore();
+    const kernel = kernelWithRegistry(store);
+    expect(kernel.templates()).toEqual({
+      templates: [
+        { profileId: "fixture-profile", name: "fixture-tpl", entityType: "fixture:widget", states: ["passed", "failed", "waiting"], params: ["target"], usage: "fixture usage" },
+        { profileId: "fixture-profile", name: "fixture-tpl-b", entityType: "fixture:gadget", states: ["passed", "failed"], usage: "b" },
+      ],
+    });
+    expect(kernel.templates("fixture-profile").templates).toHaveLength(2);
+    expect(() => kernel.templates("nope")).toThrow(/fixture-profile/);
+  });
+});
