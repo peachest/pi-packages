@@ -164,6 +164,52 @@ describe("票 13 FakeFs：内存树 + 撕裂尾行 fixture（fx.md 钉死契约�
   });
 });
 
+describe("票 18 FakeFs：watch 同步扩展（登记/同步通知/close 生效）", () => {
+  it("change 写入并同步通知该 path 监听者；close 后不再通知；其他 path 不串扰；files 直改不通知（change 是唯一事件注入面）", () => {
+    const ffs = new FakeFs({ "/t/wm": "0" });
+    let events = 0;
+    const handle = ffs.watch("/t/wm", () => events++);
+    ffs.change("/t/wm", "1");
+    expect(events).toBe(1);
+    expect(ffs.files.get("/t/wm")).toBe("1");
+    ffs.files.set("/t/wm", "2"); // fixture 直改：状态变化不产生事件
+    expect(events).toBe(1);
+    ffs.change("/t/other"); // touch 语义：不写内容，仅路径不匹配不串扰
+    expect(events).toBe(1);
+    handle.close();
+    ffs.change("/t/wm", "3");
+    expect(events).toBe(1);
+  });
+
+  it("回归：重复 close 不误删无关监听器——A 双重 close 后 B 仍收到通知（对齐原生 FSWatcher 幂等 close）", () => {
+    const ffs = new FakeFs({ "/t/wm": "0" });
+    let a = 0;
+    let b = 0;
+    const handleA = ffs.watch("/t/wm", () => a++);
+    const handleB = ffs.watch("/t/wm", () => b++);
+    handleA.close();
+    handleA.close(); // 第二次 close：不得经 splice(-1,1) 删掉 B
+    ffs.change("/t/wm", "1");
+    expect(a).toBe(0);
+    expect(b).toBe(1);
+  });
+
+  it("回归：分发期间关闭另一监听器，被关者不再触发——A 回调内 close B，同一 change 对 B 不再调 onEvent", () => {
+    const ffs = new FakeFs({ "/t/wm": "0" });
+    const fired: string[] = [];
+    let handleB: { close(): void };
+    ffs.watch("/t/wm", () => {
+      fired.push("a");
+      handleB.close(); // 回调内清理竞争监听器（真实取消路径）
+    });
+    handleB = ffs.watch("/t/wm", () => fired.push("b"));
+    ffs.change("/t/wm", "1");
+    expect(fired).toEqual(["a"]); // 已关的 B 本轮不得再触发（不得用调用前快照盲发）
+    ffs.change("/t/wm", "2");
+    expect(fired).toEqual(["a", "a"]); // 后续 change 也不恢复 B
+  });
+});
+
 describe("票 13 四 fake 经公共面注入各自端口（每端口恰好两 adapter：real + fake）", () => {
   it("四 fake 满足端口类型且经 fx 入口可用", () => {
     const clock: Clock = new FakeClock();
