@@ -238,7 +238,7 @@ export interface RunLedger {
  * 归零重探（R1 A5）：重启后全槽立即重探一次（拿最新事实）。任意槽态输入 →
  * 计数归零 + lastVerdict 清空（重启后首个 fresh verdict 视为到达）+ nextDueAt=now 重探标记。
  */
-export function rebuildRunLedger(_ledger: RunLedger, now: number): RunLedger {
+export function rebuildRunLedger(now: number): RunLedger {
   return { inFlight: false, lastVerdict: null, nextDueAt: now, consecutiveFails: 0, lastEvidenceRef: null };
 }
 
