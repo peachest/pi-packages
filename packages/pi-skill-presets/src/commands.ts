@@ -14,6 +14,22 @@ import type { PresetOpEntry } from "./types.ts";
 import { PRESET_OP_CUSTOM_TYPE } from "./types.ts";
 import { readPresetsConfig, getPresetSkills } from "./config.ts";
 import { showPresetDialog } from "./dialog.ts";
+import { recordNotify } from "./notify.ts";
+import type { PresetsConfig } from "./types.ts";
+
+/**
+ * Skills of a preset that are absent from the platform's discovered skill set
+ * (ctx.getSystemPromptOptions().skills). Single criterion by design: a missing
+ * name is reported as "missing or disabled" without distinguishing the cause.
+ */
+function findBadRefs(
+  ctx: ExtensionCommandContext,
+  config: PresetsConfig,
+  presetName: string,
+): string[] {
+  const platform = new Set((ctx.getSystemPromptOptions().skills ?? []).map((s) => s!.name));
+  return (getPresetSkills(config, presetName) ?? []).filter((s) => !platform.has(s));
+}
 
 /** The custom type for preset operation entries. */
 
@@ -51,16 +67,35 @@ export function createCommands(
     const config = readPresetsConfig(cwd);
 
     if (!config.definitions[name]) {
-      ctx.ui.notify(
+      recordNotify(
+        ctx.ui,
         `Preset "${name}" not found. Available: ${Object.keys(config.definitions).join(", ")}`,
         "error",
       );
       return;
     }
 
+    const badRefs = findBadRefs(ctx, config, name);
+
     if (state.has(name)) {
+      // Repeat load of a bad preset warns again (no cross-action dedup).
+      if (badRefs.length > 0) {
+        recordNotify(
+          ctx.ui,
+          `Preset "${name}" is already loaded, but these skills are unavailable (missing or disabled): ${badRefs.join(", ")}`,
+          "warning",
+        );
+      }
       ctx.ui.notify(`Preset "${name}" is already loaded.`, "info");
       return;
+    }
+
+    if (badRefs.length > 0) {
+      recordNotify(
+        ctx.ui,
+        `Preset "${name}" loaded, but these skills are unavailable (missing or disabled): ${badRefs.join(", ")}`,
+        "warning",
+      );
     }
 
     doLoad(pi, ctx, state, name);
@@ -71,6 +106,16 @@ export function createCommands(
     const name = args.trim();
     if (!name) {
       ctx.ui.notify("Usage: /preset-off <name>", "info");
+      return;
+    }
+
+    const defaultPreset = getDefaultPreset();
+    if (defaultPreset && name === defaultPreset) {
+      recordNotify(
+        ctx.ui,
+        `Preset "${name}" is the default preset and cannot be offloaded.`,
+        "error",
+      );
       return;
     }
 
@@ -111,15 +156,18 @@ export function createCommands(
 
     if (defaultPreset) {
       const skills = getPresetSkills(config, defaultPreset) ?? [];
-      lines.push(`Default: ${defaultPreset} (${skills.length} skills → system prompt)`);
+      const missing = config.definitions[defaultPreset] ? "" : " (missing from config)";
+      lines.push(`Default: ${defaultPreset}${missing} (${skills.length} skills → system prompt)`);
     }
 
     if (loaded.length > 0) {
       lines.push("Active set:");
       for (const name of loaded) {
         const skills = getPresetSkills(config, name) ?? [];
-        const isDefault = name === defaultPreset;
-        const marker = isDefault ? " (default, system prompt)" : "";
+        const notes: string[] = [];
+        if (name === defaultPreset) notes.push("default, system prompt");
+        if (!config.definitions[name]) notes.push("missing from config");
+        const marker = notes.length > 0 ? ` (${notes.join(", ")})` : "";
         lines.push(`  ${name}${marker}: ${skills.join(", ")}`);
       }
     }

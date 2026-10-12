@@ -591,6 +591,11 @@ class PresetDialog extends Container {
 
   private togglePreset(name: string): void {
     if (this.state.has(name)) {
+      if (name === this.defaultPreset) {
+        // Default preset is always in the active set — no off option.
+        this.ctx.ui.notify(`Preset "${name}" is the default preset and cannot be offloaded.`, "warning");
+        return;
+      }
       this.state.offload(name);
       this.pi.appendEntry<PresetOpEntry>(PRESET_OP_CUSTOM_TYPE, {
         action: "offload",
