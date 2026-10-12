@@ -246,7 +246,8 @@ describe("ticket 02: op 契约形状与 #31 操作面表一致（断言 4）", (
 describe("ticket 02: 零依赖源码断言（断言 5）", () => {
   it("protocol 源码零引入（无其他模块、无第三方库）", () => {
     const dir = join(dirname(fileURLToPath(import.meta.url)), "../protocol");
-    const files = readdirSync(dir).filter((f) => f.endsWith(".ts"));
+    // 只扫源码：协议目录内同位 *.test.ts 是测试，允引 vitest（实现票 04；零引入不变量只约束源码）
+    const files = readdirSync(dir).filter((f) => f.endsWith(".ts") && !f.endsWith(".test.ts"));
     expect(files.length).toBeGreaterThan(0);
     for (const f of files) {
       const code = readFileSync(join(dir, f), "utf8")
