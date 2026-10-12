@@ -4,16 +4,20 @@
  *
  * 断言组：
  *  1. L0 串行顺序（N 请求 → 提交序 = 消费序；重入提交 FIFO 续排）
- *  （组 2/3 随后续 commit：缓存只在提交回调更新 / startLoops 假注入启动 + 双轨重启恢复）
+ *  2. 缓存与 store 一致（唯一写点在提交回调；拒绝/无提交不动缓存）
+ *  （组 3 随后续 commit：startLoops 假注入启动 + 双轨重启恢复——重启重入测试随组 3 落地，
+ *    其第二次生命依赖 decisionOrder 恢复）
  */
 import { describe, it, expect } from "vitest";
 import { createMemoryStore, type Store } from "../store/index.ts";
 import { FakeClock, FakeExec, FakeFs, FakePusher } from "../fx/index.ts";
 import { deterministicEventId } from "../domain/intent.ts";
+import { entityRefKeyOf } from "../domain/types.ts";
 import { startLoops, type LoopsCtx } from "./index.ts";
 
 // --- fixture（数据，非 profile；kernel.test.ts 同法）---
 const REF = { type: "fixture:widget", key: "external/fixture-1" };
+const REF_KEY = entityRefKeyOf(REF);
 const STATES = new Set(["passed", "failed", "waiting"]);
 const at = (n: number) => `2026-01-01T00:00:${String(n).padStart(2, "0")}Z`;
 
@@ -78,5 +82,38 @@ describe("组 1：L0 串行队列——kernel 方法调用唯一路径，提交�
     loops.submit({ kind: "transition", ref: REF, verdict: "failed", occurredAt: at(1) });
     expect(store.outboxBatch(10)).toHaveLength(1); // 队列存活，下一请求正常提交
     expect(loops.errors).toHaveLength(1);
+  });
+});
+
+describe("组 2：缓存只在提交回调更新——提交回调外无缓存写路径", () => {
+  it("提交后缓存与 store 一致：states 投影逐实体相等", () => {
+    const store = createMemoryStore();
+    store.putEntity({ type: REF.type, key: REF.key, state: null });
+    const other = { type: "fixture:widget", key: "external/fixture-2" };
+    store.putEntity({ type: other.type, key: other.key, state: "passed" });
+    const loops = startLoops(makeCtx(store));
+
+    loops.submit({ kind: "transition", ref: REF, verdict: "failed", occurredAt: at(1) });
+    loops.submit({ kind: "transition", ref: other, verdict: "failed", occurredAt: at(1) });
+
+    const projection = new Map(
+      store.queryEntities({}).map((e) => [entityRefKeyOf({ type: e.type, key: e.key }), e.state]),
+    );
+    expect(loops.cache.states.size).toBe(projection.size);
+    for (const [k, v] of projection) expect(loops.cache.states.get(k)).toBe(v);
+    expect(loops.cache.states.get(REF_KEY)).toBe("failed");
+  });
+
+  it("无提交不动缓存：被拒请求（unknown entity）后 cache 快照逐位不变", () => {
+    const store = createMemoryStore();
+    store.putEntity({ type: REF.type, key: REF.key, state: "passed" });
+    const loops = startLoops(makeCtx(store));
+    const before = [...loops.cache.states.entries()];
+
+    loops.submit({ kind: "transition", ref: { type: "fixture:ghost", key: "external/none" }, verdict: "failed", occurredAt: at(1) });
+
+    expect(loops.errors).toHaveLength(1);
+    expect(store.tx((tx) => tx.getEvent(deterministicEventId({ type: "fixture:ghost", key: "external/none" }, 1)))).toBeUndefined();
+    expect([...loops.cache.states.entries()]).toEqual(before); // 回调未触发 → 缓存零写
   });
 });

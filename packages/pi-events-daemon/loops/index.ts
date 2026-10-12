@@ -6,10 +6,11 @@
  * 票 10 双轨恢复前提（decisionOrder←mutation line、eventSeq←事件流尾）在 L0 侧落地（构造先于位点注入）。
  *
  * L0 唯一写者：kernel 变更方法的唯一调用路径 = submit() 队列，串行消费（提交序 = 消费序，
- * 双轨游标按消费序分配）。全部循环 level-trigger：L0 消费队列至空（无边缘依赖）；
+ * 双轨游标按消费序分配）。缓存纪律：状态缓存只在 store 提交回调（update_hook 等价）更新——
+ * 写路径单一，缓存不可能先于提交。全部循环 level-trigger：L0 消费队列至空（无边缘依赖）；
  * L1-L4 随后续票挂入同一 ctx（exec/pusher/fs/clock 已就位）。
  */
-import { type EntityRef, type TransitionIntent, type Verdict } from "../domain/types.ts";
+import { type EntityRef, type TransitionIntent, type Verdict, entityRefKeyOf } from "../domain/types.ts";
 import { Kernel, type ProfileRegistryEntry } from "../kernel/index.ts";
 import type { Clock, Exec, Fs, Pusher } from "../fx/index.ts";
 import type { Store } from "../store/index.ts";
@@ -18,6 +19,12 @@ import type { Store } from "../store/index.ts";
 export type MutationRequest =
   | { kind: "transition"; ref: EntityRef; verdict: Verdict; occurredAt: string }
   | { kind: "consumeIntent"; intent: TransitionIntent };
+
+/** 提交回调维护的状态缓存（只读视图；唯一写点在 store.onWrite 回调内，票 25 验收面）。 */
+export interface LoopsCache {
+  /** refKey（entityRefKeyOf）→ 已提交状态；逐提交与 store 实体表同步。 */
+  readonly states: ReadonlyMap<string, string | null>;
+}
 
 /** startLoops 注入面（票 25：fx 四端口 + Store；states/registry/ownerEpoch 是 kernel 构造数据）。 */
 export interface LoopsCtx {
@@ -38,6 +45,8 @@ export interface LoopsCtx {
 export interface LoopsHandle {
   /** L0 唯一写路径：变更请求入队串行消费；stopped 后抛错（重启经 stop → 重新 startLoops）。 */
   submit(req: MutationRequest): void;
+  /** 提交回调维护的缓存快照（L1-L4 的 level-trigger 扫描输入）。 */
+  readonly cache: LoopsCache;
   /** 逐请求捕获的消费错误（kernel 越界 dead-letter 抛出在此可见；队列不死，消费继续）。 */
   readonly errors: readonly unknown[];
   /** 停机：L0 队列关闭（幂等）。 */
@@ -52,6 +61,18 @@ export function startLoops(ctx: LoopsCtx): LoopsHandle {
   });
 
   let stopped = false;
+
+  // 缓存：唯一写点 = 提交回调（store 契约：提交成功后按提交序同步触发，fake/SQLite 两实现一致）。
+  // 全量重投影 = 接口忠实形态（回调只给表名，无行级增量；行级下推归 store 接口后续票）。
+  const states = new Map<string, string | null>();
+  ctx.store.onWrite((tables) => {
+    if (stopped || !tables.includes("entities")) return;
+    states.clear();
+    for (const e of ctx.store.queryEntities({})) {
+      states.set(entityRefKeyOf({ type: e.type, key: e.key }), e.state);
+    }
+  });
+
   const queue: MutationRequest[] = [];
   const errors: unknown[] = [];
   let draining = false;
@@ -88,9 +109,10 @@ export function startLoops(ctx: LoopsCtx): LoopsHandle {
   return {
     submit(req: MutationRequest): void {
       if (stopped) throw new Error("loops stopped: L0 queue closed");
-      queue.push(req);
+    queue.push(req);
       drain();
     },
+    cache: { states },
     errors,
     stop(): void {
       stopped = true;
