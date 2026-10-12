@@ -98,6 +98,8 @@ CREATE TABLE IF NOT EXISTS notifications (
   billboard_json TEXT NOT NULL,
   evidence_ref TEXT
 );
+-- notifications 增量查询（sinceEventSeq）下推：全表搬运反模式收口（ocr 评审 finding 2）
+CREATE INDEX IF NOT EXISTS idx_notifications_event_seq ON notifications(event_seq);
 CREATE TABLE IF NOT EXISTS evidence (
   evidence_ref TEXT PRIMARY KEY,
   content TEXT NOT NULL,
@@ -215,6 +217,9 @@ export class SqliteStore implements Store {
   readonly db: DatabaseSync;
   private readonly stmts = new Map<string, StatementSync>();
   private readonly writeListeners: Array<(tables: readonly string[]) => void> = [];
+  /** 提交通知队列 + 分发中标记：重入提交（监听器内再提交）排到当前提交全部监听器之后（FIFO）。 */
+  private readonly notifyQueue: string[][] = [];
+  private dispatching = false;
 
   constructor(path: string = defaultStorePath()) {
     if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
@@ -251,8 +256,8 @@ export class SqliteStore implements Store {
     try {
       const result = fn(this.txView(mark));
       this.db.exec("COMMIT");
-      // update_hook 等价：提交成功后按提交序同步触发（与 fake 语义一致）
-      for (const cb of this.writeListeners) cb([...touched]);
+      // update_hook 等价：提交成功后按提交序同步触发（与 fake 语义一致；重入提交排队见 notifyCommit）
+      this.notifyCommit([...touched]);
       return result;
     } catch (err) {
       try {
@@ -261,6 +266,20 @@ export class SqliteStore implements Store {
         // 连接已中止（如 BUSY 超时）——无需回滚
       }
       throw err;
+    }
+  }
+
+  private notifyCommit(tables: string[]): void {
+    this.notifyQueue.push(tables);
+    if (this.dispatching) return; // 重入提交：外层分发循环收尾时按 FIFO 继续
+    this.dispatching = true;
+    try {
+      while (this.notifyQueue.length > 0) {
+        const batch = this.notifyQueue.shift()!;
+        for (const cb of this.writeListeners) cb(batch);
+      }
+    } finally {
+      this.dispatching = false;
     }
   }
 
@@ -286,7 +305,7 @@ export class SqliteStore implements Store {
         this.st("INSERT INTO entities (type, entity_key, state, payload_json, profile_id, parent_type, parent_key, retired) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (type, entity_key) DO UPDATE SET state = excluded.state, payload_json = excluded.payload_json, profile_id = excluded.profile_id, parent_type = excluded.parent_type, parent_key = excluded.parent_key, retired = excluded.retired").run(
           row.type, row.key, row.state ?? null, row.payload === undefined ? null : JSON.stringify(row.payload),
           row.profileId ?? null, row.parentType ?? null, row.parentKey ?? null,
-          row.retired === undefined ? null : row.retired ? 1 : 0,
+          row.retired === undefined ? null : Number(row.retired),
         );
         mark("entities");
       },
@@ -331,9 +350,11 @@ export class SqliteStore implements Store {
         this.st("INSERT INTO evidence (evidence_ref, content, recorded_at) VALUES (?, ?, ?) ON CONFLICT (evidence_ref) DO UPDATE SET content = excluded.content, recorded_at = excluded.recorded_at").run(
           row.evidenceRef, row.content, row.recordedAt,
         );
-        // FTS5 索引同步：先清后插（upsert 语义下避免重复 token 行）
-        this.st("DELETE FROM evidence_fts WHERE evidence_ref = ?").run(row.evidenceRef);
-        this.st("INSERT INTO evidence_fts (evidence_ref, content) VALUES (?, ?)").run(row.evidenceRef, row.content);
+        // FTS5 同步按基础表 rowid 对齐：evidence_ref 非 FTS 索引列（WHERE 全扫 O(N)），rowid 点删 O(1)；
+        // upsert 冲突时保留原 rowid，本方法独占 FTS 写入 → rowid 恒对齐
+        const base = this.st("SELECT rowid FROM evidence WHERE evidence_ref = ?").get(row.evidenceRef) as { rowid: number | bigint };
+        this.st("DELETE FROM evidence_fts WHERE rowid = ?").run(base.rowid);
+        this.st("INSERT INTO evidence_fts (rowid, evidence_ref, content) VALUES (?, ?, ?)").run(base.rowid, row.evidenceRef, row.content);
         mark("evidence");
       },
       putOutbox: (row) => {
@@ -465,9 +486,12 @@ export class SqliteStore implements Store {
   }
 
   notifications(filter: NotificationFilter): NotificationRow[] {
-    const rows = this.st("SELECT * FROM notifications ORDER BY rowid").all() as RawRow[];
-    return rows.map(rowToNotification).filter((n) =>
-      filter.sinceEventSeq === undefined || n.eventSeq > filter.sinceEventSeq,
-    );
+    if (filter.sinceEventSeq === undefined) {
+      return (this.st("SELECT * FROM notifications ORDER BY rowid").all() as RawRow[]).map(rowToNotification);
+    }
+    // 增量下推 SQL：WHERE event_seq 走 idx_notifications_event_seq，不搬全表进内存；
+    // 索引扫描按 event_seq 序返回，JS 按 rowid 重排保持 fake 插入序（结果集已收敛，排序代价可忽略）
+    const rows = this.st("SELECT rowid, * FROM notifications WHERE event_seq > ?").all(filter.sinceEventSeq) as RawRow[];
+    return rows.sort((a, b) => Number(a.rowid) - Number(b.rowid)).map(rowToNotification);
   }
 }

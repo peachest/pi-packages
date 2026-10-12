@@ -85,6 +85,25 @@ function dualSuite(label: string, make: () => Store & { close?(): void }): void 
       s.close?.();
     });
 
+    it("重入提交：监听器内再提交排队至当前提交全部监听器之后（FIFO 不插队）", () => {
+      const s = make();
+      const log: string[] = [];
+      let reentered = false;
+      s.onWrite((tables) => {
+        log.push(tables.join("+"));
+        if (!reentered) {
+          reentered = true;
+          // 重入提交：当前提交的通知分发中途再提交，通知必须排到当前提交全部监听器之后
+          s.tx((tx) => { tx.putSubscription({ subscriptionId: "s1", sessionId: "sess", entityRefType: "a", entityRefKey: "1", origin: "session", createdAt: 0 }); });
+        }
+      });
+      s.onWrite((tables) => { log.push("L2:" + tables.join("+")); });
+      s.tx((tx) => { tx.putEntity({ type: "a", key: "1", state: null }); });
+      expect(log).toEqual(["entities", "L2:entities", "subscriptions", "L2:subscriptions"]);
+      expect(s.getSubscription("s1")).toBeDefined();
+      s.close?.();
+    });
+
     it("I10：同 (notification, session) 恰一行——按 key 存储 + upsert 覆盖不产第二行", () => {
       const s = make();
       const row: DeliveryRowData = { notificationId: "n1", sessionId: "sess1", state: "pending", recordEpoch: 1 };
@@ -191,6 +210,18 @@ function dualSuite(label: string, make: () => Store & { close?(): void }): void 
       expect(s.notifications({ sinceEventSeq: 3 })).toHaveLength(1);
       s.close?.();
     });
+
+    it("notifications：非单调 eventSeq 下增量仍按插入序返回（下推后语义与 fake 对齐）", () => {
+      const s = make();
+      s.tx((tx) => {
+        tx.putNotification({ notificationId: "a", eventSeq: 100, billboardJson: "{}" });
+        tx.putNotification({ notificationId: "b", eventSeq: 5, billboardJson: "{}" });
+        tx.putNotification({ notificationId: "c", eventSeq: 50, billboardJson: "{}" });
+      });
+      expect(s.notifications({ sinceEventSeq: 10 }).map((n) => n.notificationId)).toEqual(["a", "c"]);
+      expect(s.notifications({}).map((n) => n.notificationId)).toEqual(["a", "b", "c"]);
+      s.close?.();
+    });
   });
 }
 
@@ -290,6 +321,38 @@ describe("ticket 22: 真 SQLite（B 层）", () => {
     expect(s.evidenceSearch("alpha")).toHaveLength(0);
     expect(s.evidenceSearch("beta")).toHaveLength(1);
     expect(s.evidenceSearch("e1")).toHaveLength(1);
+    s.close();
+  });
+
+  it("notifications 增量下推：WHERE event_seq 走索引不搬运全表（EXPLAIN）+ 大历史行为等价", () => {
+    const s = new SqliteStore(tmpDbPath());
+    s.tx((tx) => {
+      for (let i = 1; i <= 200; i++) tx.putNotification({ notificationId: `n${i}`, eventSeq: i, billboardJson: `{"i":${i}}` });
+    });
+    expect(s.notifications({ sinceEventSeq: 197 }).map((n) => n.notificationId)).toEqual(["n198", "n199", "n200"]);
+    expect(s.notifications({})).toHaveLength(200);
+    // SQL 层防回归：过滤下推且命中 event_seq 索引（JS 全表搬运 → EXPLAIN 无索引即红）
+    const plan = (s.db.prepare("EXPLAIN QUERY PLAN SELECT rowid, * FROM notifications WHERE event_seq > ?").all(197) as Array<{ detail: string }>)
+      .map((r) => r.detail).join("\n");
+    expect(plan).toContain("idx_notifications_event_seq");
+    expect(plan).toContain("event_seq>?");
+    s.close();
+  });
+
+  it("putEvidence FTS 同步按基础表 rowid 对齐：新增+更新后行集合一致无孤儿（evidence_ref 全扫 → rowid 点删）", () => {
+    const s = new SqliteStore(tmpDbPath());
+    s.putEvidence({ evidenceRef: "e1", content: "alpha one", recordedAt: 1 });
+    s.putEvidence({ evidenceRef: "e2", content: "beta two", recordedAt: 2 });
+    s.putEvidence({ evidenceRef: "e1", content: "alpha three", recordedAt: 3 }); // 更新场景
+    // rowid 对齐 = DELETE WHERE rowid 点删的前提；更新后 FTS 行集必须等于基础表行集
+    const baseIds = (s.db.prepare("SELECT rowid FROM evidence ORDER BY rowid").all() as Array<{ rowid: number }>).map((r) => Number(r.rowid));
+    const ftsIds = (s.db.prepare("SELECT rowid FROM evidence_fts ORDER BY rowid").all() as Array<{ rowid: number }>).map((r) => Number(r.rowid));
+    expect(ftsIds).toEqual(baseIds);
+    expect(s.db.prepare("SELECT count(*) AS c FROM evidence_fts").get()).toEqual({ c: 2 });
+    // 检索语义不回归：旧 token 清除、新 token 命中
+    expect(s.evidenceSearch("one")).toHaveLength(0);
+    expect(s.evidenceSearch("three")).toHaveLength(1);
+    expect(s.evidenceSearch("beta")).toHaveLength(1);
     s.close();
   });
 

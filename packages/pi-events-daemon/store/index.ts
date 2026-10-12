@@ -175,6 +175,9 @@ export class MemoryStore implements Store {
   private writeListeners: Array<(tables: readonly string[]) => void> = [];
   private commitOrder: CommitRecord[] = [];
   private crashPoint: "tx" | "outbox" | null = null;
+  /** 提交通知队列 + 分发中标记：重入提交（监听器内再提交）排到当前提交全部监听器之后（FIFO）。 */
+  private notifyQueue: string[][] = [];
+  private dispatching = false;
 
   onWrite(cb: (tables: readonly string[]) => void): void {
     this.writeListeners.push(cb);
@@ -251,9 +254,23 @@ export class MemoryStore implements Store {
       this.tables[name] = staging[name];
     }
     this.commitOrder.push({ tables: [...stagedTables] });
-    // update_hook 等价：提交成功后按提交序同步触发
-    for (const cb of this.writeListeners) cb([...stagedTables]);
+    // update_hook 等价：提交成功后按提交序同步触发（重入提交排队，见 notifyCommit）
+    this.notifyCommit([...stagedTables]);
     return result;
+  }
+
+  private notifyCommit(tables: string[]): void {
+    this.notifyQueue.push(tables);
+    if (this.dispatching) return; // 重入提交：外层分发循环收尾时按 FIFO 继续
+    this.dispatching = true;
+    try {
+      while (this.notifyQueue.length > 0) {
+        const batch = this.notifyQueue.shift()!;
+        for (const cb of this.writeListeners) cb(batch);
+      }
+    } finally {
+      this.dispatching = false;
+    }
   }
 
   appendEventIfMissing(row: EventRow): { kind: "appended" } | { kind: "skipped" } {
