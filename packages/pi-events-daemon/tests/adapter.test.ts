@@ -383,3 +383,95 @@ describe("票 20 组 9——注册路径（新 session 注册触发判别并缓�
     expect(await a.verify(ref, "n-9")).toEqual({ verdict: "passed", format: "v4" });
   });
 });
+
+// ---------------------------------------------------------------------------
+// 票 21——C1 启动自检 + 双层降级（全局降级模式 vs 单条兜底，#31 C1 正典语义）
+// ---------------------------------------------------------------------------
+
+/** 系统性不可读（EACCES）——非 ENOENT，后端故障形态。 */
+class DenyFs implements Fs {
+  readFile(): Promise<string> {
+    return Promise.reject(Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" }));
+  }
+}
+
+describe("票 21 组 10——C1 启动自检 + 全局降级（推送即视为 accepted、不再 verify）", () => {
+  it("自检通过：注册可读 session → {ok:true}、非降级、verify 正常推导", async () => {
+    const fs = new FakeFs({ [REF.sessionFile]: `${V4_HEADER}\n${v4NotificationLine("n-1", "passed", "ev-1")}\n` });
+    const a = createTranscriptAdapter(fs);
+    await a.registerSession(REF);
+    expect(await a.selfCheck()).toEqual({ ok: true });
+    expect(a.isDegraded()).toBe(false);
+    expect(await a.verify(REF, "n-1")).toEqual({ verdict: "passed", evidenceRef: "ev-1", format: "v4" });
+  });
+
+  it("自检失败（后端系统性不可读 EACCES）→ {ok:false,reason} + 降级标志 + verify 拒推 verdict（unknown+degraded）", async () => {
+    const a = createTranscriptAdapter(new DenyFs());
+    await a.registerSession(REF);
+    expect(await a.selfCheck()).toEqual({ ok: false, reason: expect.stringContaining(REF.sessionFile) });
+    expect(a.isDegraded()).toBe(true);
+    expect(a.degradeReason()).toContain("unreadable");
+    expect(await a.verify(REF, "n-1")).toEqual({ verdict: "unknown", reason: "degraded" });
+  });
+
+  it("自检失败（中段坏行 corrupt-line）同样置全局降级", async () => {
+    const fs = new FakeFs({ [REF.sessionFile]: `${V4_HEADER}\n{broken\n${v4NotificationLine("n-1", "passed")}\n` });
+    const a = createTranscriptAdapter(fs);
+    await a.registerSession(REF);
+    expect((await a.selfCheck()).ok).toBe(false);
+    expect(a.isDegraded()).toBe(true);
+  });
+
+  it("恢复路径：自检恢复成功 → 降级清除、verify 回正常推导", async () => {
+    const fs = new FakeFs({ [REF.sessionFile]: `${V4_HEADER}\n{broken\n${v4NotificationLine("n-1", "passed")}\n` });
+    const a = createTranscriptAdapter(fs);
+    await a.registerSession(REF);
+    expect((await a.selfCheck()).ok).toBe(false);
+    fs.files.set(REF.sessionFile, `${V4_HEADER}\n${v4NotificationLine("n-1", "passed", "ev-1")}\n`);
+    expect(await a.selfCheck()).toEqual({ ok: true });
+    expect(a.isDegraded()).toBe(false);
+    expect(a.degradeReason()).toBeUndefined();
+    expect(await a.verify(REF, "n-1")).toEqual({ verdict: "passed", evidenceRef: "ev-1", format: "v4" });
+  });
+
+  it("单条歧义与全局降级区分：非降级→单条原因码 conflicting-verdicts；降级→同一查询 unknown+degraded（模式级）", async () => {
+    const conflict = `${V4_HEADER}\n${v4NotificationLine("n-c", "passed")}\n${v4NotificationLine("n-c", "failed")}\n`;
+    const healthy = createTranscriptAdapter(new FakeFs({ [REF.sessionFile]: conflict }));
+    await healthy.registerSession(REF);
+    expect((await healthy.selfCheck()).ok).toBe(true);
+    expect(await healthy.verify(REF, "n-c")).toEqual({ verdict: "unknown", reason: "conflicting-verdicts" });
+
+    const degraded = createTranscriptAdapter(new DenyFs());
+    await degraded.registerSession(REF);
+    await degraded.selfCheck();
+    expect(await degraded.verify(REF, "n-c")).toEqual({ verdict: "unknown", reason: "degraded" });
+  });
+
+  it("ENOENT（新会话未落盘）≠ 后端故障：自检不因此降级，单条兜底照旧 unknown+unreadable", async () => {
+    const a = createTranscriptAdapter(new FakeFs({}));
+    await a.registerSession(REF);
+    expect(await a.selfCheck()).toEqual({ ok: true });
+    expect(a.isDegraded()).toBe(false);
+    expect(await a.verify(REF, "n-1")).toEqual({ verdict: "unknown", reason: "unreadable" });
+  });
+
+  it("SQLite 后端自检：注册 session 的库不可读（文件被删）→ 降级；恢复后回正常", async () => {
+    const dbPath = tmpDbPath();
+    makeHarnessV2Db(dbPath, "s-1", [{ seq: 1, id: "e1", notificationId: "n-9", verdict: "passed" }]);
+    const fs = new FakeFs({ [SETTINGS_PATH]: SETTINGS_SQLITE });
+    const a = createTranscriptAdapter(fs, { settingsPath: SETTINGS_PATH });
+    const ref = { sessionFile: dbPath, sessionId: "s-1" };
+    await a.registerSession(ref);
+    expect((await a.selfCheck()).ok).toBe(true);
+
+    rmSync(dbPath);
+    expect((await a.selfCheck()).ok).toBe(false);
+    expect(a.isDegraded()).toBe(true);
+    expect(await a.verify(ref, "n-9")).toEqual({ verdict: "unknown", reason: "degraded" });
+
+    makeHarnessV2Db(dbPath, "s-1", [{ seq: 1, id: "e1", notificationId: "n-9", verdict: "passed" }]);
+    expect(await a.selfCheck()).toEqual({ ok: true });
+    expect(a.isDegraded()).toBe(false);
+    expect(await a.verify(ref, "n-9")).toEqual({ verdict: "passed", format: "v4" });
+  });
+});
