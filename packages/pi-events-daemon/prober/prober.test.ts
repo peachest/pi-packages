@@ -146,6 +146,71 @@ describe("票 16 — 超时策略（缺省 10s / 上限 300s，fx Clock 计时�
   });
 });
 
+describe("票 16 — checker 池 ≤8（第 9 个排队，空位释放才启动）", () => {
+  it("9 个 slot 只跑 8 个，按提交序取前 8", () => {
+    const exec = new DeferredExec();
+    const p = new prober.Prober({ exec, clock: new fx.FakeClock(), onResult: () => undefined });
+    for (let i = 0; i < 9; i++) p.probe({ slotKey: `s${i}`, check: `c${i}` });
+    expect(exec.calls).toHaveLength(8);
+    expect(exec.calls.map((c) => c.command)).toEqual(["c0", "c1", "c2", "c3", "c4", "c5", "c6", "c7"]);
+  });
+
+  it("一个 slot 结算即释放空位，队首第 9 个补位启动", async () => {
+    const exec = new DeferredExec();
+    const p = new prober.Prober({ exec, clock: new fx.FakeClock(), onResult: () => undefined });
+    for (let i = 0; i < 9; i++) p.probe({ slotKey: `s${i}`, check: `c${i}` });
+    exec.resolve(3, { exitCode: 0 });
+    await tick();
+    expect(exec.calls).toHaveLength(9);
+    expect(exec.calls[8].command).toBe("c8");
+  });
+
+  it("8 并发满载时超时结算同样释放空位（hung checker 不 wedge 池）", async () => {
+    const exec = new DeferredExec();
+    const clock = new fx.FakeClock();
+    const p = new prober.Prober({ exec, clock, onResult: () => undefined });
+    for (let i = 0; i < 9; i++) p.probe({ slotKey: `s${i}`, check: `c${i}` });
+    expect(exec.calls).toHaveLength(8);
+    clock.step(10_000); // 8 个全部超时结算
+    expect(exec.calls).toHaveLength(9); // 第 9 个补位
+  });
+});
+
+describe("票 16 — completion queue 回流顺序与提交序一致", () => {
+  it("完成乱序（b 先于 a）→ 回流仍按提交序，先完成者缓冲待序", async () => {
+    const exec = new DeferredExec();
+    const results: prober.ProbeResult[] = [];
+    const p = new prober.Prober({ exec, clock: new fx.FakeClock(), onResult: (r) => results.push(r) });
+    p.probe({ slotKey: "a", check: "c1" });
+    p.probe({ slotKey: "b", check: "c2" });
+    p.probe({ slotKey: "c", check: "c3" });
+    exec.resolve(1, { exitCode: 2 }); // b 先完成
+    await tick();
+    expect(results).toEqual([]); // 前序 a 未结算，b 缓冲不回流
+    exec.resolve(0); // a 完成 → a,b 按序回流
+    await tick();
+    expect(results.map((r) => r.slotKey)).toEqual(["a", "b"]);
+    exec.resolve(2, { exitCode: 1 });
+    await tick();
+    expect(results.map((r) => r.slotKey)).toEqual(["a", "b", "c"]);
+  });
+
+  it("超时结算也占序位：a 超时、b 先完成，回流仍 a 在前", async () => {
+    const exec = new DeferredExec();
+    const clock = new fx.FakeClock();
+    const results: prober.ProbeResult[] = [];
+    const p = new prober.Prober({ exec, clock, onResult: (r) => results.push(r) });
+    p.probe({ slotKey: "a", check: "c1" });
+    p.probe({ slotKey: "b", check: "c2" });
+    exec.resolve(1, { exitCode: 0 }); // b 先完成
+    await tick(); // b 结算落缓冲（a 未结算不回流）
+    expect(results).toEqual([]);
+    clock.step(10_000); // a 超时结算 → a,b 按提交序回流
+    expect(results.map((r) => r.slotKey)).toEqual(["a", "b"]);
+    expect(results.map((r) => r.verdict)).toEqual(["waiting", "passed"]);
+  });
+});
+
 describe("票 16 — 真 spawn 冒烟（真执行器 adapter 存在性证明，fx-ports-real 先例不跳过）", () => {
   it("ShellExec + SystemClock 全链：exit 0 → passed / exit 2 → failed", async () => {
     const results: prober.ProbeResult[] = [];

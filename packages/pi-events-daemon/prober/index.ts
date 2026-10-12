@@ -70,6 +70,9 @@ export class Prober {
   private nextSeq = 0;
   private inflight = 0;
   private readonly queued: { seq: number; slot: ProbeSlot }[] = [];
+  /** 回流稳序缓冲：结果先按 seq 落位，前序全部结算后才交付（回流序=提交序，票面验收）。 */
+  private readonly buffered = new Map<number, ProbeResult>();
+  private nextDeliverSeq = 0;
 
   constructor(deps: ProberDeps) {
     this.deps = deps;
@@ -102,7 +105,10 @@ export class Prober {
       settled = true;
       timer.cancel();
       this.inflight--;
-      this.deps.onResult(result);
+      // 池空位按结算序立即释放（与回流序解耦：稳序缓冲不得拖慢池周转）
+      const next = this.queued.shift();
+      if (next) this.start(next.seq, next.slot);
+      this.deliver(seq, result);
     };
     const timer = this.deps.clock.setTimeout(() => {
       settle({
@@ -133,6 +139,16 @@ export class Prober {
           durationMs: this.deps.clock.now() - t0,
         }),
       );
+  }
+
+  /** 回流交付：seq 稳序（票面验收「回流顺序与提交序一致」，完成乱序时缓冲待序）。 */
+  private deliver(seq: number, result: ProbeResult): void {
+    this.buffered.set(seq, result);
+    while (this.buffered.has(this.nextDeliverSeq)) {
+      this.deps.onResult(this.buffered.get(this.nextDeliverSeq)!);
+      this.buffered.delete(this.nextDeliverSeq);
+      this.nextDeliverSeq++;
+    }
   }
 
   /** B2② env 注入面：只叠 no_proxy 策略（fx ExecOptions.env 是叠加语义；白名单沙箱待 fx env-replace 语义）。 */
