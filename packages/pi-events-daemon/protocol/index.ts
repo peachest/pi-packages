@@ -330,14 +330,28 @@ function checkNode(schema: unknown, value: unknown, path: string, out: MiniIssue
   if (type !== undefined) {
     const wanted = Array.isArray(type) ? type : [type];
     if (!wanted.some((t) => typeof t === "string" && typeMatches(t as MiniType, value))) {
-      const names = wanted.map((t) => (typeof t === "string" ? JSON.stringify(t) : String(t))).join("|");
-      out.push({ path, message: `期望类型 ${names}，实际 ${jsonTypeName(value)}` });
+      let message: string;
+      try {
+        const names = wanted.map((t) => (typeof t === "string" ? JSON.stringify(t) : String(t))).join("|");
+        message = `期望类型 ${names}，实际 ${jsonTypeName(value)}`;
+      } catch {
+        // 垃圾 schema（成员 toString 污染）格式化抛错 → 转 issue，never-throw
+        message = "期望类型格式化失败（垃圾 schema）";
+      }
+      out.push({ path, message });
     }
   }
 
   const en = schema.enum;
   if (Array.isArray(en) && !en.some((e) => e === value)) {
-    out.push({ path, message: `值不在枚举 [${en.map(String).join(", ")}] 内` });
+    let message: string;
+    try {
+      message = `值不在枚举 [${en.map(String).join(", ")}] 内`;
+    } catch {
+      // 垃圾 schema（成员 toString 污染）格式化抛错 → 转 issue，never-throw
+      message = "值不在枚举内（枚举项不可字符串化）";
+    }
+    out.push({ path, message });
   }
 
   if (typeof schema.pattern === "string" && typeof value === "string") {
@@ -354,14 +368,14 @@ function checkNode(schema: unknown, value: unknown, path: string, out: MiniIssue
   if (isRecord(value)) {
     if (Array.isArray(schema.required)) {
       for (const key of schema.required) {
-        if (typeof key === "string" && !(key in value)) {
+        if (typeof key === "string" && !Object.prototype.hasOwnProperty.call(value, key)) {
           out.push({ path, message: `缺少必填字段 ${key}` });
         }
       }
     }
     if (isRecord(schema.properties)) {
       for (const [key, sub] of Object.entries(schema.properties)) {
-        if (key in value) checkNode(sub, value[key], childPath(path, key), out);
+        if (Object.prototype.hasOwnProperty.call(value, key)) checkNode(sub, value[key], childPath(path, key), out);
       }
     }
   }

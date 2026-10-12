@@ -88,6 +88,15 @@ describe("ticket 04: required 命中与放行", () => {
   it("properties/required 只作用于 object（JSON Schema 子集语义）", () => {
     expect(validateValue({ properties: { a: { type: "string" } }, required: ["a"] }, 42)).toEqual([]);
   });
+
+  it("命中：字段存在性只认自有属性——原型链名 required 必报，继承函数不误拒", () => {
+    // in 沿原型链命中 constructor 等继承名：{} 无自有 constructor 却不报缺 = 漏报
+    expect(validateValue({ required: ["constructor"] }, {})).toEqual([
+      { path: "", message: "缺少必填字段 constructor" },
+    ]);
+    // 可选 toString 声明 type:string：{} 只继承到 function，不该触发类型校验误拒
+    expect(validateValue(asSchema({ properties: { toString: { type: "string" } } }), {})).toEqual([]);
+  });
 });
 
 describe("ticket 04: 正则 pattern 命中与放行", () => {
@@ -171,5 +180,13 @@ describe("ticket 04: 综合结构与 never-throw", () => {
     expect(validateValue(asSchema(null), "x")).toEqual([]);
     expect(validateValue(asSchema(42), "x")).toEqual([]);
     expect(validateValue(asSchema("string"), "x")).toEqual([]);
+  });
+
+  it("never-throw：垃圾枚举/垃圾 type 成员 toString 污染——格式化失败转 issue 不抛错", () => {
+    // String({toString: null}) 抛 TypeError，必须转为 issue 而非逃逸
+    const poisonEnum = validateValue(asSchema({ enum: [{ toString: null }] }), "x");
+    expect(poisonEnum).toHaveLength(1);
+    expect(poisonEnum[0].message).toContain("枚举");
+    expect(validateValue(asSchema({ type: [{ toString: null }] }), "x")).toHaveLength(1);
   });
 });
