@@ -80,13 +80,9 @@ export function transitionDelivery(from: DeliveryState, op: DeliveryOp): Deliver
 	return { ok: true, from, to: edge.to };
 }
 
-// --- 共享类型最小版本（types: provisional, merge coordinator will unify）---
-// EntityRef / Verdict 正典定义归 entity.ts（票 06，先到者拥有）；本票先行需要，故留最小版本。
-
-/** types: provisional — EntityRef 正典在 entity.ts（源系统原生标识，前缀 external/|project/|user/）。 */
-export type EntityRef = string;
-/** types: provisional — Verdict 正典在 entity.ts（#31：agent 可见面一律语义名，退出码不外泄）。 */
-export type Verdict = "passed" | "failed" | "waiting";
+// --- 共享类型（2026-10-12 统一：正典在 types.ts，re-export 保持消费面）---
+import type { EntityRef, Verdict } from "./types.ts";
+export type { EntityRef, Verdict };
 
 // --- Notification 值对象（#31：notificationId/eventSeq/billboard 视图；一个 notification 扇出多行 Delivery）---
 

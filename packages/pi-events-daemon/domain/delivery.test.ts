@@ -160,18 +160,18 @@ describe("Notification 值对象（billboard 视图）", () => {
 	it("evidence ≤2KB 内联无指针；>2KB 截断 + evidenceRef 指针（= notificationId）", () => {
 		expect(EVIDENCE_INLINE_LIMIT).toBe(2000);
 		const small = makeBillboard("n:1", {
-			entityRef: "external/https://gitlab.example/api/v4/projects/1/merge_requests/42",
+			entityRef: { type: "gitlab:mr", key: "external/https://gitlab.example/api/v4/projects/1/merge_requests/42" },
 			verdict: "passed",
 			evidence: "ok",
 		});
 		expect(small).toEqual({
-			entityRef: "external/https://gitlab.example/api/v4/projects/1/merge_requests/42",
+			entityRef: { type: "gitlab:mr", key: "external/https://gitlab.example/api/v4/projects/1/merge_requests/42" },
 			verdict: "passed",
 			count: 1,
 			evidence: "ok",
 		});
 		const big = makeBillboard("n:2", {
-			entityRef: "external/https://x",
+			entityRef: { type: "gitlab:mr", key: "external/https://x" },
 			verdict: "failed",
 			evidence: "x".repeat(EVIDENCE_INLINE_LIMIT + 1),
 		});
@@ -182,7 +182,7 @@ describe("Notification 值对象（billboard 视图）", () => {
 	it("Subscription 聚合形状：probe 资产 + opts + 编址（tsc 形状回归）", () => {
 		const sub: Subscription = {
 			subscriptionId: "sub-1",
-			entityRef: "external/https://gitlab.example/api/v4/projects/1/merge_requests/42",
+			entityRef: { type: "gitlab:mr", key: "external/https://gitlab.example/api/v4/projects/1/merge_requests/42" },
 			spec: {
 				check: "glab api projects/1/merge_requests/42",
 				schedule: { type: "interval", every: "60s" },
