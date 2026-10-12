@@ -1,0 +1,42 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "pi-events-daemon .pi/events.json 契约（auto 订阅声明，#31 Schema 策略 R3）",
+  "description": ".pi/events.json 是 auto 订阅声明的最小形态（资源 YAML 清单 post-MVP，保留此文件）：项目把它提交进仓库，extension 启动时读取并向 daemon 逐条声明（US-29/30 声明链：events.json → extension 启动声明 → origin:auto 投递）。origin=auto、scope=project 为隐式——声明里没有也不该有 session/origin/scope 字段。模板实例化：template 必填 + params 传模板参数；意图 opts 是 subscribe opts 的 auto 子集（去掉 sessionId/smoke：无投递会话、无 smoke 报告回传面；schedule 归模板资产 B1）。",
+  "type": "object",
+  "required": ["subscriptions"],
+  "additionalProperties": false,
+  "properties": {
+    "subscriptions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["template"],
+        "additionalProperties": false,
+        "properties": {
+          "template": {
+            "type": "string",
+            "description": "probe 模板名（templates op 可列出可用名；零命中报错列出可用模板）。"
+          },
+          "params": {
+            "type": "object",
+            "description": "模板参数实例化（模板 params 清单见 templates op）。"
+          },
+          "on": {
+            "type": ["string", "array"],
+            "items": { "type": "string" },
+            "description": "谓词：状态值/状态集/命名转换（如 digest-changed）。"
+          },
+          "once": { "type": "boolean", "description": "一次性：命中即自动关闭。" },
+          "flip": { "type": "boolean", "description": "翻转沿通知形态：failed 不关闭（R2 裁定）。" },
+          "ttl": { "type": "string", "description": "到期自动关闭（I8）。" },
+          "failureThreshold": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "连续失败计满才翻转（R2：k8s probe 阈值语义；默认 1，槽级先建者定）。"
+          },
+          "successThreshold": { "type": "integer", "minimum": 1, "description": "连续成功计满才恢复（默认 1）。" }
+        }
+      }
+    }
+  }
+}
