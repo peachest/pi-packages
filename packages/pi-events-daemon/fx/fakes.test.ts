@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { FakeClock, FakeExec } from "./index.ts";
+import { FakeClock, FakeExec, FakePusher } from "./index.ts";
 
 describe("票 13 FakeClock：manual drive（fx.md 钉死契约：手动推进、到期定时器按序触发后返回）", () => {
   it("step 推进 now；到期定时器按（到期时刻, 调度序）同步触发后返回", () => {
@@ -88,5 +88,26 @@ describe("票 13 FakeExec：脚本化响应序列（fx.md 钉死契约）", () =
     exec.enqueue({ exitCode: 0 });
     await exec.run("only-scripted");
     await expect(exec.run("un-scripted")).rejects.toThrowError(/script exhausted.*un-scripted/s);
+  });
+});
+
+describe("票 13 FakePusher：push 记录 + 注入投递失败（fx.md 钉死：close/reject 路径）", () => {
+  it("push 逐行按序记录；无注入时 resolve", async () => {
+    const pusher = new FakePusher();
+    await pusher.push('{"jsonrpc":"2.0","method":"wake/1"}');
+    await pusher.push('{"jsonrpc":"2.0","method":"wake/2"}');
+    expect(pusher.pushed).toEqual(['{"jsonrpc":"2.0","method":"wake/1"}', '{"jsonrpc":"2.0","method":"wake/2"}']);
+  });
+
+  it("预注入失败：push reject 该错误且不记录；失败耗尽后恢复投递（k 次失败后成功可脚本化）", async () => {
+    const pusher = new FakePusher();
+    const closed = new Error("socket closed");
+    pusher.failures.push(closed, new Error("EPIPE"));
+
+    await expect(pusher.push("m1")).rejects.toBe(closed);
+    expect(pusher.pushed).toEqual([]); // 失败的投递不记入 pushed
+    await expect(pusher.push("m2")).rejects.toThrowError("EPIPE");
+    await pusher.push("m3");
+    expect(pusher.pushed).toEqual(["m3"]);
   });
 });

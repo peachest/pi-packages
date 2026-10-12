@@ -102,7 +102,7 @@ describe("fx 真壳存在性证明（票 12 断言 1）", () => {
 describe("fx 端口契约（票 12 断言 2：端口类型零业务泄漏 + Fs 只读收窄）", () => {
   it("公共面 = 真壳四件套（票 12）+ 四端口 fake（票 13，逐步到位）", () => {
     expect(Object.keys(fx).sort()).toEqual(
-      ["FakeClock", "FakeExec", "NodeFs", "ShellExec", "SocketPusher", "SystemClock"],
+      ["FakeClock", "FakeExec", "FakePusher", "NodeFs", "ShellExec", "SocketPusher", "SystemClock"],
     );
   });
 

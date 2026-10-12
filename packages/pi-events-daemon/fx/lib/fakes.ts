@@ -1,4 +1,4 @@
-import type { Clock, Exec, ExecOptions, ExecResult } from "./types.ts";
+import type { Clock, Exec, ExecOptions, ExecResult, Fs, Pusher } from "./types.ts";
 
 /**
  * FakeClock——manual drive 行为契约（fx.md 钉死：手动推进、到期定时器按序触发后返回）。
@@ -56,5 +56,18 @@ export class FakeExec implements Exec {
     const scripted = this.script.shift();
     if (!scripted) throw new Error(`FakeExec: script exhausted, unexpected run: ${command}`);
     return { exitCode: 0, signal: null, stdout: "", stderr: "", timedOut: false, ...scripted };
+  }
+}
+
+/** FakePusher——push 记录 + 注入投递失败（fx.md 钉死 close/reject 路径）：failures 队列按序消费，耗尽后恢复投递。 */
+export class FakePusher implements Pusher {
+  readonly pushed: string[] = [];
+  /** 预注入的投递失败（按序，每次 push 消费一个；close/reject 场景按确定性脚本预填）。 */
+  readonly failures: Error[] = [];
+
+  async push(line: string): Promise<void> {
+    const failure = this.failures.shift();
+    if (failure) throw failure; // 失败的投递不记入 pushed——投递成功才产生外部效应
+    this.pushed.push(line);
   }
 }

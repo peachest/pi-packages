@@ -12,4 +12,4 @@ export { SystemClock } from "./lib/clock.ts";
 export { ShellExec } from "./lib/exec.ts";
 export { SocketPusher } from "./lib/pusher.ts";
 export { NodeFs } from "./lib/node-fs.ts";
-export { FakeClock, FakeExec } from "./lib/fakes.ts";
+export { FakeClock, FakeExec, FakePusher } from "./lib/fakes.ts";
