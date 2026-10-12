@@ -260,12 +260,9 @@ export class MemoryStore implements Store {
     return this.tx((tx) => {
       const existing = tx.getEvent(row.eventId);
       if (existing) {
-        const same = CONTENT_FIELDS.every((f) => {
-          const a = (existing as unknown as Record<string, unknown>)[f];
-          const b = (row as unknown as Record<string, unknown>)[f];
-          return (a === undefined && b === undefined) || a === b;
-        });
-        if (!same) throw new Error(`corruption: event ${row.eventId} exists with different content`);
+        if (!sameEventContent(existing, row)) {
+          throw new Error(`corruption: event ${row.eventId} exists with different content`);
+        }
         return { kind: "skipped" as const };
       }
       tx.putEvent(row);
@@ -338,7 +335,16 @@ export class MemoryStore implements Store {
 }
 
 // 内容比较域与 domain/types.ts TRANSITIONED_CONTENT_FIELDS 为同一清单的两份拷贝（D3 豁免：store 行形状拆 entityRefType/entityRefKey，非 import），漂移须双向同步。
-const CONTENT_FIELDS = ["eventSeq", "entityRefType", "entityRefKey", "from", "to", "contentIdentity", "occurredAt", "evidenceRef"] as const;
+export const CONTENT_FIELDS = ["eventSeq", "entityRefType", "entityRefKey", "from", "to", "contentIdentity", "occurredAt", "evidenceRef"] as const;
+
+/** appendIfMissing 内容比较域（fake/SqliteStore 共用，sameEventContent 语义）。undefined 与 undefined 相等。 */
+export function sameEventContent(a: EventRow, b: EventRow): boolean {
+  return CONTENT_FIELDS.every((f) => {
+    const va = (a as unknown as Record<string, unknown>)[f];
+    const vb = (b as unknown as Record<string, unknown>)[f];
+    return (va === undefined && vb === undefined) || va === vb;
+  });
+}
 
 // --- 便捷工厂 ---
 
