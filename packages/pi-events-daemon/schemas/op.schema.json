@@ -5,8 +5,8 @@
   "definitions": {
     "entityRef": {
       "type": "string",
-      "pattern": "^(external|project|user)/.+$",
-      "description": "实体原生标识串（CONTEXT.md EntityRef；external/|project/|user/ 前缀，ADR 0002——agent 不铸造不解析，key generator 产物）。"
+      "pattern": "^[a-z0-9:_-]+:(external|project|user)/.+$",
+      "description": "实体线引用单串 = `${type}:${nativeKey}`（如 gitlab:mr:project/https://...；两段结构 type:nativeKey——type 段 [a-z0-9:_-] 可含冒号如 gitlab:mr，key 以 external/|project/|user/ 前缀开；domain entityRefKeyOf 正典串行化同形零映射，agent 不铸造不解析，ADR 0002；protocol 侧类型名 EntityRefId）。"
     },
     "validateReport": {
       "type": "object",

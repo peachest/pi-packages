@@ -179,6 +179,19 @@ describe("票 03: 三契约 schema 文件随包发版（schemas/）", () => {
     expect(Object.keys(eventsSchema.properties as Record<string, unknown>)).toEqual(["subscriptions"]);
   });
 
+  it("entityRef 线格式 type:key 全串（2026-10-12 grilling 裁定）：拒纯 key（无 type 段）、收 type:key；protocol validateValue 同一 pattern 校验", () => {
+    const entityRef = (opSchema.definitions as Record<string, any>).entityRef;
+    expect(entityRef.pattern).toBe("^[a-z0-9:_-]+:(external|project|user)/.+$");
+    // 接受 type:key 全串（type 段可含冒号，如 gitlab:mr；与 domain entityRefKeyOf 同形零映射）
+    expect(validateValue(entityRef, "gitlab:mr:project/https://gitlab.example/a/b/-/merge_requests/42")).toEqual([]);
+    expect(validateValue(entityRef, "gitlab:mr:external/mr-1")).toEqual([]);
+    // 纯 key（无 type 段）= 旧线格式，拒
+    expect(validateValue(entityRef, "project/https://gitlab.example/x").length).toBeGreaterThan(0);
+    expect(validateValue(entityRef, "external/mr-1").length).toBeGreaterThan(0);
+    // type 段非法字符（大写）拒
+    expect(validateValue(entityRef, "GitLab:mr:project/x").length).toBeGreaterThan(0);
+  });
+
   it("schemas/ 目录存在且恰含三契约文件（package.json 无 files 白名单：private 包不发布 npm，删字段后 import 才不断链）", () => {
     expect(readdirSync(new URL("../schemas/", import.meta.url)).sort()).toEqual([...SCHEMA_FILES].sort());
   });

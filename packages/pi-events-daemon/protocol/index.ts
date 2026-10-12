@@ -36,7 +36,7 @@ export type OpName = (typeof OP_NAMES)[number];
 /** JSON-RPC 请求 id。 */
 export type RequestId = string | number;
 
-/** 实体标识：source-system native identifier 字符串（线协议侧类型名 EntityRefId——与 domain 对象版 EntityRef 同名异型的区分；CONTEXT.md EntityRef 词条，agent 不铸造不解析）。 */
+/** 实体线引用单串（EntityRefId）= `${type}:${nativeKey}`（如 gitlab:mr:project/https://...；domain entityRefKeyOf 同形零映射，agent 不铸造不解析）。status op 保留 {type, key} 拆字段形态——wire 单串 ↔ 拆字段两形态，daemon 内归一。 */
 export type EntityRefId = string;
 
 /** schedule spec（#31 正典）：type 枚举即扩展接口。 */
@@ -117,7 +117,7 @@ export type DrainResponse = { drained: number; deadLetterSummary: { count: numbe
 export type EvidenceRequest = { evidenceRef: string };
 export type EvidenceResponse = { content: string; truncated: boolean };
 
-/** status：登记处写入 {type, key, state?, payload?} → {entityRef, state, event?}（状态变更自动发事件）。 */
+/** status：登记处写入 {type, key, state?, payload?} → {entityRef, state, event?}（状态变更自动发事件）。{type, key} 为拆字段形态：wire entityRef 单串 ↔ 拆字段两形态并存，daemon 内归一。 */
 export type StatusRequest = { type: string; key: string; state?: string; payload?: unknown };
 /** event 形状归 domain（Transitioned 事件族），线层透传。 */
 export type StatusResponse = { entityRef: EntityRefId; state: string | null; event?: unknown };
