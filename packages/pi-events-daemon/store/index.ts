@@ -175,6 +175,9 @@ export class MemoryStore implements Store {
   private writeListeners: Array<(tables: readonly string[]) => void> = [];
   private commitOrder: CommitRecord[] = [];
   private crashPoint: "tx" | "outbox" | null = null;
+  /** 提交通知队列 + 分发中标记：重入提交（监听器内再提交）排到当前提交全部监听器之后（FIFO）。 */
+  private notifyQueue: string[][] = [];
+  private dispatching = false;
 
   onWrite(cb: (tables: readonly string[]) => void): void {
     this.writeListeners.push(cb);
@@ -251,21 +254,32 @@ export class MemoryStore implements Store {
       this.tables[name] = staging[name];
     }
     this.commitOrder.push({ tables: [...stagedTables] });
-    // update_hook 等价：提交成功后按提交序同步触发
-    for (const cb of this.writeListeners) cb([...stagedTables]);
+    // update_hook 等价：提交成功后按提交序同步触发（重入提交排队，见 notifyCommit）
+    this.notifyCommit([...stagedTables]);
     return result;
+  }
+
+  private notifyCommit(tables: string[]): void {
+    this.notifyQueue.push(tables);
+    if (this.dispatching) return; // 重入提交：外层分发循环收尾时按 FIFO 继续
+    this.dispatching = true;
+    try {
+      while (this.notifyQueue.length > 0) {
+        const batch = this.notifyQueue.shift()!;
+        for (const cb of this.writeListeners) cb(batch);
+      }
+    } finally {
+      this.dispatching = false;
+    }
   }
 
   appendEventIfMissing(row: EventRow): { kind: "appended" } | { kind: "skipped" } {
     return this.tx((tx) => {
       const existing = tx.getEvent(row.eventId);
       if (existing) {
-        const same = CONTENT_FIELDS.every((f) => {
-          const a = (existing as unknown as Record<string, unknown>)[f];
-          const b = (row as unknown as Record<string, unknown>)[f];
-          return (a === undefined && b === undefined) || a === b;
-        });
-        if (!same) throw new Error(`corruption: event ${row.eventId} exists with different content`);
+        if (!sameEventContent(existing, row)) {
+          throw new Error(`corruption: event ${row.eventId} exists with different content`);
+        }
         return { kind: "skipped" as const };
       }
       tx.putEvent(row);
@@ -338,7 +352,16 @@ export class MemoryStore implements Store {
 }
 
 // 内容比较域与 domain/types.ts TRANSITIONED_CONTENT_FIELDS 为同一清单的两份拷贝（D3 豁免：store 行形状拆 entityRefType/entityRefKey，非 import），漂移须双向同步。
-const CONTENT_FIELDS = ["eventSeq", "entityRefType", "entityRefKey", "from", "to", "contentIdentity", "occurredAt", "evidenceRef"] as const;
+export const CONTENT_FIELDS = ["eventSeq", "entityRefType", "entityRefKey", "from", "to", "contentIdentity", "occurredAt", "evidenceRef"] as const;
+
+/** appendIfMissing 内容比较域（fake/SqliteStore 共用，sameEventContent 语义）。undefined 与 undefined 相等。 */
+export function sameEventContent(a: EventRow, b: EventRow): boolean {
+  return CONTENT_FIELDS.every((f) => {
+    const va = (a as unknown as Record<string, unknown>)[f];
+    const vb = (b as unknown as Record<string, unknown>)[f];
+    return (va === undefined && vb === undefined) || va === vb;
+  });
+}
 
 // --- 便捷工厂 ---
 
