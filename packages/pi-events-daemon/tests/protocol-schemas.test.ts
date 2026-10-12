@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { protocol } from "../index.ts";
 
@@ -176,5 +176,29 @@ describe("票 03: 三契约 schema 文件随包发版（schemas/）", () => {
       "ttl",
     ]);
     expect(Object.keys(eventsSchema.properties as Record<string, unknown>)).toEqual(["subscriptions"]);
+  });
+
+  it("schemas/ 目录存在且恰含三契约文件（package.json 无 files 白名单：private 包不发布 npm，删字段后 import 才不断链）", () => {
+    expect(readdirSync(new URL("../schemas/", import.meta.url)).sort()).toEqual([...SCHEMA_FILES].sort());
+  });
+
+  it("scheduleSpec oneOf 两分支：interval 缺 every、cron 缺 expr 均拒（票 02 ScheduleSpec 对齐）", () => {
+    // op 契约 definitions/scheduleSpec + profile 定义同构定义（顶层 schedule 与模板覆盖共用）
+    const nodes = [
+      (opSchema.definitions as any).scheduleSpec,
+      (profileSchema.definitions as any).scheduleSpec,
+    ];
+    for (const node of nodes) {
+      expect(node.oneOf, "oneOf 两分支").toHaveLength(2);
+      // 两分支各拒绝对方缺字段的值（draft-07 oneOf：零分支命中 = 拒绝）
+      for (const bad of [{ type: "interval" }, { type: "cron", every: "60s" }]) {
+        node.oneOf.forEach((branch: any, i: number) => {
+          expect(validateSubset(branch, bad).length, `${JSON.stringify(bad)} vs 分支${i}`).toBeGreaterThan(0);
+        });
+      }
+      // 合法形态各过其分支
+      expect(validateSubset(node.oneOf[0], { type: "interval", every: "60s" })).toEqual([]);
+      expect(validateSubset(node.oneOf[1], { type: "cron", expr: "*/5 * * * *" })).toEqual([]);
+    }
   });
 });

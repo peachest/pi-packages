@@ -24,15 +24,30 @@
     },
     "scheduleSpec": {
       "type": "object",
-      "description": "{type:\"interval\", every} | {type:\"cron\", expr, tz?}（crontab 5 字段，缺省本地时区）；类型枚举是未来节奏形态的扩展点。",
-      "required": ["type"],
-      "properties": {
-        "type": { "enum": ["interval", "cron"] },
-        "every": { "type": "string", "description": "interval 形态：如 \"60s\"。" },
-        "expr": { "type": "string", "description": "cron 形态：5 字段表达式。" },
-        "tz": { "type": "string", "description": "cron 时区（缺省本地）。" }
-      },
-      "additionalProperties": false
+      "description": "{type:\"interval\", every} | {type:\"cron\", expr, tz?}（crontab 5 字段，缺省本地时区）；oneOf 两分支按 type 收紧（票 02 ScheduleSpec：interval 需 every，cron 需 expr），新增节奏形态 = 加分支。",
+      "oneOf": [
+        {
+          "type": "object",
+          "description": "interval 形态。",
+          "required": ["type", "every"],
+          "properties": {
+            "type": { "enum": ["interval"] },
+            "every": { "type": "string", "description": "如 \"60s\"。" }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "description": "cron 形态。",
+          "required": ["type", "expr"],
+          "properties": {
+            "type": { "enum": ["cron"] },
+            "expr": { "type": "string", "description": "5 字段表达式。" },
+            "tz": { "type": "string", "description": "时区（缺省本地）。" }
+          },
+          "additionalProperties": false
+        }
+      ]
     },
     "queryEntity": {
       "type": "object",

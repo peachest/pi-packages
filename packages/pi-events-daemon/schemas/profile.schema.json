@@ -47,16 +47,8 @@
       }
     },
     "schedule": {
-      "type": "object",
-      "description": "schedule 默认（本 profile 模板的缺省节奏；模板可覆盖）。{type:\"interval\", every} | {type:\"cron\", expr, tz?}（crontab 5 字段，缺省本地时区）。",
-      "required": ["type"],
-      "properties": {
-        "type": { "enum": ["interval", "cron"] },
-        "every": { "type": "string", "description": "interval 形态：如 \"60s\"。" },
-        "expr": { "type": "string", "description": "cron 形态：5 字段表达式。" },
-        "tz": { "type": "string", "description": "cron 时区（缺省本地）。" }
-      },
-      "additionalProperties": false
+      "$ref": "#/definitions/scheduleSpec",
+      "$comment": "schedule 默认（本 profile 模板的缺省节奏；模板可覆盖）。{type:\"interval\", every} | {type:\"cron\", expr, tz?}（crontab 5 字段，缺省本地时区）。oneOf 两分支按 type 收紧（票 02 ScheduleSpec）。"
     },
     "onTransition": {
       "type": "array",
@@ -87,16 +79,8 @@
           "check": { "type": "string", "description": "check 命令文本（tri-state 判定器原语；模板资产，agent 永不传入）。" },
           "states": { "type": "array", "items": { "type": "string" }, "description": "模板回显的闭集子集（缺省=全 states）。" },
           "schedule": {
-            "type": "object",
-            "description": "模板级 schedule 覆盖（缺省用 profile 顶层 schedule）。",
-            "required": ["type"],
-            "properties": {
-              "type": { "enum": ["interval", "cron"] },
-              "every": { "type": "string" },
-              "expr": { "type": "string" },
-              "tz": { "type": "string" }
-            },
-            "additionalProperties": false
+            "$ref": "#/definitions/scheduleSpec",
+            "$comment": "模板级 schedule 覆盖（缺省用 profile 顶层 schedule）。"
           },
           "params": {
             "type": "object",
@@ -111,6 +95,33 @@
       "type": "object",
       "description": "状态改名迁移映射（B7）：旧状态名 → 新状态名；kernel 加载时对存量实体状态做一次性改名，随 version 递增。无改名时为空对象。",
       "additionalProperties": { "type": "string" }
+    }
+  },
+  "definitions": {
+    "scheduleSpec": {
+      "$comment": "与 op.schema.json#/definitions/scheduleSpec 同构（两处同步维护）：oneOf 两分支按 type 收紧（票 02 ScheduleSpec：interval 需 every，cron 需 expr）。",
+      "type": "object",
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["type", "every"],
+          "properties": {
+            "type": { "enum": ["interval"] },
+            "every": { "type": "string", "description": "如 \"60s\"。" }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["type", "expr"],
+          "properties": {
+            "type": { "enum": ["cron"] },
+            "expr": { "type": "string", "description": "5 字段表达式。" },
+            "tz": { "type": "string", "description": "时区（缺省本地）。" }
+          },
+          "additionalProperties": false
+        }
+      ]
     }
   }
 }
