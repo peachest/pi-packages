@@ -6,7 +6,7 @@
  * 全部是 fixture 数据经构造注入；新增 profile 零 kernel 改动。
  */
 import { describe, it, expect } from "vitest";
-import { createMemoryStore, type Store } from "../store/index.ts";
+import { createMemoryStore, type Store, type TxView } from "../store/index.ts";
 import { FIRST_SEQUENCE, planTransition, deterministicEventId } from "../domain/intent.ts";
 import { IntentCorruption, Kernel } from "./index.ts";
 
@@ -232,5 +232,43 @@ describe("组 2：Intent 串行消费——崩溃重放一致（顺序约束）+
     const forged = { ...intents[1], to: intents[1].to === "failed" ? "waiting" : "failed" }; // 同 id 异内容
     expect(() => kernel.consumeIntent(forged)).toThrow(IntentCorruption);
     expect(snapshot(store)).toEqual(before); // corruption 零残留
+  });
+});
+
+describe("组 4：评审修复回归——提交成功后推进游标（F1）/ 重放豁免封闭集（F2）/ from 态封闭集执法（F3）", () => {
+  it("F1 回调完成、提交失败：重试重排同序 → 同 eventId 幂等收口，游标不烧号", () => {
+    const store = createMemoryStore();
+    seedEntity(store, "passed");
+    // 提交失败模型：失败尝试的回调对真实库读、写全部丢弃（= 提交阶段失败回滚），回调返回后包装层抛错；
+    // 游标若在回调内推进（旧 bug），重试即用已烧序号重排 → 换 eventId
+    let failuresLeft = 1;
+    const discardTx = (t: TxView): TxView => ({
+      ...t,
+      putEvent: () => {},
+      putEntity: () => {},
+      putSubscription: () => {},
+      putDelivery: () => {},
+      putProbeSpec: () => {},
+      putNotification: () => {},
+      putEvidence: () => {},
+      putOutbox: () => {},
+      putRunLedger: () => {},
+    });
+    const flaky: Store = Object.assign(Object.create(store), {
+      tx: <T,>(fn: (tx: TxView) => T): T => {
+        if (failuresLeft-- > 0) {
+          store.tx((t) => fn(discardTx(t))); // 回调完整执行，提交失败 = 写丢弃
+          throw new Error("commit failed after callback completed");
+        }
+        return store.tx(fn); // 重试成功路径：真实提交
+      },
+    });
+    const kernel = new Kernel(flaky, VERDICT_STATES, 0);
+    expect(kernel.transition(REF, "failed", at(1))).toEqual({ eventSeq: 1, from: "passed", to: "failed" });
+    // 同 eventId 单事件 + outbox 1:1：重试没有用推进后的序号重排出新事件
+    expect(store.tx((tx) => tx.getEvent(deterministicEventId(REF, 1)))).toMatchObject({ eventSeq: 1, to: "failed" });
+    expect(store.outboxBatch(10)).toEqual([{ notificationId: deterministicEventId(REF, 1), eventSeq: 1 }]);
+    // 游标未被失败烧掉：下一 transition 续接 seq 2
+    expect(kernel.transition(REF, "waiting", at(2))).toEqual({ eventSeq: 2, from: "failed", to: "waiting" });
   });
 });

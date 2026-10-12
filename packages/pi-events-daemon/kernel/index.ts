@@ -105,27 +105,34 @@ export class Kernel {
    * 同态 verdict → null（无转换无事件，ADR 0003）。
    */
   transition(ref: EntityRef, verdict: Verdict, occurredAt: string): TransitionResult | null {
-    return this.withRetry(`transition ${entityRefKeyOf(ref)}/${verdict}`, () =>
-      this.store.tx((tx) => {
-        const entity = tx.getEntity(ref.type, ref.key);
-        if (!entity) throw new Error(`transition rejected: unknown entity ${entityRefKeyOf(ref)}`);
-        if (entity.retired) {
-          throw new Error(`transition rejected: entity ${entityRefKeyOf(ref)} is retired — retired entities never revive`);
-        }
-        requireStateIn(this.states, verdict);
-        if (entity.state === verdict) return null;
-        const { intent, sequences } = planTransition(this.sequences, {
-          entityRef: ref,
-          from: entity.state,
-          to: verdict,
-          occurredAt,
-        });
-        this.consumeTx(tx, intent);
-        // 游标赋值放在 consumeTx 成功之后：失败（含重试）不烧号，重试重排同序 → 同确定性 id → 幂等收口
-        this.sequences = sequences;
-        return { eventSeq: intent.eventSeq, from: intent.from, to: intent.to };
-      }),
-    );
+    return this.withRetry(`transition ${entityRefKeyOf(ref)}/${verdict}`, () => {
+      // F1：回调只产出 {业务结果, 待推进游标}，Store.tx 成功返回后才推进——
+      // 回调完成、提交失败的回滚场景下重试重排同序 → 同确定性 eventId（幂等不烧号）
+      const planned = this.store.tx(
+        (tx): { result: TransitionResult; sequences: IntentSequences } | null => {
+          const entity = tx.getEntity(ref.type, ref.key);
+          if (!entity) throw new Error(`transition rejected: unknown entity ${entityRefKeyOf(ref)}`);
+          if (entity.retired) {
+            throw new Error(`transition rejected: entity ${entityRefKeyOf(ref)} is retired — retired entities never revive`);
+          }
+          requireStateIn(this.states, verdict);
+          // F3：from 态同受封闭集执法（null 首转换豁免）——已删除旧态的唯一出口是 migrateState 显式迁移
+          requireStateIn(this.states, entity.state);
+          if (entity.state === verdict) return null;
+          const { intent, sequences } = planTransition(this.sequences, {
+            entityRef: ref,
+            from: entity.state,
+            to: verdict,
+            occurredAt,
+          });
+          this.consumeTx(tx, intent);
+          return { result: { eventSeq: intent.eventSeq, from: intent.from, to: intent.to }, sequences };
+        },
+      );
+      if (planned === null) return null;
+      this.sequences = planned.sequences;
+      return planned.result;
+    });
   }
 
   /**
@@ -157,25 +164,30 @@ export class Kernel {
     occurredAt: string,
   ): TransitionResult | null {
     requireStateIn(this.states, mapping.to);
-    return this.withRetry(`migration ${entityRefKeyOf(ref)}/${mapping.from}->${mapping.to}`, () =>
-      this.store.tx((tx) => {
-        const entity = tx.getEntity(ref.type, ref.key);
-        if (!entity) throw new Error(`migration rejected: unknown entity ${entityRefKeyOf(ref)}`);
-        if (entity.retired) {
-          throw new Error(`migration rejected: entity ${entityRefKeyOf(ref)} is retired — retired entities never revive`);
-        }
-        if (entity.state !== mapping.from) return null;
-        const { intent, sequences } = planTransition(this.sequences, {
-          entityRef: ref,
-          from: mapping.from,
-          to: mapping.to,
-          occurredAt,
-        });
-        this.consumeTx(tx, intent);
-        this.sequences = sequences;
-        return { eventSeq: intent.eventSeq, from: intent.from, to: intent.to };
-      }),
-    );
+    return this.withRetry(`migration ${entityRefKeyOf(ref)}/${mapping.from}->${mapping.to}`, () => {
+      // F1 同 transition：游标推进仅在 Store.tx 成功返回后（提交失败不烧号）
+      const planned = this.store.tx(
+        (tx): { result: TransitionResult; sequences: IntentSequences } | null => {
+          const entity = tx.getEntity(ref.type, ref.key);
+          if (!entity) throw new Error(`migration rejected: unknown entity ${entityRefKeyOf(ref)}`);
+          if (entity.retired) {
+            throw new Error(`migration rejected: entity ${entityRefKeyOf(ref)} is retired — retired entities never revive`);
+          }
+          if (entity.state !== mapping.from) return null;
+          const { intent, sequences } = planTransition(this.sequences, {
+            entityRef: ref,
+            from: mapping.from,
+            to: mapping.to,
+            occurredAt,
+          });
+          this.consumeTx(tx, intent);
+          return { result: { eventSeq: intent.eventSeq, from: intent.from, to: intent.to }, sequences };
+        },
+      );
+      if (planned === null) return null;
+      this.sequences = planned.sequences;
+      return planned.result;
+    });
   }
 
   /**
