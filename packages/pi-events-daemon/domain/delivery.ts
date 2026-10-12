@@ -86,8 +86,17 @@ export type { EntityRef, Verdict };
 
 // --- Notification 值对象（#31：notificationId/eventSeq/billboard 视图；一个 notification 扇出多行 Delivery）---
 
-/** evidence >2KB 截断 + evidenceRef 指针（#31 通知条目行）。 */
-export const EVIDENCE_INLINE_LIMIT = 2000;
+/** evidence >2KB 截断 + evidenceRef 指针（#31 通知条目行）。上限单位 = UTF-8 字节（>2KB 即 >2048 bytes）。 */
+export const EVIDENCE_INLINE_LIMIT = 2048;
+
+/** 按 UTF-8 字节截断：回退到字符首字节边界，保证结果重编码 ≤ limit 字节（字符数口径会漏截多字节字符）。 */
+function clampToUtf8Bytes(s: string, limit: number): string {
+	const buf = Buffer.from(s, "utf8");
+	if (buf.length <= limit) return s;
+	let end = limit;
+	while ((buf[end] & 0xc0) === 0x80) end--; // 回退 UTF-8 续字节（10xxxxxx）至首字节
+	return buf.subarray(0, end).toString("utf8");
+}
 
 /** 通知条目 billboard：count + 实体 + verdict，无 payload 内联。 */
 export interface BillboardView {
@@ -104,12 +113,12 @@ export function makeBillboard(
 	notificationId: string,
 	b: { entityRef: EntityRef; verdict: Verdict; evidence: string; count?: number },
 ): BillboardView {
-	const truncated = b.evidence.length > EVIDENCE_INLINE_LIMIT;
+	const truncated = Buffer.byteLength(b.evidence, "utf8") > EVIDENCE_INLINE_LIMIT;
 	return {
 		entityRef: b.entityRef,
 		verdict: b.verdict,
 		count: b.count ?? 1,
-		evidence: truncated ? b.evidence.slice(0, EVIDENCE_INLINE_LIMIT) : b.evidence,
+		evidence: truncated ? clampToUtf8Bytes(b.evidence, EVIDENCE_INLINE_LIMIT) : b.evidence,
 		...(truncated ? { evidenceRef: notificationId } : {}),
 	};
 }
