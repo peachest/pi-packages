@@ -66,6 +66,77 @@ module.exports = {
       from: {},
       to: { circular: true },
     },
+
+    // --- pi-events-daemon 包内分层规则（ticket 01，融合架构 00-summary 依赖单向链）---
+    // 模式：from 本模块 → to 其他模块即红（$1 反向引用自身模块允许自引）
+    // 叶模块逐条规则（depcruise 的 pathNot 不支持跨 from/to 的 $1 反向引用，逐叶展开）
+    ...["protocol", "fx", "domain", "store"].map((leaf) => ({
+      name: `eda-leaf-zero-dep-${leaf}`,
+      comment: `Zero-dep leaf ${leaf} imports nothing outside its own module (D3: store 与 domain 互不依赖).`,
+      severity: "error",
+      from: { path: `^${R}/pi-events-daemon/${leaf}/` },
+      to: {
+        path: `^${R}/pi-events-daemon/`,
+        pathNot: `^${R}/pi-events-daemon/${leaf}/`,
+      },
+    })),
+    {
+      name: "eda-adapter-fx-only",
+      comment: "prober / transcript-adapter 零上层依赖，只可用 fx 端口（自身内部自由）。",
+      severity: "error",
+      from: { path: `^${R}/pi-events-daemon/(prober|transcript-adapter)/` },
+      to: {
+        path: `^${R}/pi-events-daemon/`,
+        pathNot: `^${R}/pi-events-daemon/(prober|transcript-adapter)/`,
+      },
+    },
+    {
+      name: "eda-kernel-deps",
+      comment: "kernel imports only domain + store（自身内部自由）。",
+      severity: "error",
+      from: { path: `^${R}/pi-events-daemon/kernel/` },
+      to: {
+        path: `^${R}/pi-events-daemon/`,
+        pathNot: `^${R}/pi-events-daemon/(kernel|domain|store)/`,
+      },
+    },
+    {
+      name: "eda-profiles-type-only",
+      comment: "profiles → kernel 单向（I-01/ADR 0005）；kernel 不得 import profiles。",
+      severity: "error",
+      from: { path: `^${R}/pi-events-daemon/kernel/` },
+      to: { path: `^${R}/pi-events-daemon/profiles/` },
+    },
+    {
+      name: "eda-loops-deps",
+      comment: "loops → kernel / prober / transcript-adapter / fx / store / domain，禁止直达 transport / profiles / daemon-main。",
+      severity: "error",
+      from: { path: `^${R}/pi-events-daemon/loops/` },
+      to: {
+        path: `^${R}/pi-events-daemon/`,
+        pathNot: `^${R}/pi-events-daemon/(loops|kernel|prober|transcript-adapter|fx|store|domain)/`,
+      },
+    },
+    {
+      name: "eda-transport-deps",
+      comment: "transport → protocol only（薄 adapter 不长策略）。",
+      severity: "error",
+      from: { path: `^${R}/pi-events-daemon/transport/` },
+      to: {
+        path: `^${R}/pi-events-daemon/`,
+        pathNot: `^${R}/pi-events-daemon/(transport|protocol)/`,
+      },
+    },
+    {
+      name: "eda-daemon-main-composition",
+      comment: "daemon-main 组合根：只 import 各模块入口（index.ts），不得深入模块内部。",
+      severity: "error",
+      from: { path: `^${R}/pi-events-daemon/daemon-main/` },
+      to: {
+        path: `^${R}/pi-events-daemon/[^/]+/`,
+        pathNot: `^${R}/pi-events-daemon/[^/]+/index\\.ts$`,
+      },
+    },
   ],
   options: {
     doNotFollow: { path: "node_modules" },
