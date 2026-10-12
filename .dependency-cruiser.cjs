@@ -127,7 +127,7 @@ module.exports = {
       from: { path: `^${R}/pi-events-daemon/profiles/` },
       to: {
         path: `^${R}/pi-events-daemon/`,
-        pathNot: `^${R}/pi-events-daemon/(profiles|kernel)/`,
+        pathNot: `^${R}/pi-events-daemon/(profiles/|kernel/|kernel\.ts$)`,
       },
     },
     {
