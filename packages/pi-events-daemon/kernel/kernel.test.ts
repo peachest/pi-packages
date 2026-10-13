@@ -5,8 +5,12 @@
  * 试金石前置（I-01 / ADR 0005）：本测试集不含任何具体 profile 名——状态集与实体名
  * 全部是 fixture 数据经构造注入；新增 profile 零 kernel 改动。
  */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, afterAll } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createMemoryStore, type Store, type TxView } from "../store/index.ts";
+import { SqliteStore } from "../store/sqlite.ts";
 import { FIRST_SEQUENCE, planTransition, deterministicEventId } from "../domain/intent.ts";
 import { IntentCorruption, Kernel } from "./index.ts";
 
@@ -937,5 +941,44 @@ describe("票 24 — register 簿记与 profile 冲突拒绝（US-32：一实体
     const store = createMemoryStore();
     const kernel = new Kernel(store, VERDICT_STATES, 0);
     expect(() => kernel.subscribe(subReq())).toThrow(/unknown entity/);
+  });
+});
+
+describe("评审 A 组 — SqliteStore 真库订阅流程（票 24 新增字段持久化端到端）", () => {
+  const tmpDirs: string[] = [];
+  const tmpDbPath = (): string => {
+    const dir = mkdtempSync(join(tmpdir(), "eda-kernel-"));
+    tmpDirs.push(dir);
+    return join(dir, "store.db");
+  };
+  afterAll(() => {
+    for (const d of tmpDirs) rmSync(d, { recursive: true, force: true });
+  });
+
+  it("真 SQLite 下 subscribe 幂等/关闭/相位推进/换参重建（字段往返过持久层）", () => {
+    const s = new SqliteStore(tmpDbPath());
+    const kernel = new Kernel(s, VERDICT_STATES, 0);
+    kernel.register({ entityRef: REF, profileId: "fixture-profile", state: null });
+
+    const r1 = kernel.subscribe(subReq({ opts: { on: "passed", flip: false, readyCheck: "fixture-ready" } }));
+    expect(r1.subscribed).toBe(true);
+    const id1 = subId(r1);
+    // 幂等：同参返回既有订阅，行含票 24 字段且经落库往返无损（false 显式存活，不坍缩 undefined）
+    expect(subId(kernel.subscribe(subReq({ opts: { on: "passed", flip: false, readyCheck: "fixture-ready" } })))).toBe(id1);
+    expect(s.getSubscription(id1)).toMatchObject({ check: "fixture-check-a", on: "passed", flip: false });
+
+    // 相位推进：phase 落库 + solo 槽 ProbeSpec 换 readyCheck
+    expect(kernel.flipSubscription(id1)).toEqual({ advanced: true });
+    expect(s.getSubscription(id1)?.phase).toBe("flip");
+    expect(s.getProbeSpec(SLOT_KEY)?.check).toBe("fixture-ready");
+
+    // 关闭簿记：closedAt/closedReason 落库；换参重建后 refcount 恢复
+    expect(kernel.cancel({ subscriptionId: id1, now: 2_000 })).toEqual({ cancelled: true });
+    expect(s.getSubscription(id1)).toMatchObject({ closedAt: 2_000, closedReason: "cancelled" });
+    const r2 = kernel.subscribe(subReq({ check: "fixture-check-b", opts: { on: "passed", flip: false } }));
+    expect(r2.subscribed).toBe(true);
+    expect(s.getRunLedger(SLOT_KEY)?.refcount).toBe(1);
+    expect(s.getProbeSpec(SLOT_KEY)?.check).toBe("fixture-check-b");
+    s.close();
   });
 });
