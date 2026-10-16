@@ -166,6 +166,76 @@ describe("ticket 05: 畸形帧跳过不崩（socket 路径）", () => {
   });
 });
 
+describe("ticket 05 fix: dispatch 异常守卫（评审 F2/F3）", () => {
+  it("dispatch throw undefined → 配对 error 响应，连接与 daemon 存活", async () => {
+    let calls = 0;
+    const p = startServer({
+      dispatch: () => (calls++ === 0 ? (() => { throw undefined; })() : { echoed: "status" }),
+    });
+    const socket = connectRaw(p);
+    socket.write(opRequest("u1", "status", {}));
+    const [resp] = await readLines(socket, 1);
+    expect(resp).toMatchObject({ id: "u1", error: { code: -32603, message: expect.stringContaining("internal error") } });
+    socket.write(opRequest("u2", "status", {})); // 存活：后续请求仍正常
+    const [resp2] = await readLines(socket, 1);
+    expect(resp2).toMatchObject({ id: "u2", result: { echoed: "status" } });
+    socket.destroy();
+  });
+
+  it("dispatch reject(undefined) → 配对 error 响应（null-only 守卫缺口）", async () => {
+    const p = startServer({ dispatch: () => Promise.reject() });
+    const socket = connectRaw(p);
+    socket.write(opRequest("u1", "status", {}));
+    const [resp] = await readLines(socket, 1);
+    expect(resp).toMatchObject({ id: "u1", error: { code: -32603 } });
+    socket.destroy();
+  });
+
+  it("dispatch 返回循环引用对象 → success 序列化失败归入 error 响应（不逃逸成未处理拒绝）", async () => {
+    let calls = 0;
+    const p = startServer({
+      dispatch: () => {
+        if (calls++ > 0) return { echoed: "status" };
+        const obj: Record<string, unknown> = { ok: true };
+        obj.self = obj; // 循环引用：encodeResult 的 JSON.stringify 必抛
+        return obj;
+      },
+    });
+    const socket = connectRaw(p);
+    socket.write(opRequest("c1", "status", {}));
+    const [resp] = await readLines(socket, 1);
+    expect(resp).toMatchObject({ id: "c1", error: { code: -32603 } });
+    socket.write(opRequest("c2", "status", {})); // daemon 存活：后续请求正常
+    const [resp2] = await readLines(socket, 1);
+    expect(resp2).toMatchObject({ id: "c2", result: { echoed: "status" } });
+    socket.destroy();
+  });
+});
+
+describe("ticket 05 fix: listen 失败可观测（评审 F4）", () => {
+  it("socket 父目录缺失（ENOENT）→ handle.ready reject，可捕获、进程不崩", async () => {
+    dir = mkdtempSync(join(tmpdir(), "pi-events-t05-"));
+    const badPath = join(dir, "no-such-dir", "t.sock");
+    const h = transport.serve(badPath, { dispatch: () => ({}), getEpoch: () => EPOCH });
+    await expect(h.ready).rejects.toMatchObject({ code: expect.stringMatching(/^(ENOENT|EACCES)$/) });
+    await h.close();
+  });
+});
+
+describe("ticket 05 fix: 接收缓冲上限（评审 F5）", () => {
+  it("超长无换行行 → 累积即截断 + oversizeLines 计数，连接仍可用", async () => {
+    const p = startServer({ dispatch: (f) => ({ echoed: f.op }) });
+    const socket = connectRaw(p);
+    socket.write("a".repeat(200 * 1024)); // 无换行：超过 MAX_LINE_LENGTH 的未终结行
+    await new Promise((r) => setTimeout(r, 120));
+    expect(handle!.oversizeLines()).toBeGreaterThan(0);
+    socket.write(opRequest("ok", "status", {})); // 连接仍可用
+    const [resp] = await readLines(socket, 1);
+    expect(resp).toMatchObject({ id: "ok", result: { echoed: "status" } });
+    socket.destroy();
+  });
+});
+
 describe("ticket 05: transport 薄度（源码审查）", () => {
   it("transport 源码不含任何 payload 业务字段解析", () => {
     const dir = join(new URL(".", import.meta.url).pathname, "../transport");

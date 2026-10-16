@@ -14,6 +14,7 @@ import {
   encodeError,
   encodeNotification,
   encodeResult,
+  MAX_LINE_LENGTH,
   type OpRequestFrame,
   type RpcError,
 } from "../protocol/index.ts";
@@ -39,16 +40,29 @@ export interface TransportHandlers {
 }
 
 export interface TransportHandle {
+  /** listen 生命周期：listening 时 resolve，listen 失败（ENOENT/EACCES 等）reject——启动失败可观测。 */
+  ready: Promise<void>;
   close(): Promise<void>;
   /** daemon 推送行：广播给全部已注册（SESSION_START）长连接。 */
   broadcastWake(method: string, params: unknown): void;
   /** I12 计数：epoch 不匹配被静默拒的帧数。 */
   epochMismatches(): number;
+  /** 超长未换行残留被丢弃的次数（接收缓冲上限守卫）。 */
+  oversizeLines(): number;
 }
 
 /** 断连后迟到写（EPIPE）不得炸进程：socket 已死即丢（尽力投递语义归上层）。 */
 function writeLine(socket: net.Socket, line: string): void {
   if (!socket.destroyed) socket.write(line + "\n");
+}
+
+/** rejection → 线上 RpcError：undefined/null/非 RpcError 形状一律归一（守卫缺口不得外溢为二次异常）。 */
+function toRpcError(err: unknown): RpcError {
+  const e = err as Partial<RpcError> | null | undefined;
+  if (e != null && typeof e.code === "number" && typeof e.message === "string") {
+    return { code: e.code, message: e.message };
+  }
+  return { code: -32603, message: `internal error: ${String((err as Error | null | undefined)?.message ?? err)}` };
 }
 
 export function serve(path: string, handlers: TransportHandlers): TransportHandle {
@@ -60,6 +74,8 @@ export function serve(path: string, handlers: TransportHandlers): TransportHandl
   }
 
   let mismatches = 0;
+  /** 未终结超长行丢弃计数：接收缓冲上限守卫（decodeLine 上限只覆盖已换行的行）。 */
+  let oversizeDrops = 0;
   /** 全部连接（含未注册会话的短连接）：value = 已注册 sessionId | null。 */
   const connections = new Map<net.Socket, string | null>();
 
@@ -79,20 +95,18 @@ export function serve(path: string, handlers: TransportHandlers): TransportHandl
             mismatches++;
             return;
           }
-          // .then 包装：dispatch 同步 throw 也归入 rejection 路径（不炸 socket data 回调）
+          // .then 包装：dispatch 同步 throw 也归入 rejection 路径（不炸 socket data 回调）；
+          // dispatch 异常（含 reject(undefined)）与 success 序列化（循环引用/BigInt）都归一为配对 error 响应。
           void Promise.resolve()
             .then(() => handlers.dispatch(frame))
             .then(
-            (result) => writeLine(socket, encodeResult(frame.id, result === undefined ? null : result)),
-            (err: unknown) => {
-              const e = err as Partial<RpcError> | null;
-              const error: RpcError =
-                e !== null && typeof e.code === "number" && typeof e.message === "string"
-                  ? { code: e.code, message: e.message }
-                  : { code: -32603, message: `internal error: ${String((err as Error)?.message ?? err)}` };
-              writeLine(socket, encodeError(frame.id, error));
-            },
-          );
+              (result) => writeLine(socket, encodeResult(frame.id, result === undefined ? null : result)),
+              (err: unknown) => writeLine(socket, encodeError(frame.id, toRpcError(err))),
+            )
+            .catch(() =>
+              // success 分支序列化抛错不被同链 rejection 分支捕获：兑底必达配对 error 响应
+              writeLine(socket, encodeError(frame.id, { code: -32603, message: "internal error: unserializable result" })),
+            );
           return;
         }
         case "session-start": {
@@ -117,6 +131,11 @@ export function serve(path: string, handlers: TransportHandlers): TransportHandl
         handleLine(buffer.slice(0, idx));
         buffer = buffer.slice(idx + 1);
       }
+      if (buffer.length > MAX_LINE_LENGTH) {
+        // 未终结残留即时截断防无界增长（decodeLine 上限只覆盖已换行的行）；截断处无合法行边界，丢弃安全
+        buffer = "";
+        oversizeDrops++;
+      }
     });
     socket.on("close", () => {
       connections.delete(socket);
@@ -125,9 +144,15 @@ export function serve(path: string, handlers: TransportHandlers): TransportHandl
     socket.on("error", () => socket.destroy()); // 连接级错误只销毁本连接，close 钩子随后注销
   });
 
+  const ready = new Promise<void>((resolve, reject) => {
+    server.once("listening", resolve);
+    server.once("error", reject); // listen 失败（ENOENT/EACCES 等）可观测；无监听则 uncaught error
+  });
+  ready.catch(() => {}); // 无人 await 也不产生 unhandled rejection（await 方仍收到 rejection）
   server.listen(path);
 
   return {
+    ready,
     close: () =>
       new Promise<void>((resolve) => {
         for (const socket of connections.keys()) socket.destroy();
@@ -148,5 +173,6 @@ export function serve(path: string, handlers: TransportHandlers): TransportHandl
       }
     },
     epochMismatches: () => mismatches,
+    oversizeLines: () => oversizeDrops,
   };
 }
