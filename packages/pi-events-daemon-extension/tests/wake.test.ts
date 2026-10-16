@@ -52,7 +52,7 @@ describe("票 36：wake 到达 session 内提示（注入路径，真 socket）"
       const r = recorder();
       const wake = startWake({ sessionId: "s1", socketPath: daemon.socketPath, inject: r.inject, notify: r.notify, sleep: r.sleep });
       await waitFor(() => wake.isConnected(), "wake connected");
-      expect(daemon.sessionStarted).toContain("s1"); // 长连接建立 = SESSION_START 信号
+      await waitFor(() => daemon.sessionStarted.includes("s1"), "SESSION_START registered"); // 屏障：daemon 已同步入队 SESSION_START（紧断言在全量并发下有 socket 时序竞争，票 40 收口改 level-trigger）
       seedAutoSub(daemon); // sessionStarted 断言即屏障：harness onSessionStart 同步栈内已入队 SESSION_START，L0 FIFO 保证其后提交必见注册
 
       daemon.loops.submit({ kind: "transition", ref: REF, verdict: "failed", occurredAt: at() });

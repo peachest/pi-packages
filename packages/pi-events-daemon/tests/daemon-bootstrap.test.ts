@@ -241,7 +241,8 @@ describe("票 38 组 4：epoch 生成 + transport/run_ledger 共用", () => {
       expect(daemon.transport.epochMismatches()).toBe(1);
 
       const right = await transport.connectEvents(sockPath, { epoch: daemon.epoch });
-      await expect(right.request("query", {})).rejects.toMatchObject({ code: -32601 }); // dispatch 显式报错（票 40 接线点）= 帧过了 epoch 门
+      // 票 40：9 op dispatch 已接线——query 读侧 kernel 直调真实应答（帧过 epoch 门后进 op 面）
+      await expect(right.request("query", {})).resolves.toEqual({ entities: [], deadLetters: [] });
       await right.close();
 
       // run_ledger 端：L0 subscribe → RunLedger.epoch === daemon.epoch（共用断言）
