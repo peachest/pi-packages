@@ -6,6 +6,7 @@
  * 构造注入——eda-profiles-deps 禁 profiles→protocol，组合根（daemon-main/测试）负责接线。
  */
 export { ProfileRegistry, type ProfileRegistryOpts } from "./registry.ts";
+export { instantiateProfile, type InstantiateResult } from "./instantiate.ts";
 export {
   checkRegister,
   ephemeralRef,

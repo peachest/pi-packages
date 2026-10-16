@@ -19,6 +19,8 @@ export interface ProfileTemplate {
   urlPattern?: string;
   /** 显式 host 路由（双 GitLab 零 fallback）：携带时 URL host 必须精确相等才参与命中。 */
   host?: string;
+  /** EntityRef.type 覆盖（票 33 三域：一 profile 内多判别符）；缺省继承顶层 entityType。 */
+  entityType?: string;
   /** 参数名 → 说明（参数模板）。 */
   params: Record<string, string>;
   /** 文档段（usage）。 */
@@ -50,6 +52,8 @@ export interface ProfileDefinition {
   templates: ProfileTemplate[];
   /** 状态改名迁移映射（B7）：旧状态名 → 新状态名；执行经 kernel.migrateState 唯一写路径。 */
   stateMigrations: Record<string, string>;
+  /** 已知副作用 pattern（票 33 数据面；validate 命中出 warning 不阻断，ADR 0004）。 */
+  sideEffectPatterns?: string[];
 }
 
 /** B7 迁移声明（load 产出的数据面；loops 逐实体消费经 kernel.migrateState 提交显式迁移事件）。 */

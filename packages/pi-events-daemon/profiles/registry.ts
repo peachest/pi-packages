@@ -14,6 +14,7 @@
 import type { ProfileRegistryEntry } from "../kernel/index.ts";
 import type { MigrationDeclaration, ProfileDefinition, ProfileValidator } from "./types.ts";
 import { everyToMs, resolveUrl } from "./routing.ts";
+import { instantiateProfile } from "./instantiate.ts";
 
 export type { MigrationDeclaration, ProfileDefinition, ProfileTemplate, ProfileValidator, ScheduleData, SchemaIssue } from "./types.ts";
 
@@ -24,6 +25,11 @@ export interface ProfileRegistryOpts {
   schema: object;
   /** cron 语义校验（组合根接 domain cronNextMs 同形；缺省跳过——kernel subscribe 入口 D11 兜底）。 */
   validateCron?: (expr: string, fromMs: number) => number | null;
+}
+
+/** profile 声明的 EntityRef 域 = 顶层 entityType ∪ 模板覆盖（票 33 三域；冲突拒绝的比对域）。 */
+function claimedTypes(def: ProfileDefinition): string[] {
+  return [def.entityType, ...def.templates.map((t) => t.entityType).filter((t): t is string => t !== undefined)];
 }
 
 /** cron every 之外的时长字面量校验在 checkSchedule 内联（schema oneOf D1a 表达不了）。 */
@@ -60,6 +66,11 @@ export class ProfileRegistry {
     return resolveUrl(this.profiles(), url);
   }
 
+  /** 票 33：Profile + 模板 + 参数 → 实体创建参数（EntityRef/check/schedule，链 B 复用面）。 */
+  instantiate(profileId: string, template: string, params: Record<string, unknown>) {
+    return instantiateProfile(this.profiles(), profileId, template, params);
+  }
+
   get(profileId: string): ProfileDefinition | undefined {
     return this.defs.get(profileId);
   }
@@ -75,12 +86,13 @@ export class ProfileRegistry {
       profileId: def.id,
       templates: def.templates.map((t) => ({
         name: t.name,
-        entityType: def.entityType,
+        entityType: t.entityType ?? def.entityType,
         states: t.states ?? def.states,
         params: Object.keys(t.params),
         schedule: t.schedule ?? def.schedule,
         usage: t.usage,
       })),
+      sideEffectPatterns: def.sideEffectPatterns,
     }));
   }
 
@@ -172,10 +184,16 @@ export class ProfileRegistry {
         );
       }
     }
-    const clash = this.profiles().find((other) => other.id !== def.id && other.entityType === def.entityType);
+    const clash = this.profiles().find(
+      (other) =>
+        other.id !== def.id &&
+        claimedTypes(other).some((t) => claimedTypes(def).includes(t)),
+    );
     if (clash) {
       throw new Error(
-        `profile load rejected (conflict): 同 EntityRef 域冲突 "${def.entityType}" 已被 profile "${clash.id}" 携带 — 冲突定义拒绝注册（US-32 静态面）`,
+        `profile load rejected (conflict): 同 EntityRef 域冲突 "${claimedTypes(def)
+          .filter((t) => claimedTypes(clash).includes(t))
+          .join(", ")}" 已被 profile "${clash.id}" 携带 — 冲突定义拒绝注册（US-32 静态面）`,
       );
     }
   }

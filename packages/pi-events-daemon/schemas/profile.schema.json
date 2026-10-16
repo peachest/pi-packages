@@ -76,6 +76,10 @@
         "required": ["name", "check", "params", "usage"],
         "properties": {
           "name": { "type": "string" },
+          "entityType": {
+            "type": "string",
+            "description": "本模板的 EntityRef.type 覆盖（票 33 三域：gitlab-pipeline 内 mr/ci/ticket 各自判别符）；缺省继承 profile 顶层 entityType。"
+          },
           "check": { "type": "string", "description": "check 命令文本（tri-state 判定器原语；模板资产，agent 永不传入）。" },
           "states": { "type": "array", "items": { "type": "string" }, "description": "模板回显的闭集子集（缺省=全 states）。" },
           "schedule": {
@@ -103,6 +107,11 @@
       "type": "object",
       "description": "状态改名迁移映射（B7）：旧状态名 → 新状态名；kernel 加载时对存量实体状态做一次性改名，随 version 递增。无改名时为空对象。",
       "additionalProperties": { "type": "string" }
+    },
+    "sideEffectPatterns": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "已知副作用 pattern（子串匹配，票 33 数据面）：validate 静态面命中出 warning 不阻断（ADR 0004 checks-are-probes）。"
     }
   },
   "definitions": {
