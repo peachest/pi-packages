@@ -162,7 +162,14 @@ export type OpResponse<N extends OpName = OpName> = OpContract[N]["res"];
 export type RpcError = { code: number; message: string; data?: unknown };
 
 /** op 请求帧（短连接，带请求 id）。 */
-export type OpRequestFrame = { kind: "op-request"; id: RequestId; op: OpName; params: Record<string, unknown> };
+/** op 请求帧可选携带 daemon epoch（I12：帧级所有权校验，transport 执行点；缺省 = 旧 epoch 残留帧被拒）。 */
+export type OpRequestFrame = {
+  kind: "op-request";
+  id: RequestId;
+  op: OpName;
+  params: Record<string, unknown>;
+  epoch?: number;
+};
 /** op 响应帧：result 与 error 二选一（JSON-RPC）。 */
 export type OpResponseFrame =
   | { kind: "op-response"; id: RequestId; result: unknown; error?: undefined }
@@ -183,9 +190,13 @@ const SESSION_START_METHOD = "session_start";
 // shortcut: 按字符数近似字节数，多字节字符下偏宽松；出现滥用再换 Buffer.byteLength
 export const MAX_LINE_LENGTH = 64 * 1024;
 
-/** 编码 op 请求帧（短连接）：{"jsonrpc":"2.0","id","method":op,"params"}。单行输出。 */
-export function encodeRequest(id: RequestId, op: OpName, params: Record<string, unknown>): string {
-  return JSON.stringify({ jsonrpc: "2.0", id, method: op, params });
+/** 编码 op 请求帧（短连接）：{"jsonrpc":"2.0","id","method":op,"params"[,"epoch"]}。单行输出。 */
+export function encodeRequest(id: RequestId, op: OpName, params: Record<string, unknown>, epoch?: number): string {
+  return JSON.stringify(
+    epoch === undefined
+      ? { jsonrpc: "2.0", id, method: op, params }
+      : { jsonrpc: "2.0", id, method: op, params, epoch },
+  );
 }
 
 /** 编码成功响应帧：{"jsonrpc":"2.0","id","result"}。 */
@@ -234,7 +245,13 @@ export function decodeLine(line: string): Frame | null {
       if (!isRequestId(msg.id)) return null;
       if (!isOpName(method)) return null;
       if (msg.params !== undefined && !isRecord(msg.params)) return null;
-      return { kind: "op-request", id: msg.id, op: method, params: isRecord(msg.params) ? msg.params : {} };
+      return {
+        kind: "op-request",
+        id: msg.id,
+        op: method,
+        params: isRecord(msg.params) ? msg.params : {},
+        ...(isEpochValue(msg.epoch) ? { epoch: msg.epoch } : {}),
+      };
     }
     // 长连接帧（无 id）
     if (method === ACK_METHOD) {
@@ -283,6 +300,10 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 
 function isRequestId(v: unknown): v is RequestId {
   return typeof v === "string" || (typeof v === "number" && Number.isFinite(v));
+}
+
+function isEpochValue(v: unknown): v is number {
+  return typeof v === "number" && Number.isFinite(v);
 }
 
 function isOpName(method: string): method is OpName {

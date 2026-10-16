@@ -85,6 +85,21 @@ const SAMPLES: Array<[protocol.OpName, Record<string, unknown>, Record<string, u
   ],
 ];
 
+describe("ticket 05+：op 帧携带 daemon epoch（I12 帧级扩展，向后兼容）", () => {
+  it("encodeRequest 带 epoch → decode 还原 epoch；不带 epoch → 无该成员", () => {
+    const withEpoch = protocol.encodeRequest(1, "drain", {}, 42);
+    expect(protocol.decodeLine(withEpoch)).toEqual({ kind: "op-request", id: 1, op: "drain", params: {}, epoch: 42 });
+    const without = protocol.encodeRequest(1, "drain", {});
+    expect(protocol.decodeLine(without)).toEqual({ kind: "op-request", id: 1, op: "drain", params: {} });
+    expect("epoch" in (protocol.decodeLine(without) as object)).toBe(false);
+  });
+
+  it("epoch 非有限数字（字符串/true）→ 不提取，帧仍按缺 epoch 解码", () => {
+    const line = '{"jsonrpc":"2.0","id":1,"method":"drain","params":{},"epoch":"7"}';
+    expect(protocol.decodeLine(line)).toEqual({ kind: "op-request", id: 1, op: "drain", params: {} });
+  });
+});
+
 describe("ticket 02: 9 op encode→decode round-trip（断言 1）", () => {
   it.each(SAMPLES)("%s 请求与响应两侧逐字节还原", (op, req, res) => {
     const reqLine = protocol.encodeRequest(1, op, req);
