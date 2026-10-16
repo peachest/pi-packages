@@ -15,6 +15,10 @@ export interface ProfileTemplate {
   states?: string[];
   /** 模板级 schedule 覆盖（缺省用 profile 顶层 schedule）。 */
   schedule?: ScheduleData;
+  /** URL 路由正则（票 32 resolve；load 校验可编译）。缺省不参与 URL 路由。 */
+  urlPattern?: string;
+  /** 显式 host 路由（双 GitLab 零 fallback）：携带时 URL host 必须精确相等才参与命中。 */
+  host?: string;
   /** 参数名 → 说明（参数模板）。 */
   params: Record<string, string>;
   /** 文档段（usage）。 */

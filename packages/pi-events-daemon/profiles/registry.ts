@@ -13,6 +13,7 @@
  */
 import type { ProfileRegistryEntry } from "../kernel/index.ts";
 import type { MigrationDeclaration, ProfileDefinition, ProfileValidator } from "./types.ts";
+import { everyToMs, resolveUrl } from "./routing.ts";
 
 export type { MigrationDeclaration, ProfileDefinition, ProfileTemplate, ProfileValidator, ScheduleData, SchemaIssue } from "./types.ts";
 
@@ -52,6 +53,11 @@ export class ProfileRegistry {
 
   profiles(): readonly ProfileDefinition[] {
     return [...this.defs.values()];
+  }
+
+  /** 票 32：url → (profile, template) 路由（唯一绑定/多命中列候选/零命中列可用模板）。 */
+  resolve(url: string) {
+    return resolveUrl(this.profiles(), url);
   }
 
   get(profileId: string): ProfileDefinition | undefined {
@@ -106,6 +112,13 @@ export class ProfileRegistry {
     this.checkSchedule(def.schedule, "schedule", fail);
     def.templates.forEach((t, i) => {
       if (t.schedule !== undefined) this.checkSchedule(t.schedule, `templates[${i}].schedule`, fail);
+      if (t.urlPattern !== undefined) {
+        try {
+          new RegExp(t.urlPattern);
+        } catch (err) {
+          fail(`templates[${i}].urlPattern 不可编译: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
     });
     for (const [from, to] of Object.entries(def.stateMigrations)) {
       if (!def.states.includes(to)) fail(`stateMigrations 目标 "${to}"（自 "${from}"）不在 states 闭集内`);
@@ -118,6 +131,11 @@ export class ProfileRegistry {
     const spec = s as { type: unknown; every?: unknown; expr?: unknown };
     if (spec.type === "interval") {
       if (typeof spec.every !== "string" || spec.every === "") fail(`${path} interval 需非空 every`);
+      try {
+        everyToMs(spec.every);
+      } catch (err) {
+        fail(`${path} ${err instanceof Error ? err.message : String(err)}`);
+      }
     } else if (spec.type === "cron") {
       if (typeof spec.expr !== "string" || spec.expr === "") fail(`${path} cron 需非空 expr`);
       if (this.opts.validateCron) {

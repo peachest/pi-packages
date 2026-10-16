@@ -82,6 +82,14 @@
             "$ref": "#/definitions/scheduleSpec",
             "$comment": "模板级 schedule 覆盖（缺省用 profile 顶层 schedule）。"
           },
+          "urlPattern": {
+            "type": "string",
+            "description": "URL 路由正则（票 32 resolve：subscribe url 唯一命中绑定；多命中报错列候选；零命中列可用模板）。可编译性 load 即校验。"
+          },
+          "host": {
+            "type": "string",
+            "description": "显式 host 路由（双 GitLab 实例零 fallback 猜测）：缺省不限 host；携带时 URL host 必须精确相等才参与命中。"
+          },
           "params": {
             "type": "object",
             "description": "参数名 → 说明。",
