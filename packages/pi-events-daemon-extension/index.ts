@@ -33,11 +33,23 @@ export interface ExtensionDeps {
   templatesDir?: string;
   /** 模板注册表注入（缺省 loadTemplates(templatesDir)）。 */
   templates?: ProfileRegistry;
+  /** 惰性拉起器覆盖（缺省 defaultDaemonLauncher：spawn pi-events-daemon daemon-main 入口）。 */
+  launcher?: () => Promise<void>;
+  /** 短连接重试间隔覆盖（缺省 100ms 固定）。 */
+  retryDelayMs?: (ms: number) => Promise<void>;
 }
 
 export default function eventsDaemonExtension(pi: ExtensionAPI, deps: ExtensionDeps = {}): void {
   const opSchema = deps.opSchema ?? loadOpSchema();
-  const client = deps.sender ? null : createOpClient({ socketPath: deps.socketPath, epoch: deps.epoch, timeoutMs: deps.timeoutMs });
+  const client = deps.sender
+    ? null
+    : createOpClient({
+        socketPath: deps.socketPath,
+        epoch: deps.epoch,
+        timeoutMs: deps.timeoutMs,
+        launcher: deps.launcher,
+        retryDelayMs: deps.retryDelayMs,
+      });
   const sender: OpSender = deps.sender ?? ((op, params) => {
     if (!client) throw new Error("op client 未初始化");
     return client.request(op, params);
@@ -99,7 +111,7 @@ export { validateFull, loadOpSchema, loadProfileSchema, loadEventsSchema, daemon
 export type { JsonSchema, Issue } from "./lib/schema.ts";
 export { buildToolDefs } from "./lib/tools.ts";
 export type { OpToolDef, OpSender, ToolResult } from "./lib/tools.ts";
-export { createOpClient, readDaemonEpoch } from "./lib/client.ts";
+export { createOpClient, readDaemonEpoch, defaultDaemonLauncher, MAX_OP_ATTEMPTS, OP_RETRY_DELAY_MS } from "./lib/client.ts";
 export type { OpClient, OpClientConfig } from "./lib/client.ts";
 export {
   declareAutoSubscriptions,
