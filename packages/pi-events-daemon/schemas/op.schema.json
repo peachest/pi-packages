@@ -150,6 +150,11 @@
                 "template": { "type": "string", "description": "显式模板名（多命中时必填）。" },
                 "smoke": { "type": "boolean", "description": "订阅时试跑 check；失败返回 {subscribed:false, validate}。" },
                 "sessionId": { "type": "string", "description": "origin=session 编址的投递目标（缺省当前 session）。" },
+                "origin": {
+                  "type": "string",
+                  "enum": ["session", "auto"],
+                  "description": "订阅来源（编址分支输入，票 35 wire 补）：session=agent 交互订阅（缺省，投 sourceSessionId）；auto=.pi/events.json 启动声明（隐式 project scope，投 scope 内活跃 session）。daemon 侧映射 kernel opts.origin。"
+                },
                 "readyCheck": { "type": "string", "description": "两阶段订阅的 flip 判定（缺省沿用 check）。" },
                 "schedule": {
                   "$ref": "#/definitions/adhocSchedule",

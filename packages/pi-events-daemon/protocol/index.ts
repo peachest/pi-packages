@@ -61,6 +61,8 @@ export type SubscribeOpts = {
   template?: string;
   smoke?: boolean;
   sessionId?: string;
+  /** 订阅来源（编址分支输入，票 35 wire 补：缺省 session=agent 交互订阅；auto=events.json 声明链）。 */
+  origin?: "session" | "auto";
   /** 两阶段订阅的 flip 判定（缺省沿用 check）。 */
   readyCheck?: string;
   /** 到期自动关闭（I8）。单位毫秒（milliseconds）。 */

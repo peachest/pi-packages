@@ -10,6 +10,15 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { loadOpSchema, type JsonSchema } from "./lib/schema.ts";
 import { buildToolDefs, type OpSender, type OpToolDef } from "./lib/tools.ts";
 import { createOpClient } from "./lib/client.ts";
+import {
+  declareAutoSubscriptions,
+  deriveProjectKey,
+  daemonTemplatesDir,
+  findEventsJson,
+  loadTemplates,
+  readEventsJson,
+} from "./lib/eventsjson.ts";
+import type { ProfileRegistry } from "pi-events-daemon/profiles.ts";
 
 /** 工厂注入面（测试替身 / 环境覆盖；缺省全走默认实现）。 */
 export interface ExtensionDeps {
@@ -19,6 +28,10 @@ export interface ExtensionDeps {
   socketPath?: string;
   epoch?: number;
   timeoutMs?: number;
+  /** 模板资产目录覆盖（缺省 = pi-events-daemon 包内 templates/）。 */
+  templatesDir?: string;
+  /** 模板注册表注入（缺省 loadTemplates(templatesDir)）。 */
+  templates?: ProfileRegistry;
 }
 
 export default function eventsDaemonExtension(pi: ExtensionAPI, deps: ExtensionDeps = {}): void {
@@ -34,6 +47,38 @@ export default function eventsDaemonExtension(pi: ExtensionAPI, deps: ExtensionD
     // D1a 权威门在 lib/tools execute 内（完整校验客户端先行），此处 cast 仅为注册边界。
     pi.registerTool(tool as unknown as Parameters<ExtensionAPI["registerTool"]>[0]);
   }
+
+  // 票 35 声明链 + 票 36 wake（SESSION_START：长连接建立 = SESSION_START 信号，#31）。
+  pi.on("session_start", (event, ctx) => {
+    if (event.reason === "fork") return; // fork no-inherit：子会话不重新声明（订阅带 sourceSessionId，daemon 侧过滤）
+    void declareFromEventsJson(pi, ctx, { sender, templatesDir: deps.templatesDir, templates: deps.templates });
+  });
+}
+
+/** events.json → 启动声明（US-29/30）。任何失败经 ui.notify 呈现，不阻塞 session 启动。 */
+async function declareFromEventsJson(
+  pi: ExtensionAPI,
+  ctx: { cwd: string; ui: { notify(message: string, type?: "info" | "warning" | "error"): void } },
+  opts: { sender: OpSender; templatesDir?: string; templates?: ProfileRegistry },
+): Promise<void> {
+  try {
+    const found = findEventsJson(ctx.cwd);
+    if (!found) return;
+    const doc = readEventsJson(found.path);
+    if (!doc.ok) {
+      ctx.ui.notify(`pi-events-daemon: ${doc.error}`, "warning");
+      return;
+    }
+    if (doc.subscriptions.length === 0) return;
+    const registry = opts.templates ?? loadTemplates(opts.templatesDir);
+    const report = await declareAutoSubscriptions(doc.subscriptions, opts.sender, registry);
+    if (report.failed.length > 0) {
+      const lines = report.failed.map((f) => `- ${f.template}: ${f.error}`).join("\n");
+      ctx.ui.notify(`pi-events-daemon: events.json 声明部分失败（${report.declared.length} 成功 / ${report.failed.length} 失败）：\n${lines}`, "warning");
+    }
+  } catch (err) {
+    ctx.ui.notify(`pi-events-daemon: events.json 声明链异常: ${err instanceof Error ? err.message : String(err)}`, "error");
+  }
 }
 
 // --- 可单测公共面（tests/ 经包根入口消费；deep-module 布局 packages/README.md） ---
@@ -43,3 +88,12 @@ export { buildToolDefs } from "./lib/tools.ts";
 export type { OpToolDef, OpSender, ToolResult } from "./lib/tools.ts";
 export { createOpClient, readDaemonEpoch } from "./lib/client.ts";
 export type { OpClient, OpClientConfig } from "./lib/client.ts";
+export {
+  declareAutoSubscriptions,
+  daemonTemplatesDir,
+  deriveProjectKey,
+  findEventsJson,
+  loadTemplates,
+  readEventsJson,
+} from "./lib/eventsjson.ts";
+export type { EventsJsonEntry, EventsJsonDoc, DeclareReport } from "./lib/eventsjson.ts";
