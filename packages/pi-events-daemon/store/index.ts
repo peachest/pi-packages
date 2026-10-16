@@ -161,6 +161,8 @@ export interface Store {
   pendingDeliveries(filter: DeliveryFilter): DeliveryRowData[];
   /** drain D2a 输入面：parked 行读取（与 pendingDeliveries/deadLetters 同构直过滤；票 11 最小增补）。 */
   parkedDeliveries(filter: DeliveryFilter): DeliveryRowData[];
+  /** 24h verified-absence 扫描输入面（票 27 评审 H3）：accepted 行读取（与 pendingDeliveries/parkedDeliveries/deadLetters 同构直过滤）。 */
+  acceptedDeliveries(filter: DeliveryFilter): DeliveryRowData[];
   evidenceSearch(fts5Query: string): EvidenceRow[];
   notifications(filter: NotificationFilter): NotificationRow[];
   deadLetters(filter: DeliveryFilter): DeliveryRowData[];
@@ -371,6 +373,12 @@ export class MemoryStore implements Store {
   parkedDeliveries(filter: DeliveryFilter): DeliveryRowData[] {
     return [...this.tables.deliveries.values() as IterableIterator<DeliveryRowData>].filter((d) =>
       this.matchDelivery(d, filter) && d.state === "parked",
+    );
+  }
+
+  acceptedDeliveries(filter: DeliveryFilter): DeliveryRowData[] {
+    return [...this.tables.deliveries.values() as IterableIterator<DeliveryRowData>].filter((d) =>
+      this.matchDelivery(d, filter) && d.state === "accepted",
     );
   }
 

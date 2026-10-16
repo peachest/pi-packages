@@ -541,6 +541,10 @@ export class SqliteStore implements Store {
     return this.deliveriesByState("parked", filter);
   }
 
+  acceptedDeliveries(filter: DeliveryFilter): DeliveryRowData[] {
+    return this.deliveriesByState("accepted", filter);
+  }
+
   /** fake 语义对齐：state 固定为本方法的 target（pending/dead-letter/parked），matchDelivery 的 filter.state 若与此矛盾则空集。 */
   private deliveriesByState(state: string, filter: DeliveryFilter): DeliveryRowData[] {
     if (filter.state !== undefined) {
