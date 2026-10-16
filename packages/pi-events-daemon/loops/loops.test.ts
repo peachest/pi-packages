@@ -844,3 +844,55 @@ describe("票 27 组 L2-2 — E2 退避序列 2s→…→5min×5→dead-letter�
     expect(loops.errors).toHaveLength(0); // 投递失败是预期路径，不进 errors
   });
 });
+
+describe("票 27 组 L2-3 — batch 合流 I2：per-session 窗口合流 billboard=count+实体+verdict；failed 绕行携带同窗 pending", () => {
+  it("failed 绕行不等窗口立即冲刷，并携带同窗 pending 条目合为一条（eventSeq 序）", async () => {
+    const store = createMemoryStore();
+    store.putEntity({ type: REF.type, key: REF.key, state: null });
+    seedSub(store);
+    const clock = new FakeClock();
+    const pusher = new FakePusher();
+    const loops = startLoops(makeCtx(store, { clock, pusher }));
+    loops.sessionStart("s1");
+
+    loops.submit({ kind: "transition", ref: REF, verdict: "passed", occurredAt: at(1) }); // 窗口开（t=0，2000ms 到点）
+    clock.step(500); // 未到兜底 tick、未到窗口
+    loops.submit({ kind: "transition", ref: REF, verdict: "failed", occurredAt: at(2) }); // failed 绕行：立即冲刷（t=500 < 2000）
+    await micro();
+    expect(pusher.pushed).toHaveLength(1); // 合流为一条，窗口定时器被吞
+    const line = lineOf(pusher, 0);
+    expect(line.count).toBe(2); // billboard 条目形态：count + 实体 + verdict
+    expect(line.entries.map((e) => e.verdict)).toEqual(["passed", "failed"]); // eventSeq 序
+    expect(line.entries.map((e) => e.notificationId)).toEqual([NID(1), NID(2)]);
+    expect(store.getDelivery(NID(1), "s1")?.state).toBe("accepted");
+    expect(store.getDelivery(NID(2), "s1")?.state).toBe("accepted");
+
+    clock.step(60_000);
+    await micro();
+    expect(pusher.pushed).toHaveLength(1); // 无重复推送（窗口取消 + accepted 不再入批）
+  });
+
+  it("同窗多事件（无 failed）按 batchMs 合流一条：窗口内不推、到点一次推齐", async () => {
+    const store = createMemoryStore();
+    store.putEntity({ type: REF.type, key: REF.key, state: null });
+    seedSub(store);
+    const clock = new FakeClock();
+    const pusher = new FakePusher();
+    const loops = startLoops(makeCtx(store, { clock, pusher }));
+    loops.sessionStart("s1");
+
+    loops.submit({ kind: "transition", ref: REF, verdict: "passed", occurredAt: at(1) });
+    clock.step(1000); // 兜底 tick（不冲刷）
+    loops.submit({ kind: "transition", ref: REF, verdict: "waiting", occurredAt: at(2) }); // 同窗第二事件
+    expect(pusher.pushed).toHaveLength(0); // 窗口内：held
+
+    clock.step(1000); // 窗口 2000ms 到点
+    await micro();
+    expect(pusher.pushed).toHaveLength(1);
+    const line = lineOf(pusher, 0);
+    expect(line.count).toBe(2);
+    expect(line.entries.map((e) => e.verdict)).toEqual(["passed", "waiting"]);
+    expect(store.getDelivery(NID(1), "s1")?.state).toBe("accepted");
+    expect(store.getDelivery(NID(2), "s1")?.state).toBe("accepted");
+  });
+});
