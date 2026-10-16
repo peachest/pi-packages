@@ -109,7 +109,7 @@ describe("试金石：新增 fixture profile 全绿零核心改动（I-01/ADR 00
 
     const subs = store.querySubscriptions({ entityRefType: inst.entityRef.type, entityRefKey: inst.entityRef.key });
     expect(subs).toHaveLength(1);
-    expect(subs[0]).toMatchObject({ template: "watch", check: "test -f /data/msgs" });
+    expect(subs[0]).toMatchObject({ template: "watch", check: "test -f '/data/msgs'" });
     expect(store.getEntity(inst.entityRef.type, inst.entityRef.key)?.state).toBe("red");
     expect(store.outboxBatch(Number.MAX_SAFE_INTEGER)).toHaveLength(1);
     expect(handle.errors).toEqual([]);

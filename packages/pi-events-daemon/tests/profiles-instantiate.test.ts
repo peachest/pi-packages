@@ -94,7 +94,7 @@ describe("组 2：instantiate 成功路——keyGenerator 产出 EntityRef + che
     expect(r.ok).toBe(true);
     if (r.ok) {
       expect(r.entityRef).toEqual({ type: "gitlab:mr", key: "external/gitlab.a.com/grp/proj/-/merge_requests/42" });
-      expect(r.check).toBe("glab api --host gitlab.a.com projects/grp%2Fproj/merge_requests/42");
+      expect(r.check).toBe("glab api --host 'gitlab.a.com' projects/'grp%2Fproj'/merge_requests/'42'");
       expect(r.schedule).toEqual({ type: "interval", intervalMs: 60_000 });
     }
   });
@@ -179,5 +179,54 @@ describe("组 3：链 B 复用——instantiate 产出经 kernel 可 register/su
     const rows = store.outboxBatch(Number.MAX_SAFE_INTEGER);
     expect(rows).toHaveLength(1);
     expect(store.getEntity(inst.entityRef.type, inst.entityRef.key)?.state).toBe("failed");
+  });
+});
+
+describe("组 4：评审回归——check 代入 shell 安全（票 31-33 ocr findings）", () => {
+  /** 仿内置 fs-watermark df-free：bare 词位置参数 + awk 程序体字面花括号。 */
+  const shellFixture = {
+    ...gitlabDef,
+    id: "shell-fixture",
+    entityType: "fixture:shell",
+    keyGenerator: { kind: "path", param: "path" },
+    templates: [
+      {
+        name: "df-free",
+        check: "df -Pk {path} | tail -1 | awk -v t={threshold_kb} '{exit ($4 < t) ? 2 : 0}'",
+        params: { path: "被监视目录", threshold_kb: "水位下限" },
+        usage: "u",
+      },
+      {
+        name: "literal-braces",
+        check: "awk '{print}' {path}",
+        params: { path: "路径" },
+        usage: "u",
+      },
+    ],
+    stateMigrations: {},
+  };
+
+  it("评审 F1(high)：参数值 POSIX 单引号包裹——命令替换/分号/空格不逃逸不裂参（值内 ' 转义为 '\\''）", () => {
+    const reg = makeRegistry();
+    reg.load(shellFixture);
+    const r = reg.instantiate("shell-fixture", "df-free", {
+      path: "/tmp/$(touch /tmp/pwned); rm -rf /",
+      threshold_kb: "1024",
+    });
+    if (!r.ok) throw new Error(r.reason);
+    expect(r.check).toBe(
+      "df -Pk '/tmp/$(touch /tmp/pwned); rm -rf /' | tail -1 | awk -v t='1024' '{exit ($4 < t) ? 2 : 0}'",
+    );
+    const q = reg.instantiate("shell-fixture", "df-free", { path: "/tmp/it's", threshold_kb: "1" });
+    if (!q.ok) throw new Error(q.reason);
+    expect(q.check).toContain("'/tmp/it'\\''s'");
+  });
+
+  it("评审 F3(med)：代入仅限模板声明参数——caller 多余键不替换字面花括号（awk '{print}' 原样保留）", () => {
+    const reg = makeRegistry();
+    reg.load(shellFixture);
+    const r = reg.instantiate("shell-fixture", "literal-braces", { path: "/data", print: "evil" });
+    if (!r.ok) throw new Error(r.reason);
+    expect(r.check).toBe("awk '{print}' '/data'");
   });
 });

@@ -72,9 +72,13 @@ const EVERY_RE = /^(\d+)(ms|s|m|h)$/;
 export function everyToMs(every: string): number {
   const m = EVERY_RE.exec(every);
   if (!m) throw new Error(`invalid schedule every "${every}" — 期望 <n>ms|s|m|h`);
-  const n = Number(m[1]);
   const unitMs = { ms: 1, s: 1_000, m: 60_000, h: 3_600_000 }[m[2] as "ms" | "s" | "m" | "h"];
-  return n * unitMs;
+  const ms = Number(m[1]) * unitMs;
+  // 正 safe integer 执法（ocr F6）：0 致 probe 每拍到期，溢出 Infinity 致永不触发——load/subscribe 入口即拒
+  if (!Number.isSafeInteger(ms) || ms <= 0) {
+    throw new Error(`invalid schedule every "${every}" — 须换算为正 safe integer 毫秒（拒 0 与溢出）`);
+  }
+  return ms;
 }
 
 export function scheduleToProbeSpec(s: ScheduleData): ProbeSchedule {
@@ -89,8 +93,16 @@ export function scheduleToProbeSpec(s: ScheduleData): ProbeSchedule {
 
 function canonicalSchedule(schedule: unknown): string {
   const r = (schedule ?? {}) as Record<string, unknown>;
-  // 固定字段序 canonical 化：同值不同拼写（every/intervalMs、expr/cron）同键
-  return JSON.stringify([r.type ?? null, r.every ?? null, r.intervalMs ?? null, r.expr ?? null, r.cron ?? null, r.tz ?? null]);
+  // 同值同键（ocr F2）：interval 三拼写（资产/协议 every 串 ×单位拼写 + kernel intervalMs）归一为 ms；
+  // cron expr/cron 别名归一为单字段。非法 every 抛（fail-loud，同 everyToMs 执法面）
+  if (r.type === "interval") {
+    const ms = typeof r.intervalMs === "number" ? r.intervalMs : everyToMs(String(r.every));
+    return JSON.stringify(["interval", ms]);
+  }
+  if (r.type === "cron") {
+    return JSON.stringify(["cron", r.expr ?? r.cron ?? null, r.tz ?? null]);
+  }
+  return JSON.stringify([r.type ?? null]);
 }
 
 export function ephemeralRef(check: string, schedule: unknown, cwd: string): EntityRef {
@@ -114,15 +126,15 @@ export type CredentialCheck = { ok: true } | { ok: false; reasons: readonly stri
 const CREDENTIAL_PATTERNS: readonly { name: string; re: RegExp }[] = [
   { name: "gitlab-personal-token", re: /glpat-[0-9A-Za-z_-]{8,}/ },
   { name: "inline-auth-header", re: /\b(?:bearer|basic)\s+[A-Za-z0-9+/_~.-]{8,}/i },
-  { name: "credential-kv", re: /(?:password|passwd|secret|api[_-]?key|private[_-]?key)\s*[:=]\s*["']?[^\s"']{4,}/i },
+  { name: "credential-kv", re: /(?:password|passwd|secret|api[_-]?key|private[_-]?key)\s*[:=]\s*["']?(?![`$])[^\s"']{4,}/i },
   { name: "token-kv", re: /\btoken\s*[:=]\s*["']?[A-Za-z0-9_./+-]{16,}/i },
   { name: "credential-query-param", re: /[?&](?:key|token|access_token|api_key)=[A-Za-z0-9._-]{8,}/i },
 ];
 
 /**
  * register/subscribe 请求的 profile 侧校验：check/url/params 字符串值扫明文 credential 模式。
- * env 引用（"$GITLAB_TOKEN"）与零凭证模板惯例（$(glab config get token …)）不误伤——
- * 前者无 kv 赋值形态，后者 token 后无 [:=]。
+ * 运行时凭据引用不误伤（ocr F5）：env/命令替换取值（$VAR、"$VAR"、$(…)、`…`，kv 位置亦然）
+ * 凭据经 checker 运行时自取（如 $(glab config get token --host <host>)）；明文赋值仍拒。
  */
 export function checkRegister(req: { check?: string; url?: string; params?: Record<string, unknown> }): CredentialCheck {
   const reasons: string[] = [];

@@ -80,6 +80,20 @@ describe("组 1：load 三路——合法 / 缺字段 / 坏 schema（schema 校�
     expect(() => reg.load(makeDef({ schedule: { type: "wat", every: "60s" } }))).toThrow(/schedule/);
   });
 
+  it("评审 F7(med)：模板 states 越闭集 → 拒载并列可用 states（kernel 侧会拒 'typo'，load 即拦）", () => {
+    const reg = makeRegistry();
+    expect(() =>
+      reg.load(
+        makeDef({
+          templates: [
+            { name: "watch", check: "cat {path}", params: { path: "p" }, usage: "u", states: ["green", "typo"] },
+          ],
+        }),
+      ),
+    ).toThrow(/typo.*green|green.*typo/);
+    expect(reg.profiles()).toHaveLength(0);
+  });
+
   it("cron 语义校验经注入解析器（validateCron）——坏表达式 load 即拒", () => {
     const reg = new ProfileRegistry({
       validate: validateValue,
@@ -204,6 +218,22 @@ describe("组 4：B7 状态改名迁移——迁移声明产出 + 无映射拒�
         }),
       ),
     ).toThrow(/green.*映射|映射.*green/);
+    expect(reg.get("fixture-widget")?.version).toBe(1);
+  });
+
+  it("评审 F4(med)：原型链键不充当映射——删 'constructor' 无 own 映射 → 拒加载（in 原型链误报已映射）", () => {
+    const reg = makeRegistry();
+    reg.load(makeDef({ states: ["constructor", "done"], transitions: [{ from: "constructor", to: "done" }] }));
+    expect(() =>
+      reg.load(
+        makeDef({
+          version: 2,
+          states: ["done"],
+          transitions: [{ from: "done", to: "done" }],
+          stateMigrations: {},
+        }),
+      ),
+    ).toThrow(/constructor/);
     expect(reg.get("fixture-widget")?.version).toBe(1);
   });
 

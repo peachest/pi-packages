@@ -123,6 +123,13 @@ export class ProfileRegistry {
     }
     this.checkSchedule(def.schedule, "schedule", fail);
     def.templates.forEach((t, i) => {
+      // 模板 states 是闭集子集声明（ocr F7）：越集值 load 即拒——否则 entries() 宣告 kernel 会拒的状态
+      if (t.states !== undefined) {
+        const outside = t.states.filter((s) => !def.states.includes(s));
+        if (outside.length > 0) {
+          fail(`templates[${i}].states 引用集外状态 [${outside.join(", ")}]（states: [${def.states.join(", ")}]）`);
+        }
+      }
       if (t.schedule !== undefined) this.checkSchedule(t.schedule, `templates[${i}].schedule`, fail);
       if (t.urlPattern !== undefined) {
         try {
@@ -175,9 +182,10 @@ export class ProfileRegistry {
       if (def.version < existing.version) {
         throw new Error(`profile load rejected (conflict): "${def.id}" v${def.version} 低于已注册 v${existing.version} — 版本单向升级`);
       }
-      // B7 版本升级：删除的旧状态必须都有改名映射（无映射遇旧状态 → 拒加载）
+      // B7 版本升级：删除的旧状态必须都有改名映射（无映射遇旧状态 → 拒加载）；
+      // own-property 判定（ocr F4）：in 吃原型链，'constructor' 等键会被误报已映射
       const removed = existing.states.filter((s) => !def.states.includes(s));
-      const unmapped = removed.filter((s) => !(s in def.stateMigrations));
+      const unmapped = removed.filter((s) => !Object.prototype.hasOwnProperty.call(def.stateMigrations, s));
       if (unmapped.length > 0) {
         throw new Error(
           `profile load rejected (B7): "${def.id}" v${def.version} 删除状态 [${unmapped.join(", ")}] 而 stateMigrations 无映射 — 旧状态须显式改名迁移（kernel.migrateState 唯一写路径）`,

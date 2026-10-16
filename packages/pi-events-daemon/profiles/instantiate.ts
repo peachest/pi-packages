@@ -15,12 +15,17 @@ export type InstantiateResult =
       entityRef: EntityRef;
       profileId: string;
       template: string;
-      /** check 命令文本（模板 check 经 {param} 代入；tri-state 判定器原语）。 */
+      /** check 命令文本（模板 check 经 {param} 代入，值 shell 单引号包裹——模板作者勿把占位符写进引号串；tri-state 判定器原语）。 */
       check: string;
       /** 模板级 schedule 覆盖（缺省顶层），已换算 kernel probe spec 形。 */
       schedule: ProbeSchedule;
     }
   | { ok: false; error: "profile-not-found" | "template-not-found" | "invalid-params"; reason: string };
+
+/** POSIX 单引号包裹（值内 ' 转义为 '\''）：代入值恒作单个 shell 词，$()/分号/空格不逃逸不裂参（ocr F1）。 */
+function shellQuote(v: string): string {
+  return `'${v.replaceAll("'", `'\\''`)}'`;
+}
 
 export function instantiateProfile(
   defs: readonly ProfileDefinition[],
@@ -62,9 +67,14 @@ export function instantiateProfile(
     entityRef,
     profileId: def.id,
     template: tpl.name,
-    // 仅代入已声明参数，其余 {…} 原样保留（awk/jsonpath 花括号安全）
+    // 仅代入模板声明参数（ocr F3：caller 多余键不触碰字面花括号，awk '{print}' 安全），
+    // 值经 shellQuote 保持单词边界（ocr F1：check 经 checker shell 执行，代入值不可携带 shell 语法）
     check: tpl.check.replace(/\{([A-Za-z0-9_]+)\}/g, (m, name: string) =>
-      Object.prototype.hasOwnProperty.call(params, name) && params[name] !== undefined ? String(params[name]) : m,
+      Object.prototype.hasOwnProperty.call(tpl.params, name) &&
+      Object.prototype.hasOwnProperty.call(params, name) &&
+      params[name] !== undefined
+        ? shellQuote(String(params[name]))
+        : m,
     ),
     schedule: scheduleToProbeSpec(tpl.schedule ?? def.schedule),
   };

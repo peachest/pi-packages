@@ -9,7 +9,7 @@ import * as daemon from "../index.ts";
 
 const { ProfileRegistry } = daemon.profiles;
 const { validateValue } = daemon.protocol;
-const { ephemeralRef, checkRegister, scheduleToProbeSpec } = daemon.profiles;
+const { ephemeralRef, checkRegister, scheduleToProbeSpec, everyToMs } = daemon.profiles;
 
 const SCHEMA: object = JSON.parse(
   readFileSync(new URL("../schemas/profile.schema.json", import.meta.url), "utf8"),
@@ -149,6 +149,15 @@ describe("组 3：ephemeral key 稳定性（I-02：同参同 key、异参异 key
     const b = ephemeralRef("check x", { intervalMs: 60_000, type: "interval" } as unknown as Record<string, unknown>, "/w");
     expect(a).toEqual(b);
   });
+
+  it("评审 F2(high)：schedule 同值同键——every 拼写与 intervalMs 归一为 ms、cron expr/cron 别名归一", () => {
+    const base = ephemeralRef("c", { type: "interval", every: "60s" }, "/w");
+    expect(ephemeralRef("c", { type: "interval", every: "1m" }, "/w")).toEqual(base);
+    expect(ephemeralRef("c", { type: "interval", intervalMs: 60_000 }, "/w")).toEqual(base);
+    const cron = ephemeralRef("c", { type: "cron", expr: "*/5 * * * *" }, "/w");
+    expect(ephemeralRef("c", { type: "cron", cron: "*/5 * * * *" }, "/w")).toEqual(cron);
+    expect(ephemeralRef("c", { type: "interval", every: "90s" }, "/w")).not.toEqual(base);
+  });
 });
 
 describe("组 4：订阅侧 token 拒检矩阵（第一道防线；命中拒并列原因，绝不回显命中内容）", () => {
@@ -176,6 +185,13 @@ describe("组 4：订阅侧 token 拒检矩阵（第一道防线；命中拒并�
       }),
     ).toEqual({ ok: true });
   });
+
+  it("评审 F5(med)：运行时凭据引用不误伤——kv 位置的 env/命令替换形态（带引号与不带）放行，明文仍拒", () => {
+    expect(checkRegister({ check: "curl -u u --data password=$PASSWORD https://x" })).toEqual({ ok: true });
+    expect(checkRegister({ check: "curl -H 'X-Api-Key: \"$API_KEY\"' https://x" })).toEqual({ ok: true });
+    expect(checkRegister({ check: "curl --data secret=$(pass show db) https://x" })).toEqual({ ok: true });
+    expect(checkRegister({ check: "curl -u u --data password=hunter2secret https://x" }).ok).toBe(false);
+  });
 });
 
 describe("组 5：schedule 模板资产 → kernel probe spec（B1：模板形态 agent opts 永不含 schedule）", () => {
@@ -201,5 +217,13 @@ describe("组 5：schedule 模板资产 → kernel probe spec（B1：模板形�
     expect(entries[0].schedule).toEqual({ type: "interval", every: "5m" });
     expect(entries[1].schedule).toEqual({ type: "interval", every: "30s" });
     expect(() => reg.load(makeDef({ id: "bad-every", entityType: "fixture:bad", schedule: { type: "interval", every: "60" } }))).toThrow(/every/);
+  });
+
+  it("评审 F6(med)：everyToMs 拒 0 与溢出——须正 safe integer（0 致每拍轮询、Infinity 致永不触发），load 侧联动拒绝", () => {
+    expect(() => everyToMs("0s")).toThrow(/safe integer/);
+    expect(() => everyToMs("99999999999999999999h")).toThrow(/safe integer/);
+    expect(everyToMs("60s")).toBe(60_000);
+    const reg = makeRegistry();
+    expect(() => reg.load(makeDef({ schedule: { type: "interval", every: "0s" } }))).toThrow(/safe integer/);
   });
 });
