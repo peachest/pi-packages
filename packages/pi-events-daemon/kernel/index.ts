@@ -23,6 +23,7 @@ import {
 import {
   adoptThresholds,
   checkForPhase,
+  cronNextMs,
   epochAccepts,
   intentToEvent,
   planTransition,
@@ -361,6 +362,18 @@ export class Kernel {
    */
   subscribe(req: SubscribeRequest, deps: SubscribeDeps = {}): SubscribeResult {
     const opts = req.opts ?? {};
+    // 评审 D11：schedule 校验在事务外（确定性拒绝不进 withRetry）——坏 cron 运行期只会在 dispatch
+    // 逐槽记 error 永不触发，入口即拒（domain cronNextMs 单一解析）
+    const incomingSchedule = opts.schedule ?? DEFAULT_PROBE_SCHEDULE;
+    if (incomingSchedule.type === "cron") {
+      try {
+        cronNextMs(incomingSchedule.cron, 0);
+      } catch (err) {
+        throw new Error(
+          `subscribe rejected: invalid cron schedule: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
     // smoke 先于事务：checker 执行不进 tx，事务重试不重跑探针
     let validate: SmokeValidate | undefined;
     if (opts.smoke) {
@@ -394,7 +407,6 @@ export class Kernel {
         const adopted = adoptThresholds(slotThresholdsOf(slotOthers), incoming);
         const slotKey = runnerSlotKey(req.entityRef, req.template);
         const slotSpec = tx.getProbeSpec(slotKey);
-        const incomingSchedule = opts.schedule ?? DEFAULT_PROBE_SCHEDULE;
         const incomingSource = opts.source ?? DEFAULT_PROBE_SOURCE;
         // 评审 F19：schedule/source 改变实际探测行为，幂等比较必须含槽 ProbeSpec 现值
         const sameProbeConfig =

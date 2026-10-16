@@ -218,6 +218,53 @@ export function restoreSlotThresholds(
 }
 
 /**
+ * cron 表达式下一到点（5 字段 分 时 日 月 周，UTC，分钟粒度；支持星号、星号步进、区间、逗号列表）。
+ * dom/dow 同受限时按标准 cron OR 语义；366 天内无匹配返回 null（调用方按永不触发处理）。
+ * 结构非法（字段数/字段解析）同步抛错——kernel subscribe 入口校验与 loops 调度共用本单一解析（评审 D11）。
+ * shortcut: 逐分钟扫描（测试窗口小）；真 cron 大步进与 tz 归 profiles 模板资产面，需用时升级。
+ */
+export function cronNextMs(expr: string, fromMs: number): number | null {
+  const fields = expr.trim().split(/\s+/);
+  if (fields.length !== 5) throw new Error(`cron expr "${expr}" 需要 5 字段（分 时 日 月 周）`);
+  const single = (part: string): ((v: number) => boolean) => {
+    if (part === "*") return () => true;
+    if (part.startsWith("*/")) {
+      const n = Number(part.slice(2));
+      if (!Number.isInteger(n) || n <= 0) throw new Error(`cron 字段非法："${part}"`);
+      return (v) => v % n === 0;
+    }
+    const range = /^([Losw\d]+)-([\d]+)$/.exec(part); // 纯数字区间（名字/星期名 post-MVP）
+    if (range) {
+      const lo = Number(range[1]);
+      const hi = Number(range[2]);
+      return (v) => v >= lo && v <= hi;
+    }
+    const n = Number(part);
+    if (!Number.isInteger(n)) throw new Error(`cron 字段非法："${part}"`);
+    return (v) => v === n;
+  };
+  const any = (field: string): ((v: number) => boolean) => {
+    const parts = field.split(",").map(single);
+    return (v) => parts.some((p) => p(v));
+  };
+  const [min, hour, dom, mon, dow] = fields.map(any);
+  const domRestricted = fields[2] !== "*";
+  const dowRestricted = fields[4] !== "*";
+  const startMinute = Math.floor(fromMs / 60_000) + 1;
+  const endMinute = startMinute + 366 * 24 * 60;
+  for (let m = startMinute; m < endMinute; m++) {
+    const d = new Date(m * 60_000);
+    const dayOfWeek = d.getUTCDay() === 0 ? 7 : d.getUTCDay(); // cron 惯例：7 = 周日
+    const dayOk =
+      domRestricted && dowRestricted
+        ? dom(d.getUTCDate()) || dow(dayOfWeek) // 标准 cron：双受限取 OR
+        : dom(d.getUTCDate()) && dow(dayOfWeek);
+    if (min(d.getUTCMinutes()) && hour(d.getUTCHours()) && dayOk && mon(d.getUTCMonth() + 1)) return m * 60_000;
+  }
+  return null;
+}
+
+/**
  * I5：槽键 = (EntityRef, 模板)，谓词（on）不参与——N 个不同 on 谓词共享同一次抓取；
  * 模板/实体不同才拆槽。谓词不在签名里即结构上不可能进键。
  */

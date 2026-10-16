@@ -1077,3 +1077,15 @@ describe("评审修复 — C 组（kernel 面）", () => {
     ).toThrow(/探测配置/);
   });
 });
+
+// ==================== 评审修复 — D 组（kernel 面）：调度入口校验 ====================
+describe("评审修复 — D 组（kernel 面）", () => {
+  it("D11：非法 cron schedule → subscribe 明确拒绝（不落订阅不建槽）", () => {
+    const store = createMemoryStore();
+    seedEntity(store, null);
+    const kernel = new Kernel(store, VERDICT_STATES, 0);
+    expect(() => kernel.subscribe(subReq({ opts: { schedule: { type: "cron", cron: "bad" } } }))).toThrow(/invalid cron/);
+    expect(store.querySubscriptions({})).toHaveLength(0);
+    expect(store.getProbeSpec(SLOT_KEY)).toBeUndefined();
+  });
+});

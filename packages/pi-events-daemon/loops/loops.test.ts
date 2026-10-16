@@ -619,3 +619,97 @@ describe("评审修复 — C 组（loops 面：关闭路径投递不丢）", () 
     loops.stop();
   });
 });
+
+// ==================== 评审修复 — D 组：调度面（哨兵定时器 / 坏槽隔离 / 在飞上限 / 重启重探） ====================
+describe("评审修复 — D 组（调度面）", () => {
+  it("D10：never-fire cron 哨兵（366 天无匹配）不占定时器——完成回流后 pendingCount 0（无 1ms 忙循环）", async () => {
+    const store = createMemoryStore();
+    store.putEntity({ type: REF.type, key: REF.key, state: null });
+    const clock = new FakeClock();
+    const exec = new FakeExec();
+    exec.enqueueFailure(new Error("boom"), true); // 同步失败 → tick 窗口内同步完成回流
+    const loops = startLoops(makeCtx(store, { clock, exec }));
+    subVia(loops, {}, { opts: { schedule: { type: "cron", cron: "0 0 31 2 *" } } }); // 2/31 不存在 → 永不触发
+    clock.step(0); // 新建槽首探（timer due 0）→ 同步失败回流 → reschedule 见 nextDueAt 哨兵
+    await micro();
+    expect(store.getRunLedger(SLOT_KEY)?.nextDueAt).toBe(Number.MAX_SAFE_INTEGER);
+    expect(clock.pendingCount).toBe(0); // 哨兵不排定时器；未修时 delay=MAX_SAFE_INTEGER 常驻（真 Node 并成 1ms 忙循环）
+    expect(loops.errors).toHaveLength(0);
+    loops.stop();
+  });
+
+  it("D11：坏 cron 槽（直接注入 store 模拟遗留行）dispatch 记 error 跳过，其余槽照常 dispatch，启动不 abort", async () => {
+    const store = createMemoryStore();
+    store.putEntity({ type: REF.type, key: REF.key, state: null });
+    store.putEntity({ type: REF.type, key: `${REF.key}-2`, state: null });
+    store.putProbeSpec({ slotKey: SLOT_KEY, check: "bad-check", schedule: { type: "cron", cron: "bad" }, source: "poll" });
+    store.putRunLedger({ slotKey: SLOT_KEY, epoch: 0, refcount: 1, consecutiveFails: 0, entityRefType: REF.type, entityRefKey: REF.key });
+    const SLOT2 = `slot:${REF.type}:${REF.key}-2#${TPL}`;
+    store.putProbeSpec({ slotKey: SLOT2, check: "good-check", schedule: { type: "interval", intervalMs: 60_000 }, source: "poll" });
+    store.putRunLedger({ slotKey: SLOT2, epoch: 0, refcount: 1, consecutiveFails: 0, entityRefType: REF.type, entityRefKey: `${REF.key}-2` });
+    store.putSubscription({ subscriptionId: "sub-bad", sessionId: "session-1", entityRefType: REF.type, entityRefKey: REF.key, template: TPL, check: "bad-check", origin: "session", createdAt: 0 });
+    store.putSubscription({ subscriptionId: "sub-good", sessionId: "session-1", entityRefType: REF.type, entityRefKey: `${REF.key}-2`, template: TPL, check: "good-check", origin: "session", createdAt: 0 });
+    const exec = new FakeExec();
+    exec.enqueue({ exitCode: 2 });
+    const loops = startLoops(makeCtx(store, { exec })); // 启动 dispatch 不 abort
+    await micro();
+    expect(loops.errors).toHaveLength(1); // 坏槽逐槽 catch 记 error
+    expect(exec.calls.map((c) => c.command)).toEqual(["good-check"]); // 好槽照常首探
+    loops.stop();
+  });
+
+  it("D12：慢 checker 快间隔——在飞不重排，10s 窗口内该槽至多 1 pending（不堆 100 job）", async () => {
+    const store = createMemoryStore();
+    store.putEntity({ type: REF.type, key: REF.key, state: null });
+    const clock = new FakeClock();
+    const exec = new DeferredExec();
+    const loops = startLoops(makeCtx(store, { clock, exec: exec as unknown as FakeExec }));
+    subVia(loops, {}, { opts: { schedule: { type: "interval", intervalMs: 100 } } });
+    clock.step(0);
+    expect(exec.calls).toHaveLength(1); // 首探 dispatch（在飞）
+    clock.step(9_999); // 100ms × ~100 tick 窗口；在飞 guard 全跳过（9_999 < 10s 探针超时，不触超时回流）
+    expect(exec.calls).toHaveLength(1);
+    exec.resolve(0, { exitCode: 2 });
+    await micro();
+    clock.step(0); // 完成回流后 nextDueAt 已过 → 补探恰一次
+    expect(exec.calls).toHaveLength(2);
+    loops.stop();
+  });
+
+  it("D13：重启不恢复 nextDueAt——活跃槽启动即重探（R1 A5 归零重探），refcount 0 槽不探", async () => {
+    const store = createMemoryStore();
+    store.putEntity({ type: REF.type, key: REF.key, state: null });
+    store.putProbeSpec({ slotKey: SLOT_KEY, check: "active-check", schedule: { type: "interval", intervalMs: 60_000 }, source: "poll" });
+    store.putRunLedger({ slotKey: SLOT_KEY, epoch: 0, refcount: 1, consecutiveFails: 0, nextDueAt: 3_600_000, entityRefType: REF.type, entityRefKey: REF.key });
+    store.putSubscription({ subscriptionId: "sub-seed", sessionId: "session-1", entityRefType: REF.type, entityRefKey: REF.key, template: TPL, check: "active-check", origin: "session", createdAt: 0 });
+    const IDLE = `slot:${REF.type}:${REF.key}-idle#${TPL}`;
+    store.putProbeSpec({ slotKey: IDLE, check: "idle-check", schedule: { type: "interval", intervalMs: 60_000 }, source: "poll" });
+    store.putRunLedger({ slotKey: IDLE, epoch: 0, refcount: 0, consecutiveFails: 0, nextDueAt: 3_600_000 });
+    const exec = new FakeExec();
+    exec.enqueue({ exitCode: 2 });
+    const loops = startLoops(makeCtx(store, { exec })); // 不 step：启动 dispatch 立即重探
+    expect(exec.calls.map((c) => c.command)).toEqual(["active-check"]);
+    expect(store.getRunLedger(SLOT_KEY)?.nextDueAt).toBe(60_000); // 清零后按 spec 重算
+    loops.stop();
+  });
+});
+
+describe("评审修复 — D 组补充：同步完成不残留 in-flight 标记", () => {
+  it("D12：首探同步失败（exec 同步抛错）后到点仍重探——in-flight 标记先置后清，槽不被永久卡死", async () => {
+    const store = createMemoryStore();
+    store.putEntity({ type: REF.type, key: REF.key, state: null });
+    const clock = new FakeClock();
+    const exec = new FakeExec();
+    exec.enqueueFailure(new Error("sync-boom"), true); // 首探同步完成（回流先于 dispatch 的标记置位）
+    const loops = startLoops(makeCtx(store, { clock, exec }));
+    subVia(loops, {}, { opts: { schedule: { type: "interval", intervalMs: 60_000 } } });
+    clock.step(0);
+    await micro();
+    expect(exec.calls).toHaveLength(1);
+    exec.enqueue({ exitCode: 2 });
+    clock.step(60_000); // 到点重探：标记残留时该槽永久跳过（L1 死槽）
+    await micro();
+    expect(exec.calls).toHaveLength(2);
+    loops.stop();
+  });
+});

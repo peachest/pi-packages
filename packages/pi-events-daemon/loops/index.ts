@@ -16,6 +16,7 @@
 import { type EntityRef, type TransitionIntent, type Verdict, entityRefKeyOf } from "../domain/types.ts";
 import {
   INITIAL_THRESHOLD_STATE,
+  cronNextMs,
   deterministicEventId,
   observeVerdict,
   onVerdict,
@@ -23,6 +24,9 @@ import {
   runnerSlotKey,
   type ThresholdState,
 } from "../domain/intent.ts";
+
+// cronNextMs 归 domain（单一解析：kernel subscribe 校验 + loops 调度共用）；此处保持既有导出位兼容
+export { cronNextMs } from "../domain/intent.ts";
 import {
   Kernel,
   type CancelRequest,
@@ -45,51 +49,6 @@ export type MutationRequest =
       /** 评审 B 组：dispatch 时刻的槽 generation——旧代 completion 拒应用；缺省（watch 回流等无 dispatch 来源）不判代。 */
       generation?: number };
 
-/**
- * cron 表达式下一到点（5 字段 分 时 日 月 周，UTC，分钟粒度；支持星号、星号步进、区间、逗号列表）。
- * dom/dow 同受限时按标准 cron OR 语义；366 天内无匹配返回 null（调用方按永不触发处理）。
- * shortcut: 逐分钟扫描（测试窗口小）；真 cron 大步进与 tz 归 profiles 模板资产面，需用时升级。
- */
-export function cronNextMs(expr: string, fromMs: number): number | null {
-  const fields = expr.trim().split(/\s+/);
-  if (fields.length !== 5) throw new Error(`cron expr "${expr}" 需要 5 字段（分 时 日 月 周）`);
-  const single = (part: string): ((v: number) => boolean) => {
-    if (part === "*") return () => true;
-    if (part.startsWith("*/")) {
-      const n = Number(part.slice(2));
-      if (!Number.isInteger(n) || n <= 0) throw new Error(`cron 字段非法："${part}"`);
-      return (v) => v % n === 0;
-    }
-    const range = /^([Losw\d]+)-([\d]+)$/.exec(part); // 纯数字区间（名字/星期名 post-MVP）
-    if (range) {
-      const lo = Number(range[1]);
-      const hi = Number(range[2]);
-      return (v) => v >= lo && v <= hi;
-    }
-    const n = Number(part);
-    if (!Number.isInteger(n)) throw new Error(`cron 字段非法："${part}"`);
-    return (v) => v === n;
-  };
-  const any = (field: string): ((v: number) => boolean) => {
-    const parts = field.split(",").map(single);
-    return (v) => parts.some((p) => p(v));
-  };
-  const [min, hour, dom, mon, dow] = fields.map(any);
-  const domRestricted = fields[2] !== "*";
-  const dowRestricted = fields[4] !== "*";
-  const startMinute = Math.floor(fromMs / 60_000) + 1;
-  const endMinute = startMinute + 366 * 24 * 60;
-  for (let m = startMinute; m < endMinute; m++) {
-    const d = new Date(m * 60_000);
-    const dayOfWeek = d.getUTCDay() === 0 ? 7 : d.getUTCDay(); // cron 惯例：7 = 周日
-    const dayOk =
-      domRestricted && dowRestricted
-        ? dom(d.getUTCDate()) || dow(dayOfWeek) // 标准 cron：双受限取 OR
-        : dom(d.getUTCDate()) && dow(dayOfWeek);
-    if (min(d.getUTCMinutes()) && hour(d.getUTCHours()) && dayOk && mon(d.getUTCMonth() + 1)) return m * 60_000;
-  }
-  return null;
-}
 
 /** 提交回调维护的状态缓存（只读视图；运行期唯一写点在 store.onWrite 回调内，启动时另有种子投影 = 已提交状态初始快照，票 25 验收面）。 */
 export interface LoopsCache {
@@ -318,10 +277,13 @@ export function startLoops(ctx: LoopsCtx): LoopsHandle {
         if (inflight.has(row.slotKey)) continue;
         if (row.nextDueAt !== undefined && row.nextDueAt > now) continue;
         const nextDue = nextFireOf(spec, now);
-        prober.probe({ slotKey: row.slotKey, check: spec.check, source: spec.source });
+        // 标记先置后探（评审 D12）：同步完成的 probe（exec 同步抛错回流）在 probe 返回前已清标记，
+        // 若探后置位则残留脏标记 → 槽被永久跳过（L1 死槽）
         inflight.set(row.slotKey, row.generation ?? 0);
+        prober.probe({ slotKey: row.slotKey, check: spec.check, source: spec.source });
         ctx.store.putRunLedger({ ...row, nextDueAt: nextDue });
       } catch (err) {
+        inflight.delete(row.slotKey); // probe 同步抛错未完成回流：清标记，槽不被卡死
         errors.push(err); // 评审 D11：坏槽（如非法 cron spec）记 error 跳过，不拖垮其余槽 dispatch、不 abort 启动
       }
     }
@@ -344,7 +306,7 @@ export function startLoops(ctx: LoopsCtx): LoopsHandle {
       const due = row.nextDueAt ?? now;
       if (earliest === null || due < earliest) earliest = due;
     }
-    if (earliest === null) return;
+    if (earliest === null || earliest >= Number.MAX_SAFE_INTEGER) return; // 永不触发哨兵不占定时器（评审 D10）；超长到点由 SystemClock 2^31 钳制 + 到点重排轮询兜底
     scheduleTimer = ctx.clock.setTimeout(tick, Math.max(0, earliest - now));
   };
 
@@ -353,6 +315,15 @@ export function startLoops(ctx: LoopsCtx): LoopsHandle {
     dispatchDue(ctx.clock.now());
     reschedule();
   };
+
+  // 评审 D13：重启即重探（R1 A5 归零重探）——持久 nextDueAt 是停机前调度遗留，重启一律清零
+  // （清零后走新建槽同路径首探）；refcount 0 槽不重探，非 poll 源不归调度管。
+  for (const row of ctx.store.listRunLedger()) {
+    if (row.refcount === 0 || row.nextDueAt === undefined) continue;
+    const spec = ctx.store.getProbeSpec(row.slotKey);
+    if (!spec || spec.source !== "poll") continue;
+    ctx.store.putRunLedger({ ...row, nextDueAt: undefined });
+  }
 
   // missed tick catch_up_one：停机跨过的 cron/interval 到点补触发一次且仅一次（#31 正典：补触发，
   // 非投递 redrive）——N 个 missed tick（nextDueAt 已成过去）合并为本次一次探针，nextDueAt 直接
