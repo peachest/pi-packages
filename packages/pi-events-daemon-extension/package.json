@@ -1,0 +1,27 @@
+{
+  "name": "pi-events-daemon-extension",
+  "version": "0.0.1",
+  "private": true,
+  "description": "pi-events-daemon extension — agent 入口（票 34-37）：9 op 模型可见工具（schema 与 03 同源）+ D1a 完整 JSON Schema 校验客户端先行 + .pi/events.json auto 订阅声明链 + wake 长连接注入 + 惰性拉起/短连接重试/batch 呈现",
+  "type": "module",
+  "main": "./index.ts",
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "scripts": {
+    "check": "tsc --noEmit",
+    "test": "vitest run",
+    "verify": "npm run check && npm run test"
+  },
+  "license": "MIT",
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    }
+  }
+}
