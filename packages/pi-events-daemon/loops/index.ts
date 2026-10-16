@@ -22,8 +22,11 @@ import {
   onVerdict,
   restoreSlotThresholds,
   runnerSlotKey,
+  ttlExpired,
   type ThresholdState,
 } from "../domain/intent.ts";
+import { EVIDENCE_RETENTION, evidenceRetentionExpired } from "../domain/delivery.ts";
+import { retiredCleanupDue } from "../domain/entity.ts";
 
 // cronNextMs 归 domain（单一解析：kernel subscribe 校验 + loops 调度共用）；此处保持既有导出位兼容
 export { cronNextMs } from "../domain/intent.ts";
@@ -81,6 +84,16 @@ export interface LoopsCtx {
     /** sessionId → SessionRef；未注册 session 的投递保持 accepted 待扫（level-trigger 自愈）。 */
     sessionRefOf(sessionId: string): SessionRef | undefined;
   };
+  /** 票 28 L4：housekeeping 配置。缺省 = 保留期清理/dead-letter 提示（开）执行；ephemeral/快照域缺省关闭。 */
+  housekeeping?: {
+    /** dead-letter 每日提示开关（settings 可关，#31 B6③；缺省开）。 */
+    deadLetterNotice?: boolean;
+    /** ephemeral 清理域：profileIds ∩ terminalStates 命中的实体走 terminal→retired 标记与 7d 到期清理
+     *  （profiles 票接线后由组合根注入；缺省无域 = 职责不激活）。 */
+    ephemeral?: { profileIds: ReadonlySet<string>; terminalStates: ReadonlySet<string> };
+    /** 快照触发阈值（单实体事件数；#31 性能条件 MVP 面——快照机制本体归后票，候选上报在 handle.housekeeping）。 */
+    snapshotThreshold?: number;
+  };
 }
 
 export interface LoopsHandle {
@@ -91,6 +104,12 @@ export interface LoopsHandle {
   ingestProbeResult(result: ProbeResult): void;
   /** 提交回调维护的缓存快照（L1-L4 的 level-trigger 扫描输入）。 */
   readonly cache: LoopsCache;
+  /** 票 28 L4：housekeeping 最近一次扫的可观测面（snapshotNeeded = 快照触发候选——性能条件上报，
+   *  快照机制本体归后票）。 */
+  readonly housekeeping: {
+    readonly lastSweepAt: number | null;
+    readonly snapshotNeeded: readonly string[];
+  };
   /** 逐请求捕获的消费错误（kernel 越界 dead-letter 抛出在此可见；队列不死，消费继续）。 */
   readonly errors: readonly unknown[];
   /** 停机：L0 队列关闭、提交回调脱钩、L1 调度定时器取消（幂等）。 */
@@ -412,10 +431,87 @@ export function startLoops(ctx: LoopsCtx): LoopsHandle {
   };
   scheduleVerifyScan();
 
+  // --- L4 Housekeeping（票 28）：保留期清理 / ephemeral retired 清理 / dead-letter 每日提示 /
+  // ttl 关订阅 / run_ledger 对账 / 快照触发。启动惰性首扫（#31 L154）+ 1h 周期；全部簿记/审计
+  // 直写 store（#31 L82：ephemeral 清理是簿记非事件，不经 kernel；缓存一致性由提交回调保全）。
+  const HOUSEKEEPING_INTERVAL_MS = 3_600_000;
+  const DAY_MS = 86_400_000;
+  const hk = ctx.housekeeping;
+  const housekeepingView = { lastSweepAt: null as number | null, snapshotNeeded: [] as string[] };
+  let sweepTimer: { cancel(): void } | null = null;
+  let lastNoticeDay: number | null = null;
+  let sweptOnce = false;
+  const sweep = (): void => {
+    if (stopped) return;
+    const now = ctx.clock.now();
+    // ① evidence 保留期清理（判定归 domain 纯函数）：7d 桶下界取回，30d 长桶在谓词内收口。
+    //    verdict join：evidenceRef → 事件终态（outbox 行与事件 1:1 全扫；shortcut: O(outbox)，量大时归 store 接口按 evidenceRef 索引查）。
+    const verdictByRef = new Map<string, string>();
+    const latestEventMsByEntity = hk?.ephemeral ? new Map<string, number>() : null;
+    for (const row of ctx.store.outboxBatch(Number.MAX_SAFE_INTEGER)) {
+      const ev = ctx.store.tx((tx) => tx.getEvent(row.notificationId));
+      if (!ev) continue;
+      if (ev.evidenceRef) verdictByRef.set(ev.evidenceRef, ev.to);
+      if (latestEventMsByEntity) {
+        const k = `${ev.entityRefType}/${ev.entityRefKey}`;
+        const t = Date.parse(ev.occurredAt);
+        if (Number.isFinite(t) && t > (latestEventMsByEntity.get(k) ?? -Infinity)) latestEventMsByEntity.set(k, t);
+      }
+    }
+    const stale = ctx.store.evidenceOlderThan(now - EVIDENCE_RETENTION.passedMs);
+    const due = stale.filter((r) => evidenceRetentionExpired(r.recordedAt, verdictByRef.get(r.evidenceRef) ?? "", now));
+    if (due.length > 0) ctx.store.deleteEvidence(due.map((r) => r.evidenceRef));
+    // ② ephemeral terminal → retired 标记 + retired 7d 到期清理（标记与清理同扫：daemon 停机一周后
+    //    首扫一次完成）。到期锚 = 终态转换事件 occurredAt（标记时刻可能滞后，锚取终态到达时刻）；
+    //    无事件锚（注册即终态）不清理——到期时刻不可知，保守保留（profiles 票接线后由注册元数据承载）。
+    const eph = hk?.ephemeral;
+    if (eph) {
+      for (const e of ctx.store.queryEntities({})) {
+        if (!e.profileId || !eph.profileIds.has(e.profileId)) continue;
+        if (e.state === null || !eph.terminalStates.has(e.state)) continue;
+        if (!e.retired) ctx.store.putEntity({ ...e, retired: true });
+        const anchor = latestEventMsByEntity?.get(`${e.type}/${e.key}`);
+        if (anchor !== undefined && retiredCleanupDue(anchor, now)) {
+          ctx.store.deleteEventsBefore(e.type, e.key, now); // 派生投递残留（events/outbox 永久，见 store 契约注）
+          ctx.store.deleteEntity(e.type, e.key);
+        }
+      }
+    }
+    // ③ dead-letter 每日提示（#31 B6③）：非空 → 活跃 session 提示一次/日（day-key 门控；settings 可关）。
+    //    单连接推送（SocketPusher = 活跃 session 面）；逐 session 编址归 transport 票接线。
+    const dead = ctx.store.deadLetters({});
+    if (dead.length > 0 && (hk?.deadLetterNotice ?? true)) {
+      const day = Math.floor(now / DAY_MS);
+      if (lastNoticeDay !== day) {
+        lastNoticeDay = day;
+        ctx.pusher.push(JSON.stringify({ kind: "dead-letter-notice", count: dead.length })).catch((err: unknown) => errors.push(err));
+      }
+    }
+    housekeepingView.lastSweepAt = now;
+  };
+  const scheduleSweep = (): void => {
+    if (stopped) return;
+    sweepTimer = ctx.clock.setTimeout(
+      () => {
+        sweptOnce = true;
+        sweepTimer = null;
+        try {
+          sweep();
+        } catch (err) {
+          errors.push(err); // sweep 单步失败不死循环（level-trigger 下一周期重试）
+        }
+        scheduleSweep();
+      },
+      sweptOnce ? HOUSEKEEPING_INTERVAL_MS : 0, // 启动惰性清理（#31 L154）
+    );
+  };
+  scheduleSweep();
+
   return {
     submit: doSubmit,
     ingestProbeResult,
     cache: { states },
+    housekeeping: housekeepingView,
     errors,
     stop(): void {
       stopped = true;
@@ -423,6 +519,8 @@ export function startLoops(ctx: LoopsCtx): LoopsHandle {
       scheduleTimer = null;
       scanTimer?.cancel(); // 票 28 L3 扫描定时器（未接线时为 null）
       scanTimer = null;
+      sweepTimer?.cancel(); // 票 28 L4 housekeeping 定时器
+      sweepTimer = null;
       offWrite(); // 幂等取消订阅（票 25 Finding 2）：重复启停不累积监听器、旧闭包可回收
     },
   };

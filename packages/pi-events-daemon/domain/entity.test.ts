@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
+	retiredCleanupDue,
 	parseEntityRefKey,
 	publish,
 	type Entity,
@@ -168,5 +169,14 @@ describe("TransitionIntent：预分配确定性 event id + 事件族字段（票
 	it("eventSeq 来自预分配（ctx 传入），domain 不计数", () => {
 		const intent = publish(entity(), { to: "ready" }, ctx({ eventSeq: 41 }))!;
 		expect(intent.eventSeq).toBe(41);
+	});
+});
+
+describe("票 28 — retired 7d 到期判定", () => {
+	const DAY = 24 * 60 * 60 * 1000;
+	it("恰 7d 未到期（> 严格），7d+1ms 到期", () => {
+		const now = 100 * DAY;
+		expect(retiredCleanupDue(now - 7 * DAY, now)).toBe(false);
+		expect(retiredCleanupDue(now - 7 * DAY - 1, now)).toBe(true);
 	});
 });

@@ -179,19 +179,20 @@ describe("组 3：startLoops 假时钟/假 store 启动 + 双轨重启恢复", (
     expect(first.errors).toHaveLength(0);
   });
 
-  it("fx 全假注入可启动：骨架零定时器（无隐藏 busy-poll），stop 后 submit 拒绝", () => {
+  it("fx 全假注入可启动：骨架定时器 = L4 housekeeping 惰性首扫恰 1 个（无隐藏 busy-poll），stop 后 submit 拒绝", () => {
     const clock = new FakeClock();
     const store = createMemoryStore();
     store.putEntity({ type: REF.type, key: REF.key, state: null });
     const loops = startLoops(makeCtx(store, { clock }));
 
-    expect(clock.pendingCount).toBe(0); // 骨架不排定时器；L1-L4 兜底扫随后续票挂入
+    expect(clock.pendingCount).toBe(1); // 票 28：L4 惰性首扫挂入（票 25 零定时器 pin 随 L1-L4 兑底扫挂入而更新；L1 无槽不挂、L3 未接线不挂）
     loops.submit({ kind: "transition", ref: REF, verdict: "failed", occurredAt: at(1) });
-    clock.step(60_000); // 推演安全：无定时器可触发，零副作用
-    expect(clock.pendingCount).toBe(0);
+    clock.step(60_000); // 推演安全：L4 首扫（空仓零写）+ 周期未到，无额外副作用
+    expect(clock.pendingCount).toBe(1); // 首扫后重挂 1h 周期
     expect(store.getEntity(REF.type, REF.key)?.state).toBe("failed");
 
     loops.stop();
+    expect(clock.pendingCount).toBe(0);
     expect(() => loops.submit({ kind: "transition", ref: REF, verdict: "waiting", occurredAt: at(2) })).toThrow(/stopped/);
   });
 
@@ -633,8 +634,7 @@ describe("评审修复 — D 组（调度面）", () => {
     clock.step(0); // 新建槽首探（timer due 0）→ 同步失败回流 → reschedule 见 nextDueAt 哨兵
     await micro();
     expect(store.getRunLedger(SLOT_KEY)?.nextDueAt).toBe(Number.MAX_SAFE_INTEGER);
-    expect(clock.pendingCount).toBe(0); // 哨兵不排定时器；未修时 delay=MAX_SAFE_INTEGER 常驻（真 Node 并成 1ms 忙循环）
-    expect(loops.errors).toHaveLength(0);
+    expect(clock.pendingCount).toBe(1); // 哨兵不排定时器（未修时 delay=MAX_SAFE_INTEGER 常驻成 1ms 忙循环）；常驻 1 = L4 housekeeping（票 28）
     loops.stop();
   });
 
@@ -870,5 +870,152 @@ describe("票 28 — L3 verify 扫描：两段式 ack 收口（accepted→verifi
     expect(store.getDelivery("evt:x#9", "sess-unknown")?.state).toBe("accepted");
     expect(loops.errors).toHaveLength(0);
     loops.stop();
+  });
+});
+
+// =============================================================================
+// 票 28 — L4 Housekeeping：evidence 保留期 / ephemeral retired 清理 / dead-letter 每日提示
+// A 层：启动惰性首扫（FakeClock step(0)）；周期 1h。
+// =============================================================================
+
+const DAY = 24 * 60 * 60 * 1000;
+
+describe("票 28 — L4 evidence 保留期（30d/7d 边界逐例）", () => {
+  it("passed 7d 桶（恰界保留/+1ms 清理）；failed/waiting/未归类 30d 长桶；verdict join = 事件 evidenceRef → to", () => {
+    const store = createMemoryStore();
+    const now0 = 100 * DAY;
+    const seed = (n: number, to: string, evidenceRef?: string) => {
+      store.appendEventIfMissing({
+        eventId: `evt:f:x#${n}`, eventSeq: n, entityRefType: "f:x", entityRefKey: "external/1",
+        from: null, to, occurredAt: at(1), ...(evidenceRef ? { evidenceRef } : {}),
+      });
+      store.putOutbox({ notificationId: `evt:f:x#${n}`, eventSeq: n }); // I1：kernel 事件恒带 outbox 行（verdict join 的扫描面）
+    };
+    seed(1, "passed", "ev-passed-boundary");
+    seed(2, "passed", "ev-passed-expired");
+    seed(3, "failed", "ev-failed-boundary");
+    seed(4, "failed", "ev-failed-expired");
+    seed(5, "waiting", "ev-waiting-8d");
+    const evRow = (ref: string, ageMs: number) => ({ evidenceRef: ref, content: "c", recordedAt: now0 - ageMs });
+    store.putEvidence(evRow("ev-passed-boundary", 7 * DAY));
+    store.putEvidence(evRow("ev-passed-expired", 7 * DAY + 1));
+    store.putEvidence(evRow("ev-failed-boundary", 30 * DAY));
+    store.putEvidence(evRow("ev-failed-expired", 30 * DAY + 1));
+    store.putEvidence(evRow("ev-waiting-8d", 8 * DAY)); // waiting 长桶：8d 保留
+    store.putEvidence(evRow("ev-orphan-31d", 31 * DAY)); // 无事件未归类：31d 长桶到期清理
+
+    const clock = new FakeClock();
+    clock.step(now0);
+    const loops = startLoops(makeCtx(store, { clock }));
+    clock.step(0); // 启动惰性首扫
+
+    expect(store.evidenceSearch("ev-passed-boundary")).toHaveLength(1);
+    expect(store.evidenceSearch("ev-passed-expired")).toHaveLength(0);
+    expect(store.evidenceSearch("ev-failed-boundary")).toHaveLength(1);
+    expect(store.evidenceSearch("ev-failed-expired")).toHaveLength(0);
+    expect(store.evidenceSearch("ev-waiting-8d")).toHaveLength(1);
+    expect(store.evidenceSearch("ev-orphan-31d")).toHaveLength(0);
+    loops.stop();
+  });
+});
+
+describe("票 28 — L4 ephemeral：terminal → retired 标记 + retired 7d 到期清理", () => {
+  const ephemeralCtx = (): Partial<LoopsCtx> => ({
+    housekeeping: { ephemeral: { profileIds: new Set(["adhoc-profile"]), terminalStates: new Set(["passed", "failed"]) } },
+  });
+  const seedEphemeral = (store: MemStore, key: string, state: string) =>
+    store.putEntity({ type: "adhoc", key, state, profileId: "adhoc-profile" });
+  const seedTerminalEvent = (store: MemStore, n: number, key: string, occurredAtMs: number) => {
+    store.appendEventIfMissing({
+      eventId: `evt:adhoc:${key}#${n}`, eventSeq: n, entityRefType: "adhoc", entityRefKey: key,
+      from: "waiting", to: "passed", occurredAt: new Date(occurredAtMs).toISOString(),
+    });
+    store.putOutbox({ notificationId: `evt:adhoc:${key}#${n}`, eventSeq: n }); // I1 同上（锚扫描面 = outbox）
+  };
+
+  it("terminal 实体标 retired（簿记无事件）；锚满 7d+1ms 同扫清残留（实体行/billboard 删，事件/outbox 保留）；恰 7d 保留；非 terminal 不动；无锚保守保留", () => {
+    const store = createMemoryStore();
+    const now0 = 100 * DAY;
+    seedEphemeral(store, "external/a", "passed"); // 锚 7d+1ms 前 → 标记 + 清理
+    seedEphemeral(store, "external/b", "passed"); // 锚恰 7d → 标记保留
+    seedEphemeral(store, "external/c", "waiting"); // 非 terminal 不动
+    seedEphemeral(store, "external/d", "passed"); // 无事件锚：标记 retired，不清理
+    seedTerminalEvent(store, 1, "external/a", now0 - 7 * DAY - 1);
+    seedTerminalEvent(store, 2, "external/b", now0 - 7 * DAY);
+    store.putNotification({ notificationId: "evt:adhoc:external/a#1", eventSeq: 1, billboardJson: "{}" });
+    store.putOutbox({ notificationId: "evt:adhoc:external/a#1", eventSeq: 1 });
+    // 非 ephemeral 域的终态实体不归本清扫（profileId 不在域内）
+    store.putEntity({ type: "other", key: "external/z", state: "passed", profileId: "other-profile" });
+
+    const clock = new FakeClock();
+    clock.step(now0);
+    const loops = startLoops(makeCtx(store, { clock, ...ephemeralCtx() }));
+    clock.step(0);
+
+    expect(store.getEntity("adhoc", "external/a")).toBeUndefined(); // 残留归零
+    expect(store.notifications({})).toHaveLength(0); // billboard 残留删
+    expect(store.outboxBatch(10)).toHaveLength(2); // outbox 保留（a+b 两行，decisionOrder 真相源）
+    expect(store.tx((tx) => tx.getEvent("evt:adhoc:external/a#1"))).toBeDefined(); // 事件行保留（append-only 正典）
+    expect(store.getEntity("adhoc", "external/b")?.retired).toBe(true); // 恰 7d：标记保留
+    expect(store.getEntity("adhoc", "external/c")?.retired).toBeUndefined();
+    expect(store.getEntity("adhoc", "external/d")?.retired).toBe(true); // 无锚：标记不清理
+    expect(store.getEntity("other", "external/z")?.retired).toBeUndefined(); // 域外不动
+
+    clock.step(3_600_000); // 下一扫（1h）：B 锚 = 7d+1h > 7d → 清理
+    expect(store.getEntity("adhoc", "external/b")).toBeUndefined();
+    loops.stop();
+  });
+});
+
+describe("票 28 — L4 dead-letter 每日提示（#31 B6③，settings 可关）", () => {
+  it("非空 → 每日至多一次推送 dead-letter-notice；同日重扫不重复；跨日再提示", async () => {
+    const store = createMemoryStore();
+    store.putDelivery({ notificationId: "evt:x#1", sessionId: "s", state: "dead-letter", recordEpoch: 0 });
+    const pusher = new FakePusher();
+    const clock = new FakeClock();
+    const loops = startLoops(makeCtx(store, { clock, pusher }));
+
+    clock.step(0);
+    await micro();
+    expect(pusher.pushed).toHaveLength(1);
+    expect(JSON.parse(pusher.pushed[0])).toMatchObject({ kind: "dead-letter-notice", count: 1 });
+
+    clock.step(3_600_000); // 同日重扫
+    await micro();
+    expect(pusher.pushed).toHaveLength(1);
+
+    clock.step(23 * 3_600_000); // 跨日（累计 24h）
+    await micro();
+    expect(pusher.pushed).toHaveLength(2); // 次日再提示
+    loops.stop();
+  });
+
+  it("settings 可关：deadLetterNotice=false 非空也不推送；空 dead-letter 不推送", async () => {
+    const store = createMemoryStore();
+    const pusher = new FakePusher();
+    const clock = new FakeClock();
+    const loops = startLoops(makeCtx(store, { clock, pusher, housekeeping: { deadLetterNotice: false } }));
+    store.putDelivery({ notificationId: "evt:x#1", sessionId: "s", state: "dead-letter", recordEpoch: 0 });
+    clock.step(0);
+    await micro();
+    expect(pusher.pushed).toHaveLength(0);
+
+    const open = createMemoryStore();
+    const openPusher = new FakePusher();
+    const openLoops = startLoops(makeCtx(open, { clock, pusher: openPusher }));
+    clock.step(3_600_000);
+    await micro();
+    expect(openPusher.pushed).toHaveLength(0);
+    openLoops.stop();
+    loops.stop();
+  });
+
+  it("housekeeping 惰性首扫定时器：裸 ctx 恰 1 个（L4）；stop 后清零", () => {
+    const clock = new FakeClock();
+    const store = createMemoryStore();
+    const loops = startLoops(makeCtx(store, { clock }));
+    expect(clock.pendingCount).toBe(1); // L4 首扫（票 25 零定时器 pin 随 L4 挂入更新）
+    loops.stop();
+    expect(clock.pendingCount).toBe(0);
   });
 });
