@@ -403,6 +403,7 @@ export function startLoops(ctx: LoopsCtx): LoopsHandle {
           const sessionRef = transcript.sessionRefOf(row.sessionId);
           if (!sessionRef) continue; // 未注册 session：保持 accepted 待扫
           const result = await transcript.adapter.verify(sessionRef, row.notificationId);
+          if (transcript.adapter.isDegraded()) break; // await 期间降级（ocr M）：复查门——余行零点查零收口，留待恢复后重扫
           // I9 判定（domain transcriptVerifies 同语义：notificationId 落盘即投递）——
           // 非 unknown 且非 not-found = 命中条目（passed/failed/waiting 皆已落盘）→ 经 L0 队列收口
           if (result.verdict !== "unknown" && result.reason !== "not-found") {
@@ -423,8 +424,13 @@ export function startLoops(ctx: LoopsCtx): LoopsHandle {
       () => {
         scannedOnce = true;
         scanTimer = null;
-        verifyScan();
-        scheduleVerifyScan();
+        try {
+          verifyScan();
+        } catch (err) {
+          errors.push(err); // 同步异常不逃逸（store 读面等）：扫描不死语义
+        } finally {
+          scheduleVerifyScan(); // 重排在 finally（ocr M）：同步异常不再永久停摆 L3
+        }
       },
       scannedOnce ? L3_SCAN_INTERVAL_MS : 0, // 启动首扫不等首周期
     );
@@ -454,7 +460,12 @@ export function startLoops(ctx: LoopsCtx): LoopsHandle {
     for (const row of ctx.store.outboxBatch(Number.MAX_SAFE_INTEGER)) {
       const ev = ctx.store.tx((tx) => tx.getEvent(row.notificationId));
       if (!ev) continue;
-      if (ev.evidenceRef) verdictByRef.set(ev.evidenceRef, ev.to);
+      // 共享 ref 连坐守门（ocr H）：桶判定取最严格——任一非 passed 引用即 30d，后枚举的 passed
+      // 不得把 failed/waiting 在案的 ref 降级成 7d 桶误删
+      if (ev.evidenceRef) {
+        const prev = verdictByRef.get(ev.evidenceRef);
+        if (prev === undefined || prev === "passed") verdictByRef.set(ev.evidenceRef, ev.to);
+      }
       const entityKey = `${ev.entityRefType}/${ev.entityRefKey}`;
       if (latestEventMsByEntity) {
         const t = Date.parse(ev.occurredAt);
@@ -487,8 +498,13 @@ export function startLoops(ctx: LoopsCtx): LoopsHandle {
     if (dead.length > 0 && (hk?.deadLetterNotice ?? true)) {
       const day = Math.floor(now / DAY_MS);
       if (lastNoticeDay !== day) {
-        lastNoticeDay = day;
-        ctx.pusher.push(JSON.stringify({ kind: "dead-letter-notice", count: dead.length })).catch((err: unknown) => errors.push(err));
+        // 门在推送成功后置位（ocr M）：断连失败不抑制当天余时重试
+        void ctx.pusher.push(JSON.stringify({ kind: "dead-letter-notice", count: dead.length })).then(
+          () => {
+            lastNoticeDay = day;
+          },
+          (err: unknown) => errors.push(err),
+        );
       }
     }
     // ④ ttl 到期关订阅（#57 ttl 触发）：判定归 domain ttlExpired（严格过期，与 evidence/retired 边界同法）；

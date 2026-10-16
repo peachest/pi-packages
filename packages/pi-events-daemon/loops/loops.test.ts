@@ -855,6 +855,66 @@ describe("票 28 — L3 verify 扫描：两段式 ack 收口（accepted→verifi
     loops.stop();
   });
 
+  it("点查期间降级（ocr M）：await 后复查降级 → 不收口且不再点查余行；恢复后下一扫正常收口", async () => {
+    const store = createMemoryStore();
+    seedDelivery(store, "accepted", "evt:a#1");
+    seedDelivery(store, "accepted", "evt:b#2");
+    const adapter = new StubAdapter();
+    adapter.results.set("evt:a#1", { verdict: "passed", format: "v3" });
+    adapter.results.set("evt:b#2", { verdict: "passed", format: "v3" });
+    const realVerify = adapter.verify.bind(adapter);
+    let degradeOnce = true;
+    adapter.verify = async (ref, id) => {
+      if (degradeOnce) {
+        degradeOnce = false;
+        adapter.degraded = true; // selfCheck 在点查进行中判降级（票 21 对接形态，仅首次）
+      }
+      return realVerify(ref, id);
+    };
+    const clock = new FakeClock();
+    const loops = startLoops(makeCtx(store, { clock, ...transcriptCtx(adapter) }));
+
+    clock.step(0); // 首扫：入场未降级 → 点查 a，期间降级
+    await micro();
+    expect(adapter.calls).toEqual(["evt:a#1"]); // 降级已知后零点查：b 不再点查
+    expect(store.getDelivery("evt:a#1", "sess-1")?.state).toBe("accepted"); // 复查门：不收口（C1）
+    expect(store.getDelivery("evt:b#2", "sess-1")?.state).toBe("accepted");
+
+    adapter.degraded = false; // selfCheck 恢复
+    clock.step(1_000);
+    await micro();
+    expect(store.getDelivery("evt:a#1", "sess-1")?.state).toBe("verified");
+    expect(store.getDelivery("evt:b#2", "sess-1")?.state).toBe("verified");
+    loops.stop();
+  });
+
+  it("acceptedDeliveries 同步抛错（ocr M）：errors 可见 + 扫描定时器重排不永久停摆，恢复后下一扫收口", async () => {
+    const store = createMemoryStore();
+    seedDelivery(store, "accepted");
+    const adapter = new StubAdapter();
+    adapter.results.set(NOTIF, { verdict: "passed", format: "v3" });
+    const boom = new Error("acceptedDeliveries sync throw");
+    let broken = true;
+    const flaky = Object.create(store) as Store; // 原型委托：仅读面注错
+    flaky.acceptedDeliveries = () => {
+      if (broken) throw boom;
+      return store.acceptedDeliveries({});
+    };
+    const clock = new FakeClock();
+    const loops = startLoops(makeCtx(flaky, { clock, ...transcriptCtx(adapter) }));
+
+    clock.step(0); // 首扫：同步异常
+    await micro();
+    expect(loops.errors).toContain(boom); // 异常可见不吞（扫描不死语义）
+    expect(clock.pendingCount).toBe(2); // L3 1s 重排在位 + L4 1h（未修形态：L3 定时器消失仅剩 1）
+
+    broken = false; // 读面恢复
+    clock.step(1_000);
+    await micro();
+    expect(store.getDelivery(NOTIF, "sess-1")?.state).toBe("verified"); // 停摆自愈
+    loops.stop();
+  });
+
   it("未注册 session 保持 accepted 待扫（sessionRefOf 无解析不收口不崩）；transcript 未接线 = L3 零定时器", async () => {
     const store = createMemoryStore();
     store.putDelivery({ notificationId: "evt:x#9", sessionId: "sess-unknown", state: "accepted", recordEpoch: 0 });
@@ -916,6 +976,33 @@ describe("票 28 — L4 evidence 保留期（30d/7d 边界逐例）", () => {
     expect(store.evidenceSearch("ev-failed-expired")).toHaveLength(0);
     expect(store.evidenceSearch("ev-waiting-8d")).toHaveLength(1);
     expect(store.evidenceSearch("ev-orphan-31d")).toHaveLength(0);
+    loops.stop();
+  });
+
+  it("共享 evidenceRef 双事件：任一非 passed 引用即 30d——后枚举 passed 不覆盖误删（ocr H）", () => {
+    const store = createMemoryStore();
+    const now0 = 100 * DAY;
+    const seed = (n: number, to: string, evidenceRef: string) => {
+      store.appendEventIfMissing({
+        eventId: `evt:f:x#${n}`, eventSeq: n, entityRefType: "f:x", entityRefKey: "external/1",
+        from: null, to, occurredAt: at(1), evidenceRef,
+      });
+      store.putOutbox({ notificationId: `evt:f:x#${n}`, eventSeq: n });
+    };
+    seed(1, "failed", "ev-shared-fp"); // failed 先枚举（30d 桶）
+    seed(2, "passed", "ev-shared-fp"); // passed 后枚举：不得覆盖为 7d 桶
+    seed(3, "passed", "ev-shared-pf"); // 反向序（passed 先、failed 后）：同保 30d
+    seed(4, "failed", "ev-shared-pf");
+    store.putEvidence({ evidenceRef: "ev-shared-fp", content: "c", recordedAt: now0 - 8 * DAY });
+    store.putEvidence({ evidenceRef: "ev-shared-pf", content: "c", recordedAt: now0 - 8 * DAY });
+
+    const clock = new FakeClock();
+    clock.step(now0);
+    const loops = startLoops(makeCtx(store, { clock }));
+    clock.step(0); // 启动惰性首扫：8d > passed 7d 桶——非 passed 策略在案则保留
+
+    expect(store.evidenceSearch("ev-shared-fp")).toHaveLength(1);
+    expect(store.evidenceSearch("ev-shared-pf")).toHaveLength(1);
     loops.stop();
   });
 });
@@ -1008,6 +1095,31 @@ describe("票 28 — L4 dead-letter 每日提示（#31 B6③，settings 可关�
     await micro();
     expect(openPusher.pushed).toHaveLength(0);
     openLoops.stop();
+    loops.stop();
+  });
+
+  it("推送失败不置当日门（ocr M）：断连失败 → 同日下扫重试；成功置位后同日不重复", async () => {
+    const store = createMemoryStore();
+    store.putDelivery({ notificationId: "evt:x#1", sessionId: "s", state: "dead-letter", recordEpoch: 0 });
+    const pusher = new FakePusher();
+    const boom = new Error("socket closed");
+    pusher.failures.push(boom); // 首次推送失败（close/reject 脚本化注入；失败不记 pushed）
+    const clock = new FakeClock();
+    const loops = startLoops(makeCtx(store, { clock, pusher }));
+
+    clock.step(0); // 首扫：推送失败
+    await micro();
+    expect(pusher.pushed).toHaveLength(0);
+    expect(loops.errors).toContain(boom);
+
+    clock.step(3_600_000); // 同日重扫：门未置 → 重试成功
+    await micro();
+    expect(pusher.pushed).toHaveLength(1); // 未修形态：门已置 → 当天余时永不重试
+    expect(JSON.parse(pusher.pushed[0])).toMatchObject({ kind: "dead-letter-notice", count: 1 });
+
+    clock.step(3_600_000); // 同日再扫：成功已置门 → 不重复
+    await micro();
+    expect(pusher.pushed).toHaveLength(1);
     loops.stop();
   });
 
