@@ -188,9 +188,10 @@ function dualSuite(label: string, make: () => Store & { close?(): void }): void 
       s.close?.();
     });
 
-    it("surface-pinning：接口面 = 枚举 + 三写方法裁决（2026-10-12, provisional enumeration-completion）", () => {
+    it("surface-pinning：接口面 = 枚举 + 三写方法裁决（2026-10-12）+ 票 28 删除/按期读 enumeration-completion", () => {
       const s = make();
-      // 16 枚举 + putNotification/putEvidence/putOutbox
+      // 16 枚举 + putNotification/putEvidence/putOutbox + 票 28：acceptedDeliveries/evidenceOlderThan 读面
+      // + deleteEvidence/deleteEventsBefore/deleteEntity 删除面（2026-10-16 派发裁定：票 09 故意后置收口）
       for (const m of [
         "tx", "appendEventIfMissing",
         "getEntity", "putEntity", "getSubscription", "putSubscription",
@@ -200,23 +201,23 @@ function dualSuite(label: string, make: () => Store & { close?(): void }): void 
         "getRunLedger", "putRunLedger", "listRunLedger",
         "onWrite",
         "putNotification", "putEvidence", "putOutbox",
+        "acceptedDeliveries", "evidenceOlderThan",
+        "deleteEvidence", "deleteEventsBefore", "deleteEntity",
       ] as const) {
         expect(typeof (s as unknown as Record<string, unknown>)[m]).toBe("function");
       }
-      // TxView 同面
+      // TxView 同面（删除原语 staged，提交语义与 put* 一致）
       s.tx((tx) => {
         for (const m of [
           "getEvent", "putEvent", "getEntity", "putEntity", "getSubscription", "putSubscription",
           "getDelivery", "putDelivery", "getProbeSpec", "putProbeSpec",
           "putNotification", "putEvidence", "putOutbox",
           "getRunLedger", "putRunLedger",
+          "deleteEvidence", "deleteNotification", "deleteEntity",
         ] as const) {
           expect(typeof (tx as unknown as Record<string, unknown>)[m]).toBe("function");
         }
       });
-      // 无 delete 方法（evidence 保留期删除归票 28/L4，故意后置）
-      expect((s as unknown as Record<string, unknown>).deleteEvidence).toBeUndefined();
-      expect((s as unknown as Record<string, unknown>).deleteEvent).toBeUndefined();
       s.close?.();
     });
 
@@ -285,6 +286,80 @@ function dualSuite(label: string, make: () => Store & { close?(): void }): void 
       });
       expect(s.notifications({ sinceEventSeq: 10 }).map((n) => n.notificationId)).toEqual(["a", "c"]);
       expect(s.notifications({}).map((n) => n.notificationId)).toEqual(["a", "b", "c"]);
+      s.close?.();
+    });
+
+    // --- 票 28：accepted 投递读 + 按期查询 + 删除面（enumeration-completion，2026-10-16 派发裁定） ---
+
+    it("acceptedDeliveries：accepted 行直过滤（与 pendingDeliveries 同构；state filter 矛盾 = 空集）", () => {
+      const s = make();
+      const row = (notificationId: string, state: DeliveryRowData["state"]): DeliveryRowData => ({
+        notificationId, sessionId: "sess-1", state, recordEpoch: 0,
+      });
+      s.tx((tx) => {
+        tx.putDelivery(row("n1", "accepted"));
+        tx.putDelivery(row("n2", "pending"));
+        tx.putDelivery(row("n3", "verified"));
+      });
+      expect(s.acceptedDeliveries({}).map((d) => d.notificationId)).toEqual(["n1"]);
+      expect(s.acceptedDeliveries({ sessionId: "other" })).toHaveLength(0);
+      expect(s.acceptedDeliveries({ state: "pending" })).toHaveLength(0); // 矛盾过滤 = 空集
+      s.close?.();
+    });
+
+    it("evidenceOlderThan：按 recordedAt 期界直过滤（清理执行归 loops，store 提供按期查询）", () => {
+      const s = make();
+      s.tx((tx) => {
+        tx.putEvidence({ evidenceRef: "old", content: "c", recordedAt: 100 });
+        tx.putEvidence({ evidenceRef: "new", content: "c", recordedAt: 900 });
+      });
+      expect(s.evidenceOlderThan(500).map((e) => e.evidenceRef)).toEqual(["old"]);
+      expect(s.evidenceOlderThan(100)).toHaveLength(0); // 边界：恰在期界不含（< 严格）
+      s.close?.();
+    });
+
+    it("deleteEvidence：按 ref 精确删 + FTS 对齐（检索不再命中；未列 ref 不动）", () => {
+      const s = make();
+      s.tx((tx) => {
+        tx.putEvidence({ evidenceRef: "ev1", content: "trace alpha", recordedAt: 1 });
+        tx.putEvidence({ evidenceRef: "ev2", content: "trace beta", recordedAt: 2 });
+      });
+      s.deleteEvidence(["ev1", "ghost"]);
+      expect(s.evidenceSearch("alpha")).toHaveLength(0); // FTS 行同步删除
+      expect(s.evidenceSearch("beta").map((e) => e.evidenceRef)).toEqual(["ev2"]);
+      s.deleteEvidence(["ghost"]); // 全未命中幂等不抛
+      s.close?.();
+    });
+
+    it("deleteEventsBefore：删该实体 cutoff 前事件的派生投递残留（notifications）；events/outbox 永久保留", () => {
+      const s = make();
+      s.tx((tx) => {
+        tx.putEvent(ev(1, { occurredAt: "2026-01-01T00:00:00Z", entityRefKey: "external/e1" }));
+        tx.putEvent(ev(2, { occurredAt: "2026-06-01T00:00:00Z", entityRefKey: "external/e1" }));
+        tx.putEvent(ev(3, { occurredAt: "2026-02-01T00:00:00Z", entityRefKey: "external/e2" }));
+        tx.putNotification({ notificationId: ev(1).eventId, eventSeq: 1, billboardJson: "{}" });
+        tx.putNotification({ notificationId: ev(2).eventId, eventSeq: 2, billboardJson: "{}" });
+        tx.putNotification({ notificationId: ev(3).eventId, eventSeq: 3, billboardJson: "{}" });
+        tx.putOutbox({ notificationId: ev(1).eventId, eventSeq: 1 });
+        tx.putOutbox({ notificationId: ev(2).eventId, eventSeq: 2 });
+      });
+      const removed = s.deleteEventsBefore("gitlab:mr", "external/e1", Date.parse("2026-03-01T00:00:00Z"));
+      expect(removed).toBe(1); // 仅 e1 的 1 月事件残留
+      expect(s.notifications({}).map((n) => n.notificationId)).toEqual([ev(2).eventId, ev(3).eventId]);
+      // 事件行本体永久保留（D2 append-only 正典——fake 无触发器，契约同形）
+      expect(s.tx((tx) => tx.getEvent(ev(1).eventId))).toBeDefined();
+      // outbox 行永久保留（decisionOrder 恢复真相源，R1 双轨）
+      expect(s.outboxBatch(10).map((r) => r.notificationId)).toEqual([ev(1).eventId, ev(2).eventId]);
+      expect(s.deleteEventsBefore("gitlab:mr", "external/none", 9e15)).toBe(0); // 无事件幂等
+      s.close?.();
+    });
+
+    it("deleteEntity：实体行精确删（返回存在性）；复活防护不依赖行（unknown entity 同拒）", () => {
+      const s = make();
+      s.putEntity({ type: "gitlab:mr", key: "external/e1", state: "passed", retired: true });
+      expect(s.deleteEntity("gitlab:mr", "external/e1")).toBe(true);
+      expect(s.getEntity("gitlab:mr", "external/e1")).toBeUndefined();
+      expect(s.deleteEntity("gitlab:mr", "external/e1")).toBe(false); // 幂等
       s.close?.();
     });
   });
