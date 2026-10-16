@@ -83,7 +83,7 @@ describe("票 15：五效应类别逐一经映射表注入可达（每类一条�
     const store = createMemoryStore();
     seedPassed(store);
     const kernel = new Kernel(store, VERDICT_STATES, 0);
-    expect(kernel.transition(REF, "failed", at(1))).toEqual({ eventSeq: 1, from: "passed", to: "failed" });
+    expect(kernel.transition(REF, "failed", at(1))).toMatchObject({ eventSeq: 1, from: "passed", to: "failed" });
     expect(store.getEntity(REF.type, REF.key)?.state).toBe("failed");
     // notificationId = 确定性 eventId（同 ref+decisionOrder 恒同 id，domain 正典）——
     // 格式断言归 kernel/domain 同位测试；此处验证映射面：经 Store 落库一行 outbox、eventSeq 对齐
@@ -109,7 +109,7 @@ describe("票 15：X1/X2 崩溃经 Store fake 回调（injectCrash）复现（�
     expect(store.tx((tx) => tx.getEvent(evRow(1).eventId))).toBeUndefined();
     // 真消费方（kernel.transition）经同一停点可达：一次性停点被重试界内吸收，同 eventSeq 幂等收口（不烧号）
     const kernel = new Kernel(store, VERDICT_STATES, 0);
-    expect(kernel.transition(REF, "failed", at(1))).toEqual({ eventSeq: 1, from: "passed", to: "failed" });
+    expect(kernel.transition(REF, "failed", at(1))).toMatchObject({ eventSeq: 1, from: "passed", to: "failed" });
   });
 
   it("X2（已提交未写 outbox）：injectCrash('outbox') 复现——outbox 未落库、重放输入留痕（票 23 重启重放钩子）", () => {

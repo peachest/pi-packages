@@ -37,6 +37,15 @@ describe("fx 真壳存在性证明（票 12 断言 1）", () => {
     expect(firedAt).toHaveLength(1);
   });
 
+  it("SystemClock: >2^31-1 的 delay 钳制（Node 对超界 delay 并成 1ms——never-fire 哨兵/超长 cron 不得忙循环）", async () => {
+    const clock: fx.Clock = new fx.SystemClock();
+    let fired = 0;
+    const handle = clock.setTimeout(() => fired++, Number.MAX_SAFE_INTEGER);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    handle.cancel();
+    expect(fired).toBe(0); // 未钳制时 Node 立即（1ms）触发
+  });
+
   it("ShellExec: 真 spawn 返回平台原形（exitCode/stdout/stderr）", async () => {
     const exec: fx.Exec = new fx.ShellExec();
     const ok = await exec.run("echo fx-real");

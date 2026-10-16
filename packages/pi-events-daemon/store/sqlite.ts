@@ -78,7 +78,17 @@ CREATE TABLE IF NOT EXISTS subscriptions (
   origin TEXT NOT NULL,
   scope TEXT,
   created_at INTEGER NOT NULL,
-  ttl_ms INTEGER
+  ttl_ms INTEGER,
+  -- 票 24 订阅生命周期字段（评审 A1 补齐映射）：on 谓词列名避开 SQL 保留字，check 沿 probe_specs 的 check_name 拼写
+  check_name TEXT,
+  on_predicate TEXT,
+  once INTEGER,
+  flip INTEGER,
+  ready_check TEXT,
+  thresholds_json TEXT,
+  closed_at INTEGER,
+  closed_reason TEXT,
+  phase TEXT
 );
 CREATE TABLE IF NOT EXISTS probe_specs (
   slot_key TEXT PRIMARY KEY,
@@ -118,7 +128,10 @@ CREATE TABLE IF NOT EXISTS run_ledger (
   refcount INTEGER NOT NULL,
   consecutive_fails INTEGER NOT NULL,
   last_verdict TEXT,
-  next_due_at INTEGER
+  next_due_at INTEGER,
+  entity_ref_type TEXT,
+  entity_ref_key TEXT,
+  generation INTEGER
 );
 -- events append-only（D2）：UPDATE/DELETE 在库层拒绝（事件流永久保留；无 Store delete 路径）
 CREATE TRIGGER IF NOT EXISTS events_append_only_update BEFORE UPDATE ON events
@@ -126,6 +139,26 @@ BEGIN SELECT RAISE(ABORT, 'events is append-only'); END;
 CREATE TRIGGER IF NOT EXISTS events_append_only_delete BEFORE DELETE ON events
 BEGIN SELECT RAISE(ABORT, 'events is append-only'); END;
 `;
+
+/**
+ * 既有库迁移（评审 A1/A2，幂等）：票 24 订阅生命周期字段 + run_ledger 槽身份列。
+ * CREATE TABLE IF NOT EXISTS 不改既有表——旧版库靠这里补列；node:sqlite 无
+ * ADD COLUMN IF NOT EXISTS，先查 pragma_table_info 再 ALTER（列已存在即跳过）。
+ */
+const MIGRATIONS: ReadonlyArray<{ table: string; column: string; ddl: string }> = [
+  { table: "subscriptions", column: "check_name", ddl: "ALTER TABLE subscriptions ADD COLUMN check_name TEXT" },
+  { table: "subscriptions", column: "on_predicate", ddl: "ALTER TABLE subscriptions ADD COLUMN on_predicate TEXT" },
+  { table: "subscriptions", column: "once", ddl: "ALTER TABLE subscriptions ADD COLUMN once INTEGER" },
+  { table: "subscriptions", column: "flip", ddl: "ALTER TABLE subscriptions ADD COLUMN flip INTEGER" },
+  { table: "subscriptions", column: "ready_check", ddl: "ALTER TABLE subscriptions ADD COLUMN ready_check TEXT" },
+  { table: "subscriptions", column: "thresholds_json", ddl: "ALTER TABLE subscriptions ADD COLUMN thresholds_json TEXT" },
+  { table: "subscriptions", column: "closed_at", ddl: "ALTER TABLE subscriptions ADD COLUMN closed_at INTEGER" },
+  { table: "subscriptions", column: "closed_reason", ddl: "ALTER TABLE subscriptions ADD COLUMN closed_reason TEXT" },
+  { table: "subscriptions", column: "phase", ddl: "ALTER TABLE subscriptions ADD COLUMN phase TEXT" },
+  { table: "run_ledger", column: "entity_ref_type", ddl: "ALTER TABLE run_ledger ADD COLUMN entity_ref_type TEXT" },
+  { table: "run_ledger", column: "entity_ref_key", ddl: "ALTER TABLE run_ledger ADD COLUMN entity_ref_key TEXT" },
+  { table: "run_ledger", column: "generation", ddl: "ALTER TABLE run_ledger ADD COLUMN generation INTEGER" },
+];
 
 /** node:sqlite 行值域（SQLOutputValue 的本地形状，不依赖类型导出面）。 */
 type RawRow = Record<string, null | number | bigint | string | Uint8Array>;
@@ -172,6 +205,16 @@ function rowToSubscription(r: RawRow): SubscriptionRow {
     ...str(r.scope) !== undefined ? { scope: str(r.scope) as SubscriptionRow["scope"] } : {},
     createdAt: Number(r.created_at),
     ...num(r.ttl_ms) !== undefined ? { ttlMs: num(r.ttl_ms) } : {},
+    // 票 24 生命周期字段（评审 A1）：缺列（旧库未迁移不应发生——构造时补列）或 NULL = 字段缺省
+    ...str(r.check_name) !== undefined ? { check: str(r.check_name) } : {},
+    ...str(r.on_predicate) !== undefined ? { on: str(r.on_predicate) } : {},
+    ...bool(r.once) !== undefined ? { once: bool(r.once) } : {},
+    ...bool(r.flip) !== undefined ? { flip: bool(r.flip) } : {},
+    ...str(r.ready_check) !== undefined ? { readyCheck: str(r.ready_check) } : {},
+    ...str(r.thresholds_json) !== undefined ? { thresholds: JSON.parse(String(r.thresholds_json)) as SubscriptionRow["thresholds"] } : {},
+    ...num(r.closed_at) !== undefined ? { closedAt: num(r.closed_at) } : {},
+    ...str(r.closed_reason) !== undefined ? { closedReason: str(r.closed_reason) as SubscriptionRow["closedReason"] } : {},
+    ...str(r.phase) !== undefined ? { phase: str(r.phase) as SubscriptionRow["phase"] } : {},
   };
 }
 
@@ -210,6 +253,9 @@ function rowToRunLedger(r: RawRow): RunLedgerRow {
     consecutiveFails: Number(r.consecutive_fails),
     ...str(r.last_verdict) !== undefined ? { lastVerdict: str(r.last_verdict) as RunLedgerRow["lastVerdict"] } : {},
     ...num(r.next_due_at) !== undefined ? { nextDueAt: num(r.next_due_at) } : {},
+    ...str(r.entity_ref_type) !== undefined ? { entityRefType: str(r.entity_ref_type) } : {},
+    ...str(r.entity_ref_key) !== undefined ? { entityRefKey: str(r.entity_ref_key) } : {},
+    ...num(r.generation) !== undefined ? { generation: num(r.generation) } : {},
   };
 }
 
@@ -228,6 +274,10 @@ export class SqliteStore implements Store {
     this.db.exec("PRAGMA journal_mode = WAL"); // 读者不阻塞单写者（#31 WAL 裁定）
     this.db.exec("PRAGMA synchronous = NORMAL");
     this.db.exec(SCHEMA);
+    for (const m of MIGRATIONS) {
+      const cols = this.db.prepare(`SELECT name FROM pragma_table_info('${m.table}')`).all() as RawRow[];
+      if (!cols.some((c) => c.name === m.column)) this.db.exec(m.ddl);
+    }
   }
 
   close(): void {
@@ -320,9 +370,15 @@ export class SqliteStore implements Store {
         return r && rowToSubscription(r);
       },
       putSubscription: (row) => {
-        this.st("INSERT INTO subscriptions (subscription_id, session_id, entity_ref_type, entity_ref_key, template, origin, scope, created_at, ttl_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (subscription_id) DO UPDATE SET session_id = excluded.session_id, entity_ref_type = excluded.entity_ref_type, entity_ref_key = excluded.entity_ref_key, template = excluded.template, origin = excluded.origin, scope = excluded.scope, created_at = excluded.created_at, ttl_ms = excluded.ttl_ms").run(
+        this.st("INSERT INTO subscriptions (subscription_id, session_id, entity_ref_type, entity_ref_key, template, origin, scope, created_at, ttl_ms, check_name, on_predicate, once, flip, ready_check, thresholds_json, closed_at, closed_reason, phase) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (subscription_id) DO UPDATE SET session_id = excluded.session_id, entity_ref_type = excluded.entity_ref_type, entity_ref_key = excluded.entity_ref_key, template = excluded.template, origin = excluded.origin, scope = excluded.scope, created_at = excluded.created_at, ttl_ms = excluded.ttl_ms, check_name = excluded.check_name, on_predicate = excluded.on_predicate, once = excluded.once, flip = excluded.flip, ready_check = excluded.ready_check, thresholds_json = excluded.thresholds_json, closed_at = excluded.closed_at, closed_reason = excluded.closed_reason, phase = excluded.phase").run(
           row.subscriptionId, row.sessionId, row.entityRefType, row.entityRefKey,
           row.template ?? null, row.origin, row.scope ?? null, row.createdAt, row.ttlMs ?? null,
+          row.check ?? null, row.on ?? null,
+          row.once === undefined ? null : row.once ? 1 : 0,
+          row.flip === undefined ? null : row.flip ? 1 : 0,
+          row.readyCheck ?? null,
+          row.thresholds === undefined ? null : JSON.stringify(row.thresholds),
+          row.closedAt ?? null, row.closedReason ?? null, row.phase ?? null,
         );
         mark("subscriptions");
       },
@@ -374,8 +430,9 @@ export class SqliteStore implements Store {
         return r && rowToRunLedger(r);
       },
       putRunLedger: (row) => {
-        this.st("INSERT INTO run_ledger (slot_key, epoch, refcount, consecutive_fails, last_verdict, next_due_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (slot_key) DO UPDATE SET epoch = excluded.epoch, refcount = excluded.refcount, consecutive_fails = excluded.consecutive_fails, last_verdict = excluded.last_verdict, next_due_at = excluded.next_due_at").run(
+        this.st("INSERT INTO run_ledger (slot_key, epoch, refcount, consecutive_fails, last_verdict, next_due_at, entity_ref_type, entity_ref_key, generation) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (slot_key) DO UPDATE SET epoch = excluded.epoch, refcount = excluded.refcount, consecutive_fails = excluded.consecutive_fails, last_verdict = excluded.last_verdict, next_due_at = excluded.next_due_at, entity_ref_type = excluded.entity_ref_type, entity_ref_key = excluded.entity_ref_key, generation = excluded.generation").run(
           row.slotKey, row.epoch, row.refcount, row.consecutiveFails, row.lastVerdict ?? null, row.nextDueAt ?? null,
+          row.entityRefType ?? null, row.entityRefKey ?? null, row.generation ?? null,
         );
         mark("run_ledger");
       },

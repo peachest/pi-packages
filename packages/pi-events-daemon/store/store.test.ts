@@ -243,6 +243,39 @@ function dualSuite(label: string, make: () => Store & { close?(): void }): void 
       s.close?.();
     });
 
+    it("票 24 订阅生命周期字段写后即读全字段往返（评审 A1：check/on/once/flip/readyCheck/thresholds/closedAt/closedReason/phase）", () => {
+      const s = make();
+      const base = { subscriptionId: "s1", sessionId: "sess", entityRefType: "a", entityRefKey: "1", origin: "session" as const, createdAt: 5 };
+      const full: SubscriptionRow = {
+        ...base,
+        template: "tpl",
+        check: "fixture-cmd",
+        on: "passed",
+        once: true,
+        flip: false,
+        readyCheck: "ready-cmd",
+        thresholds: { failureThreshold: 2, successThreshold: 3 },
+        closedAt: 9,
+        closedReason: "once-passed",
+        phase: "flip",
+      };
+      s.putSubscription(full);
+      expect(s.getSubscription("s1")).toEqual(full);
+      // 缺省可选字段保持缺省（幂等比较/换参检测依赖 undefined 语义，不得伪造 false/0）
+      s.putSubscription(base);
+      expect(s.getSubscription("s1")).toEqual(base);
+      s.close?.();
+    });
+
+    it("run_ledger 槽身份两字段写后即读往返（评审 A2：entityRefType/entityRefKey）+ 缺省保持缺省", () => {
+      const s = make();
+      s.putRunLedger({ slotKey: "k", epoch: 1, refcount: 2, consecutiveFails: 0, entityRefType: "a", entityRefKey: "external/1" });
+      expect(s.getRunLedger("k")).toEqual({ slotKey: "k", epoch: 1, refcount: 2, consecutiveFails: 0, entityRefType: "a", entityRefKey: "external/1" });
+      s.putRunLedger({ slotKey: "k2", epoch: 1, refcount: 0, consecutiveFails: 0 });
+      expect(s.getRunLedger("k2")).toEqual({ slotKey: "k2", epoch: 1, refcount: 0, consecutiveFails: 0 });
+      s.close?.();
+    });
+
     it("notifications：非单调 eventSeq 下增量仍按插入序返回（下推后语义与 fake 对齐）", () => {
       const s = make();
       s.tx((tx) => {
@@ -386,6 +419,56 @@ describe("ticket 22: 真 SQLite（B 层）", () => {
     expect(s.evidenceSearch("three")).toHaveLength(1);
     expect(s.evidenceSearch("beta")).toHaveLength(1);
     s.close();
+  });
+
+  it("迁移幂等：旧版库缺票 24/26 列 → 开库自动补列，旧行可读、新字段读写可用", () => {
+    const p = tmpDbPath();
+    // 手工建旧版（票 22 时刻）schema + 一条旧订阅行
+    const raw = new DatabaseSync(p);
+    raw.exec(
+      `CREATE TABLE subscriptions (
+        subscription_id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        entity_ref_type TEXT NOT NULL,
+        entity_ref_key TEXT NOT NULL,
+        template TEXT,
+        origin TEXT NOT NULL,
+        scope TEXT,
+        created_at INTEGER NOT NULL,
+        ttl_ms INTEGER
+      );
+      CREATE TABLE run_ledger (
+        slot_key TEXT PRIMARY KEY,
+        epoch INTEGER NOT NULL,
+        refcount INTEGER NOT NULL,
+        consecutive_fails INTEGER NOT NULL,
+        last_verdict TEXT,
+        next_due_at INTEGER
+      );`,
+    );
+    raw.prepare("INSERT INTO subscriptions (subscription_id, session_id, entity_ref_type, entity_ref_key, origin, created_at) VALUES ('legacy', 'sess', 'a', '1', 'session', 0)").run();
+    raw.close();
+
+    const s = new SqliteStore(p);
+    expect(s.getSubscription("legacy")).toMatchObject({ subscriptionId: "legacy", createdAt: 0 }); // 旧行可读
+    // 新字段经补列后写入即读（幂等关闭簿记/阈值/相位全走持久层）
+    const row = s.getSubscription("legacy")!;
+    s.putSubscription({ ...row, check: "cmd", once: true, closedAt: 7, closedReason: "cancelled", thresholds: { failureThreshold: 2, successThreshold: 2 } });
+    expect(s.getSubscription("legacy")).toMatchObject({
+      check: "cmd",
+      once: true,
+      closedAt: 7,
+      closedReason: "cancelled",
+      thresholds: { failureThreshold: 2, successThreshold: 2 },
+    });
+    s.putRunLedger({ slotKey: "k", epoch: 0, refcount: 1, consecutiveFails: 0, entityRefType: "a", entityRefKey: "1" });
+    expect(s.getRunLedger("k")).toMatchObject({ entityRefType: "a", entityRefKey: "1" });
+    s.close();
+
+    // 重开：迁移重复执行不抛（幂等），数据保持
+    const s2 = new SqliteStore(p);
+    expect(s2.getSubscription("legacy")?.check).toBe("cmd");
+    s2.close();
   });
 
   it("defaultStorePath：正典数据布局形状（不触盘）", () => {

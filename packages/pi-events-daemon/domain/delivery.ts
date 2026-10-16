@@ -218,6 +218,16 @@ export function validateAddressing(input: unknown): AddressingValidation {
 	return { ok: false, reason: `origin ∈ {session, auto}，得到 ${String(o.origin)}` };
 }
 
+/**
+ * on 谓词 × 事件匹配（票 24+26 评审 F18）：fanOut 创建 delivery 前逐订阅评估。
+ * on 形状 = 状态值 / 状态集（SubscriptionOpts.on），按事件终态 to 判定；缺省（未设）收全部事件。
+ * shortcut: 命名转换谓词（如 digest-changed）post-MVP——形状落定前仅支持终态匹配，需用时升级。
+ */
+export function onMatches(ev: { to: string }, on: string | string[] | undefined): boolean {
+	if (on === undefined) return true;
+	return Array.isArray(on) ? on.includes(ev.to) : on === ev.to;
+}
+
 /** 编址推导的投递目标（#31：session → sourceSessionId 精确；auto → scope 内全部活跃 session，不留 pending 行）。 */
 export function deliveryTargets(
 	addressing: SubscriptionAddressing,
