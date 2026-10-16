@@ -95,7 +95,14 @@ export interface WakeHandle {
 }
 
 export function startWake(deps: WakeDeps): WakeHandle {
-  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  let cancelSleep: (() => void) | null = null;
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => {
+    const timer = setTimeout(resolve, ms);
+    cancelSleep = () => {
+      clearTimeout(timer); // 评审 M：stop 清退避计时器——不拖住宿主进程退出
+      resolve(); // 已 resolve 的再 resolve 无害；循环醒来后由 while(!stopped) 退出
+    };
+  }));
   const socketPath = deps.socketPath ?? resolveSocketPath(deps.env ?? process.env);
   const seen = new Set<string>();
 
@@ -128,6 +135,12 @@ export function startWake(deps: WakeDeps): WakeHandle {
       attempts++;
       try {
         client = await connectEvents(socketPath, { epoch: readDaemonEpoch(socketPath) });
+        if (stopped) {
+          // 评审 H：stop 竞态守卫——连接完成时已停摆 → 立即关闭，不注册旧 session/注入回调
+          await client.close();
+          client = null;
+          return;
+        }
         connected = true;
         failures = 0; // 传输恢复：退避归位
         client.onNotification((method, params) => {
@@ -158,6 +171,7 @@ export function startWake(deps: WakeDeps): WakeHandle {
   return {
     stop: async () => {
       stopped = true;
+      cancelSleep?.();
       try {
         await client?.close();
       } catch {

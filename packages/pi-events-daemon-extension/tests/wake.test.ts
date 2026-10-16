@@ -5,7 +5,7 @@
  */
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { entityRefKeyOf } from "pi-events-daemon/domain.ts";
 import { WAKE_BACKOFF_BASE_MS, WAKE_BACKOFF_MAX_MS, startWake, wakeBackoffMs, type WakeInjection } from "../index.ts";
 import { connectWakeClient, startTestDaemon, waitFor, type TestDaemon } from "./harness.ts";
@@ -123,6 +123,49 @@ describe("票 36：断线重连 → snapshot 冲刷不丢不重（去重断言�
       await wake.stop();
     } finally {
       await wake.stop();
+    }
+  });
+});
+
+describe("评审 H：stop 竞态——连接完成于 stop 之后 → 零注册零注入", () => {
+  it("startWake 同步返回后立即 stop（connectEvents 仍在途）→ 连接完成不注册旧 session/注入回调", async () => {
+    const daemon: TestDaemon = startTestDaemon();
+    try {
+      const r = recorder();
+      // startWake 同步段已发起 connectEvents（I/O 完成前不可能 resolve）：stop 必先于连接完成到达
+      const wake = startWake({ sessionId: "s1", socketPath: daemon.socketPath, inject: r.inject, notify: r.notify, sleep: r.sleep });
+      await wake.stop();
+      await new Promise((res) => setTimeout(res, 80)); // 让在途连接完成，守卫应立即关闭
+      expect(daemon.sessionStarted).toEqual([]); // 零注册（旧 session 不上装）
+      expect(wake.isConnected()).toBe(false);
+      daemon.handle.broadcastWake("wake", { sessionId: "s1", count: 1, entries: [{ notificationId: "n-race", entityRef: WIRE, verdict: "failed" }] });
+      await new Promise((res) => setTimeout(res, 60));
+      expect(r.injections).toEqual([]); // 注入回调未装（零 socket 推送到达）
+    } finally {
+      await daemon.close();
+    }
+  });
+});
+
+describe("评审 M：stop 后退避计时器可取消（不拖住宿主进程）", () => {
+  it("socket 不可达 → 缺省退避计时器挂起 → stop 清除（timer 归零）", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const missing = join(tmpdir(), `pi-ext-t36-${Date.now()}-cancel.sock`);
+      const notifications: Array<{ message: string; type?: string }> = [];
+      // 不注入 sleep：走缺省可取消延时（fake timer 承载）；连接失败是真 I/O，与 fake timer 无关
+      const wake = startWake({
+        sessionId: "s1",
+        socketPath: missing,
+        inject: () => {},
+        notify: (message, type) => notifications.push({ message, type }),
+      });
+      while (notifications.length === 0) await new Promise((res) => setImmediate(res));
+      expect(vi.getTimerCount()).toBe(1); // 首轮 2s 退避计时器在挂
+      await wake.stop();
+      expect(vi.getTimerCount()).toBe(0); // stop 清除退避计时器
+    } finally {
+      vi.useRealTimers();
     }
   });
 });

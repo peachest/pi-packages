@@ -64,9 +64,10 @@ export default function eventsDaemonExtension(pi: ExtensionAPI, deps: ExtensionD
   // 票 35 声明链 + 票 36 wake（SESSION_START：长连接建立 = SESSION_START 信号，#31）。
   let wake: WakeHandle | null = null;
   pi.on("session_start", (event, ctx) => {
+    void wake?.stop(); // 评审 H：任何 session_start（含 fork）先退位旧 handle——fork 检查前 stop+清引用，
+    wake = null; // 父长连接的注入回调不得活到子会话（no-inherit）
     if (event.reason === "fork") return; // fork no-inherit：子会话不重声明、不建长连接（零推送）
     void declareFromEventsJson(pi, ctx, { sender, templatesDir: deps.templatesDir, templates: deps.templates });
-    wake?.stop(); // 会话切换：旧长连接退位
     wake = startWake({
       sessionId: ctx.sessionManager.getSessionId(),
       socketPath: deps.socketPath,
