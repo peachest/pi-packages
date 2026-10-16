@@ -185,10 +185,10 @@ describe("组 3：startLoops 假时钟/假 store 启动 + 双轨重启恢复", (
     store.putEntity({ type: REF.type, key: REF.key, state: null });
     const loops = startLoops(makeCtx(store, { clock }));
 
-    expect(clock.pendingCount).toBe(0); // 骨架不排定时器；L1-L4 兜底扫随后续票挂入
+    expect(clock.pendingCount).toBe(1); // 票 27：唯一常驻定时器 = 1s 兜底扫（丢唤醒自愈），无隐藏 busy-poll（票 25 零定时器 premise 随 L2 挂入更新）
     loops.submit({ kind: "transition", ref: REF, verdict: "failed", occurredAt: at(1) });
-    clock.step(60_000); // 推演安全：无定时器可触发，零副作用
-    expect(clock.pendingCount).toBe(0);
+    clock.step(60_000); // 推演安全：兜底扫周期触发无副作用（空投递面）
+    expect(clock.pendingCount).toBe(1);
     expect(store.getEntity(REF.type, REF.key)?.state).toBe("failed");
 
     loops.stop();
@@ -633,7 +633,7 @@ describe("评审修复 — D 组（调度面）", () => {
     clock.step(0); // 新建槽首探（timer due 0）→ 同步失败回流 → reschedule 见 nextDueAt 哨兵
     await micro();
     expect(store.getRunLedger(SLOT_KEY)?.nextDueAt).toBe(Number.MAX_SAFE_INTEGER);
-    expect(clock.pendingCount).toBe(0); // 哨兵不排定时器；未修时 delay=MAX_SAFE_INTEGER 常驻（真 Node 并成 1ms 忙循环）
+    expect(clock.pendingCount).toBe(1); // 哨兵不排定时器（未修时 delay=MAX_SAFE_INTEGER 常驻，真 Node 并成 1ms 忙循环）；基线 1 = 票 27 L2 兜底扫
     expect(loops.errors).toHaveLength(0);
     loops.stop();
   });
@@ -729,5 +729,118 @@ describe("评审修复 — E 组（loops 面）", () => {
     expect(loops.errors).toHaveLength(0); // 无 TDZ ReferenceError（也未静默吞进 prober.deliver）
     expect(store.getRunLedger(SLOT_KEY)?.lastVerdict).toBe("waiting"); // verdict 已应用（未修时 completion 丢失）
     loops.stop();
+  });
+});
+
+// ==================== 票 27 — L2 Deliver：唤醒双通道 + 投递铁律 + 退避 dead-letter + batch 合流 + snapshot + 24h re-push ====================
+
+const DELIVER_BATCH_MS = 2000;
+const NID = (order: number) => deterministicEventId(REF, order);
+type PushLine = { count: number; entries: { notificationId: string; entityRef: string; verdict: string }[] };
+const lineOf = (pusher: FakePusher, at: number): PushLine => JSON.parse(pusher.pushed[at]!) as PushLine;
+
+/** 直接种订阅行（不经 subscribe op：绕开 RunnerSlot/prober，投递面测试只关心 fanOut 编址输入）。 */
+const seedSub = (store: MemStore, sessionId = "s1"): void => {
+  store.putSubscription({
+    subscriptionId: `sub-${sessionId}`,
+    sessionId,
+    entityRefType: REF.type,
+    entityRefKey: REF.key,
+    origin: "session",
+    scope: "project",
+    createdAt: 0,
+  });
+};
+
+describe("票 27 组 L2-1 — 唤醒双通道：update_hook 毫秒级主路径 + 1s 兜底补投（丢唤醒自愈）", () => {
+  it("update_hook 唤醒：transition→outbox→fanOut→pending 入批开窗全程同步（零时钟推进窗口定时器已在）", async () => {
+    const store = createMemoryStore();
+    store.putEntity({ type: REF.type, key: REF.key, state: null });
+    seedSub(store);
+    const clock = new FakeClock();
+    const pusher = new FakePusher();
+    const loops = startLoops(makeCtx(store, { clock, pusher }));
+    loops.sessionStart("s1"); // 活跃登记（fanOut 在线分支的 runtime 面）
+
+    loops.submit({ kind: "transition", ref: REF, verdict: "passed", occurredAt: at(1) });
+    // 毫秒级主路径证据：零时钟推进内投递面已开窗（fallback 兜底 + 批窗口 = 2 定时器）
+    expect(clock.pendingCount).toBe(2);
+    expect(store.pendingDeliveries({ sessionId: "s1" })).toHaveLength(1); // fanOut 已物化 pending 行
+
+    clock.step(1000); // 兜底 tick（行已在批，不重排）
+    clock.step(1000); // 窗口 2000ms 到点冲刷——若唤醒丢失则需兜底 1s + 窗口 2s = 3s，此处 2s 即达
+    await micro();
+    expect(pusher.pushed).toHaveLength(1);
+    const line = lineOf(pusher, 0);
+    expect(line.count).toBe(1);
+    expect(line.entries[0]).toEqual({
+      notificationId: NID(1),
+      entityRef: "fixture:widget:external/fixture-1",
+      verdict: "passed",
+    });
+    // 投递铁律两段式 ack 段一：推送成功 → pending→accepted（verified 归 I9，L2 永不写）
+    expect(store.getDelivery(NID(1), "s1")?.state).toBe("accepted");
+  });
+
+  it("update_hook 丢失（循环未运行时落盘的 pending 行）→ 1s 兜底扫补投：1s 入批开窗、3s 冲刷", async () => {
+    const store = createMemoryStore();
+    store.putEntity({ type: REF.type, key: REF.key, state: null });
+    seedSub(store);
+    // 循环未运行时落盘（丢唤醒形态）：event/outbox/delivery 全在 store，无任何唤醒到达 loops
+    store.appendEventIfMissing({ eventId: NID(1), eventSeq: 1, entityRefType: REF.type, entityRefKey: REF.key, from: "passed", to: "passed", occurredAt: at(1) });
+    store.putOutbox({ notificationId: NID(1), eventSeq: 1 });
+    store.putDelivery({ notificationId: NID(1), sessionId: "s1", state: "pending", recordEpoch: 0 });
+
+    const clock = new FakeClock();
+    const pusher = new FakePusher();
+    const loops = startLoops(makeCtx(store, { clock, pusher }));
+    // 不 sessionStart：sessionStart 自身是唤醒通道（snapshot 含 pending 行会立即冲刷）——
+    // 本测隔离兜底通道：行在 store、无任何唤醒到达，唯一拾取面 = 1s 兜底扫
+    expect(pusher.pushed).toHaveLength(0);
+
+    clock.step(999);
+    expect(pusher.pushed).toHaveLength(0); // 1s 兜底未到
+    clock.step(1); // 兜底扫：outbox 补消费（fanOut I10 幂等）+ pending 入批开窗
+    expect(clock.pendingCount).toBe(2); // fallback 兜底 + 新开批窗口
+    clock.step(1999);
+    expect(pusher.pushed).toHaveLength(0); // 窗口未到
+    clock.step(1);
+    await micro();
+    expect(pusher.pushed).toHaveLength(1); // 兜底补投完成
+    expect(store.getDelivery(NID(1), "s1")?.state).toBe("accepted");
+  });
+});
+
+describe("票 27 组 L2-2 — E2 退避序列 2s→…→5min×5→dead-letter（投递失败不丢不哑）", () => {
+  it("14 次投递全失败：8 级指数等待后 5min 封顶 ×5，第 14 次失败进 dead-letter 终态且不再自动重试", async () => {
+    const store = createMemoryStore();
+    store.putEntity({ type: REF.type, key: REF.key, state: null });
+    seedSub(store);
+    const clock = new FakeClock();
+    const pusher = new FakePusher();
+    for (let i = 0; i < 14; i++) pusher.failures.push(new Error(`down-${i}`));
+    const loops = startLoops(makeCtx(store, { clock, pusher }));
+    loops.sessionStart("s1");
+    loops.submit({ kind: "transition", ref: REF, verdict: "failed", occurredAt: at(1) }); // failed 绕行：首推立即
+    await micro(); // push#1 拒绝结算 → 退避 2s
+    expect(pusher.failures).toHaveLength(13);
+    expect(store.getDelivery(NID(1), "s1")?.state).toBe("pending"); // 失败不迁状态，留在重试态
+
+    const waits = [2, 4, 8, 16, 32, 64, 128, 256, 300, 300, 300, 300, 300]; // 秒；300 = 5min 封顶 ×5
+    let pushes = 1;
+    for (const w of waits) {
+      clock.step(w * 1000 - 1);
+      expect(pusher.failures).toHaveLength(14 - pushes); // 未到点：无新推
+      clock.step(1);
+      await micro();
+      pushes += 1;
+      expect(pusher.failures).toHaveLength(14 - pushes);
+    }
+    expect(pusher.failures).toHaveLength(0); // 14 次推送全部失败
+    expect(store.getDelivery(NID(1), "s1")?.state).toBe("dead-letter"); // 退避耗尽 → dead-letter（正典边 retry-exhausted）
+    clock.step(10 * 60_000);
+    await micro();
+    expect(store.getDelivery(NID(1), "s1")?.state).toBe("dead-letter"); // D2a 终态：不再自动重试
+    expect(loops.errors).toHaveLength(0); // 投递失败是预期路径，不进 errors
   });
 });
