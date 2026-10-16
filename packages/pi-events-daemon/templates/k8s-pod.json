@@ -1,0 +1,40 @@
+{
+  "id": "k8s-pod",
+  "entityType": "k8s:pod",
+  "version": 1,
+  "states": ["passed", "failed", "waiting"],
+  "transitions": [
+    { "from": "waiting", "to": "passed", "description": "probe 通过（如 Ready=True）" },
+    { "from": "waiting", "to": "failed", "description": "probe 失败" },
+    { "from": "passed", "to": "failed", "description": "状态翻转" },
+    { "from": "failed", "to": "passed", "description": "恢复" },
+    { "from": "passed", "to": "passed", "description": "自转换（contentIdentity 变化，ADR 0003）" },
+    { "from": "failed", "to": "failed", "description": "自转换（contentIdentity 变化）" },
+    { "from": "waiting", "to": "waiting", "description": "探针异常，仍在等待" }
+  ],
+  "payloadSchema": {
+    "type": "object",
+    "properties": {
+      "namespace": { "type": "string", "description": "k8s 命名空间" },
+      "pod": { "type": "string", "description": "pod 名" },
+      "cluster": { "type": "string", "description": "集群别名（多集群显式路由）" }
+    }
+  },
+  "keyGenerator": { "kind": "fields", "fields": ["namespace", "pod"] },
+  "schedule": { "type": "interval", "every": "30s" },
+  "onTransition": [],
+  "templates": [
+    {
+      "name": "pod-ready",
+      "check": "kubectl get pod {pod} -n {namespace} -o jsonpath='{.status.conditions[?(@.type==\"Ready\")].status}' | grep -q True",
+      "states": ["passed", "failed", "waiting"],
+      "params": {
+        "namespace": "k8s 命名空间",
+        "pod": "pod 名"
+      },
+      "usage": "pod Ready 判定：Ready=True→passed，否则 failed；k8s-watch 源（source 形随 checker 声明，票 24）可免轮询"
+    }
+  ],
+  "stateMigrations": {},
+  "sideEffectPatterns": ["kubectl delete", "kubectl apply", "kubectl scale"]
+}
