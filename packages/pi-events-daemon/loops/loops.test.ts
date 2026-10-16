@@ -731,3 +731,144 @@ describe("评审修复 — E 组（loops 面）", () => {
     loops.stop();
   });
 });
+
+// =============================================================================
+// 票 28 — L3 Verify：accepted 投递的 I9 点查收口（两段式 ack 段二；唯一权威点 = transcript-adapter）
+// A 层：StubAdapter 定向回放 VerifyResult（C1 降级标志手控）；FakeClock step(0) 触发启动首扫。
+// =============================================================================
+
+import type {
+  BackendDetection,
+  LocateResult,
+  SelfCheckResult,
+  SessionRef,
+  TranscriptAdapter,
+  VerifyResult,
+} from "../transcript-adapter/index.ts";
+
+const NOTIF = "evt:fixture:widget#1";
+const SESS_REF: SessionRef = { sessionFile: "/fixtures/sessions/sess-1.jsonl", sessionId: "sess-1" };
+
+/** 定向回放 adapter（票 19-21 接口面全实现；verify 永不抛——C1 契约同形）。 */
+class StubAdapter implements TranscriptAdapter {
+  degraded = false;
+  readonly results = new Map<string, VerifyResult>();
+  readonly calls: string[] = [];
+  async locate(_ref: SessionRef): Promise<LocateResult | null> {
+    return null;
+  }
+  async verify(_ref: SessionRef, notificationId: string): Promise<VerifyResult> {
+    this.calls.push(notificationId);
+    return this.results.get(notificationId) ?? { verdict: "waiting", reason: "not-found" };
+  }
+  async registerSession(_ref: SessionRef): Promise<BackendDetection> {
+    return { backend: "jsonl" };
+  }
+  async selfCheck(): Promise<SelfCheckResult> {
+    return { ok: true };
+  }
+  isDegraded(): boolean {
+    return this.degraded;
+  }
+  degradeReason(): string | undefined {
+    return this.degraded ? "stub-degraded" : undefined;
+  }
+}
+
+const transcriptCtx = (adapter: StubAdapter): Partial<LoopsCtx> => ({
+  transcript: { adapter, sessionRefOf: (id) => (id === "sess-1" ? SESS_REF : undefined) },
+});
+
+const seedDelivery = (store: MemStore, state: "accepted" | "parked", notificationId = NOTIF) =>
+  store.putDelivery({ notificationId, sessionId: "sess-1", state, recordEpoch: 0 });
+
+describe("票 28 — L3 verify 扫描：两段式 ack 收口（accepted→verified 全链）", () => {
+  it("accepted→verified：点查命中（passed 条目落盘）→ L0 队列 kernel.verify 收口", async () => {
+    const store = createMemoryStore();
+    seedDelivery(store, "accepted");
+    const adapter = new StubAdapter();
+    adapter.results.set(NOTIF, { verdict: "passed", format: "v3" });
+    const clock = new FakeClock();
+    const loops = startLoops(makeCtx(store, { clock, ...transcriptCtx(adapter) }));
+
+    clock.step(0); // 启动首扫
+    await micro();
+    expect(store.getDelivery(NOTIF, "sess-1")?.state).toBe("verified");
+    expect(loops.errors).toHaveLength(0);
+    loops.stop();
+  });
+
+  it("not-found 未落盘不收口；unknown（corrupt/歧义）保守不收口；waiting 命中条目 = 落盘即投递（I9 在场判定）亦收口", async () => {
+    const store = createMemoryStore();
+    seedDelivery(store, "accepted", "evt:a#1");
+    seedDelivery(store, "accepted", "evt:b#2");
+    seedDelivery(store, "accepted", "evt:c#3");
+    const adapter = new StubAdapter();
+    adapter.results.set("evt:a#1", { verdict: "waiting", reason: "not-found" });
+    adapter.results.set("evt:b#2", { verdict: "unknown", reason: "corrupt-line" });
+    adapter.results.set("evt:c#3", { verdict: "waiting" });
+    const clock = new FakeClock();
+    const loops = startLoops(makeCtx(store, { clock, ...transcriptCtx(adapter) }));
+    clock.step(0);
+    await micro();
+    expect(store.getDelivery("evt:a#1", "sess-1")?.state).toBe("accepted");
+    expect(store.getDelivery("evt:b#2", "sess-1")?.state).toBe("accepted");
+    expect(store.getDelivery("evt:c#3", "sess-1")?.state).toBe("verified");
+    loops.stop();
+  });
+
+  it("parked→drain→verified：drain-redeliver 回 accepted 后同一扫描收口（L2/L3 协作正典链）", async () => {
+    const store = createMemoryStore();
+    seedDelivery(store, "parked");
+    const adapter = new StubAdapter();
+    adapter.results.set(NOTIF, { verdict: "failed", format: "v4" });
+    const clock = new FakeClock();
+    const loops = startLoops(makeCtx(store, { clock, ...transcriptCtx(adapter) }));
+
+    loops.submit({ kind: "drain" }); // L2 侧触发形态（SESSION_START drain 同路）：parked → accepted
+    expect(store.getDelivery(NOTIF, "sess-1")?.state).toBe("accepted");
+
+    clock.step(0);
+    await micro();
+    expect(store.getDelivery(NOTIF, "sess-1")?.state).toBe("verified");
+    loops.stop();
+  });
+
+  it("C1 降级对接：降级期零点查零收口（推送即 accepted 权威基面）；恢复后下一扫正常收口", async () => {
+    const store = createMemoryStore();
+    seedDelivery(store, "accepted");
+    const adapter = new StubAdapter();
+    adapter.results.set(NOTIF, { verdict: "passed" });
+    adapter.degraded = true;
+    const clock = new FakeClock();
+    const loops = startLoops(makeCtx(store, { clock, ...transcriptCtx(adapter) }));
+
+    clock.step(0);
+    await micro();
+    expect(adapter.calls).toHaveLength(0); // 降级期不点查
+    expect(store.getDelivery(NOTIF, "sess-1")?.state).toBe("accepted");
+
+    adapter.degraded = false; // selfCheck 成功恢复（票 21 恢复路径）
+    clock.step(1_000); // 下一扫（1s 周期）
+    await micro();
+    expect(store.getDelivery(NOTIF, "sess-1")?.state).toBe("verified");
+    loops.stop();
+  });
+
+  it("未注册 session 保持 accepted 待扫（sessionRefOf 无解析不收口不崩）；transcript 未接线 = L3 零定时器", async () => {
+    const store = createMemoryStore();
+    store.putDelivery({ notificationId: "evt:x#9", sessionId: "sess-unknown", state: "accepted", recordEpoch: 0 });
+    const bare = new FakeClock();
+    const bareLoops = startLoops(makeCtx(store, { clock: bare }));
+    bareLoops.stop(); // L3 未接线不挂定时器（L4 惰性首扫定时器面在 L4 组断言）
+
+    const adapter = new StubAdapter();
+    const clock = new FakeClock();
+    const loops = startLoops(makeCtx(store, { clock, ...transcriptCtx(adapter) }));
+    clock.step(0);
+    await micro();
+    expect(store.getDelivery("evt:x#9", "sess-unknown")?.state).toBe("accepted");
+    expect(loops.errors).toHaveLength(0);
+    loops.stop();
+  });
+});

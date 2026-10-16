@@ -37,6 +37,7 @@ import {
 import { Prober, type ProbeResult } from "../prober/index.ts";
 import type { Clock, Exec, Fs, Pusher } from "../fx/index.ts";
 import type { ProbeSpecRow, Store, SubscriptionRow } from "../store/index.ts";
+import type { SessionRef, TranscriptAdapter } from "../transcript-adapter/index.ts";
 
 /** L0 变更请求——kernel 变更方法（票 10 消费终点 transition/consumeIntent + 票 24/26 subscribe/cancel）的队列载体；
  *  probeVerdict 是 L1 回流（prober completion queue）进 L0 的串行链入口（D4：L1 消费回流，L0 唯一写者）。 */
@@ -47,7 +48,10 @@ export type MutationRequest =
   | { kind: "cancel"; req: CancelRequest }
   | { kind: "probeVerdict"; slotKey: string; verdict: Verdict; occurredAt: string;
       /** 评审 B 组：dispatch 时刻的槽 generation——旧代 completion 拒应用；缺省（watch 回流等无 dispatch 来源）不判代。 */
-      generation?: number };
+      generation?: number }
+  // 票 28：L3 verify 收口（I9 点查命中后经唯一写路径落账）+ drain 触发载体（L2/transport 接线前的队列面）
+  | { kind: "verify"; notificationId: string; sessionId: string }
+  | { kind: "drain"; sessionId?: string };
 
 
 /** 提交回调维护的状态缓存（只读视图；运行期唯一写点在 store.onWrite 回调内，启动时另有种子投影 = 已提交状态初始快照，票 25 验收面）。 */
@@ -70,6 +74,13 @@ export interface LoopsCtx {
   registry?: ReadonlyArray<ProfileRegistryEntry>;
   /** I12：本 daemon 实例世代（缺省 0 = 未接线） */
   ownerEpoch?: number;
+  /** 票 28 L3：I9 唯一权威点接线（adapter + session→transcript 解析，transport 注册面在组合根接入）。
+   *  缺省 = L3 关闭（零扫描零定时器）。 */
+  transcript?: {
+    adapter: TranscriptAdapter;
+    /** sessionId → SessionRef；未注册 session 的投递保持 accepted 待扫（level-trigger 自愈）。 */
+    sessionRefOf(sessionId: string): SessionRef | undefined;
+  };
 }
 
 export interface LoopsHandle {
@@ -147,6 +158,16 @@ export function startLoops(ctx: LoopsCtx): LoopsHandle {
         return;
       case "probeVerdict":
         applyProbeVerdict(req);
+        return;
+      case "verify":
+        // 出参 outcome 由 store 真相承载（level-trigger 下一扫自愈）；reason 面契约已由 kernel.verify 钉死
+        kernel.verify(req.notificationId, req.sessionId);
+        return;
+      case "drain":
+        kernel.drain({
+          ...(req.sessionId !== undefined ? { sessionId: req.sessionId } : {}),
+          now: ctx.clock.now(),
+        });
         return;
     }
   };
@@ -343,6 +364,54 @@ export function startLoops(ctx: LoopsCtx): LoopsHandle {
   dispatchDue(ctx.clock.now());
   reschedule();
 
+  // --- L3 Verify（票 28）：accepted 投递的 I9 点查收口（两段式 ack 段二）---
+  // 周期扫（1s，对齐 L2 兼底扫节奏；level-trigger：丢唤醒/迟到由下一扫自愈）。C1 降级（票 21 对接）：
+  // 降级期不点查不收口——推送即 accepted 权威基面；恢复后下一扫正常收口。
+  const L3_SCAN_INTERVAL_MS = 1_000;
+  const transcript = ctx.transcript;
+  let scanTimer: { cancel(): void } | null = null;
+  let scanning = false;
+  const verifyScan = (): void => {
+    if (!transcript || stopped || scanning) return;
+    if (transcript.adapter.isDegraded()) return;
+    const accepted = ctx.store.acceptedDeliveries({});
+    if (accepted.length === 0) return;
+    scanning = true;
+    void (async () => {
+      try {
+        for (const row of accepted) {
+          if (stopped) return;
+          const sessionRef = transcript.sessionRefOf(row.sessionId);
+          if (!sessionRef) continue; // 未注册 session：保持 accepted 待扫
+          const result = await transcript.adapter.verify(sessionRef, row.notificationId);
+          // I9 判定（domain transcriptVerifies 同语义：notificationId 落盘即投递）——
+          // 非 unknown 且非 not-found = 命中条目（passed/failed/waiting 皆已落盘）→ 经 L0 队列收口
+          if (result.verdict !== "unknown" && result.reason !== "not-found") {
+            doSubmit({ kind: "verify", notificationId: row.notificationId, sessionId: row.sessionId });
+          }
+        }
+      } catch (err) {
+        errors.push(err); // 扫描不死：下一 tick level-trigger 重扫
+      } finally {
+        scanning = false;
+      }
+    })();
+  };
+  let scannedOnce = false;
+  const scheduleVerifyScan = (): void => {
+    if (!transcript || stopped) return;
+    scanTimer = ctx.clock.setTimeout(
+      () => {
+        scannedOnce = true;
+        scanTimer = null;
+        verifyScan();
+        scheduleVerifyScan();
+      },
+      scannedOnce ? L3_SCAN_INTERVAL_MS : 0, // 启动首扫不等首周期
+    );
+  };
+  scheduleVerifyScan();
+
   return {
     submit: doSubmit,
     ingestProbeResult,
@@ -352,6 +421,8 @@ export function startLoops(ctx: LoopsCtx): LoopsHandle {
       stopped = true;
       scheduleTimer?.cancel();
       scheduleTimer = null;
+      scanTimer?.cancel(); // 票 28 L3 扫描定时器（未接线时为 null）
+      scanTimer = null;
       offWrite(); // 幂等取消订阅（票 25 Finding 2）：重复启停不累积监听器、旧闭包可回收
     },
   };
