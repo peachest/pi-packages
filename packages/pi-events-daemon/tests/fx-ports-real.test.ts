@@ -150,7 +150,7 @@ describe("fx 端口契约（票 12 断言 2：端口类型零业务泄漏 + Fs �
       readFile(path: string): Promise<string>;
       watch(path: string, onEvent: () => void, onError?: (err: unknown) => void): { close(): void };
     }>();
-    expectTypeOf<fx.Pusher>().toEqualTypeOf<{ push(line: string): Promise<void> }>();
+    expectTypeOf<fx.Pusher>().toEqualTypeOf<{ push(line: string): Promise<number> }>();
     expectTypeOf<fx.Clock["now"]>().toEqualTypeOf<() => number>();
     expectTypeOf<fx.Clock["setTimeout"]>().toEqualTypeOf<
       (fn: () => void, ms: number) => { cancel(): void }

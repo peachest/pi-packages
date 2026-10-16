@@ -956,14 +956,15 @@ describe("票 27 组 L2-4 — SESSION_START→drain（只投 parked D2a）+ wake
 // 票 27 ocr 评审修复 — L2 异步边界缺陷群（8H3M1L，逐 finding 回归）
 // =============================================================================
 
-/** 可脚本化推送器：hold（手动放行）/reject 注入 + 在飞并发计数（M3 单飞守卫断言面）；未排脚本立即成功。 */
+/** 可脚本化推送器：hold（手动放行）/reject 注入 + 在飞并发计数（M3 单飞守卫断言面）；未排脚本立即送达 1。
+ *  Pusher 契约（票 38 评审）：resolve = 送达数；hold 放行/默认路径送达 1，reject 路径保持抛错。 */
 class ScriptedPusher implements Pusher {
   readonly pushed: string[] = [];
   active = 0;
   maxConcurrent = 0;
-  private script: (() => Promise<void>)[] = [];
+  private script: (() => Promise<number>)[] = [];
 
-  push(line: string): Promise<void> {
+  push(line: string): Promise<number> {
     this.pushed.push(line);
     this.active += 1;
     this.maxConcurrent = Math.max(this.maxConcurrent, this.active);
@@ -971,11 +972,14 @@ class ScriptedPusher implements Pusher {
     const settle = () => {
       this.active -= 1;
     };
-    if (!next) return Promise.resolve().then(settle);
-    return next().then(settle, (err: unknown) => {
-      settle();
-      throw err;
-    });
+    if (!next) return Promise.resolve(1).then((n) => (settle(), n));
+    return next().then(
+      (n) => (settle(), n),
+      (err: unknown) => {
+        settle();
+        throw err;
+      },
+    );
   }
 
   enqueueHold(): { resolve(): void; reject(err: unknown): void } {
@@ -983,8 +987,8 @@ class ScriptedPusher implements Pusher {
     let j!: (e: unknown) => void;
     this.script.push(
       () =>
-        new Promise<void>((res, rej) => {
-          r = res;
+        new Promise<number>((res, rej) => {
+          r = () => res(1);
           j = rej;
         }),
     );
@@ -1328,5 +1332,70 @@ describe("票 27 评审修复 — M3：24h re-push 与常规批共享 per-sessio
     expect(store.getDelivery(NID(1), "s1")?.state).toBe("accepted"); // 不经 drain：状态不迁移
     expect(pusher.maxConcurrent).toBe(1);
     loops.stop();
+  });
+});
+
+// =============================================================================
+// 票 38 评审修复 — Group Push：broadcastWake 假成功（送达数门 H）+ sessionEnd 注销（M）
+// =============================================================================
+
+describe("票 38 评审修复 — Group Push H：0 送达不迁移（保持 pending，尽力唤醒不退避不 dead-letter）", () => {
+  it("零送达 push（resolve 0）→ pending 不变；反复重试仍 pending 不 dead-letter（客户端随时可连）", async () => {
+    const store = createMemoryStore();
+    store.putEntity({ type: REF.type, key: REF.key, state: null });
+    seedSub(store);
+    const clock = new FakeClock();
+    const zeroPusher: Pusher = { push: async () => 0 }; // transport 零注册连接形态：broadcastWake 送达 0
+    const loops = startLoops(makeCtx(store, { clock, pusher: zeroPusher }));
+    loops.sessionStart("s1");
+    loops.submit({ kind: "transition", ref: REF, verdict: "passed", occurredAt: at(1) });
+
+    clock.step(2000); // 窗口到点冲刷
+    await micro();
+    expect(store.getDelivery(NID(1), "s1")?.state).toBe("pending"); // 0 送达不迁移（修复前假迁移 accepted）
+
+    for (let i = 0; i < 16; i++) {
+      // 兜底重开窗反复重试：不进退避（否则 14 次后 dead-letter）、不假成功
+      clock.step(10_000);
+      await micro();
+      expect(store.getDelivery(NID(1), "s1")?.state).toBe("pending");
+    }
+    expect(loops.errors).toHaveLength(0);
+    loops.stop();
+  });
+});
+
+describe("票 38 评审修复 — Group Push M：sessionEnd 注销（断连后 fanOut 不再投它）", () => {
+  it("sessionEnd 从活跃面删除：后续事件编址 parked 零推送；重连 drain 后照常送达 accepted", async () => {
+    const store = createMemoryStore();
+    store.putEntity({ type: REF.type, key: REF.key, state: null });
+    seedSub(store);
+    const clock = new FakeClock();
+    const pusher = new FakePusher();
+    const loops = startLoops(makeCtx(store, { clock, pusher }));
+    loops.sessionStart("s1");
+    loops.sessionEnd("s1"); // 断连注销（transport onSessionEnd 接线）
+
+    loops.submit({ kind: "transition", ref: REF, verdict: "failed", occurredAt: at(1) }); // failed 绕行立即冲刷
+    await micro();
+    expect(store.getDelivery(NID(1), "s1")?.state).toBe("parked"); // 不在活跃面 → parked（修复前残留活跃假推送）
+    expect(pusher.pushed).toHaveLength(0);
+
+    loops.sessionStart("s1"); // 重连：drain（只投 parked D2a）+ snapshot 冲刷
+    await micro();
+    expect(pusher.pushed).toHaveLength(1);
+    expect(lineOf(pusher, 0).entries[0]!.notificationId).toBe(NID(1));
+    expect(store.getDelivery(NID(1), "s1")?.state).toBe("accepted");
+    loops.stop();
+  });
+
+  it("sessionEnd 未知/重复 session 幂等；stopped 后抛错（与 submit 同语义）", () => {
+    const store = createMemoryStore();
+    store.putEntity({ type: REF.type, key: REF.key, state: null });
+    const loops = startLoops(makeCtx(store));
+    expect(() => loops.sessionEnd("never-started")).not.toThrow();
+    expect(() => loops.sessionEnd("never-started")).not.toThrow(); // 重复注销幂等
+    loops.stop();
+    expect(() => loops.sessionEnd("s1")).toThrow(/loops stopped/); // stopped 后抛错
   });
 });

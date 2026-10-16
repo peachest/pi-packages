@@ -2,7 +2,8 @@ import * as net from "node:net";
 import { unlinkSync } from "node:fs";
 import type { Pusher } from "./types.ts";
 
-/** 真推送薄 adapter：unix socket 常驻监听，push 逐行广播给已连接 wake 客户端（daemon=服务端，extension 连入）。 */
+/** 真推送薄 adapter：unix socket 常驻监听，push 逐行广播给已连接 wake 客户端（daemon=服务端，extension 连入）。
+ *  push resolve = 实际送达数（写回调无错的连接数；零客户端 = 0，调用方不得迁移投递状态）。 */
 export class SocketPusher implements Pusher {
   private readonly server: net.Server;
   private readonly clients = new Set<net.Socket>();
@@ -26,21 +27,17 @@ export class SocketPusher implements Pusher {
     this.server.listen(socketPath);
   }
 
-  push(line: string): Promise<void> {
+  push(line: string): Promise<number> {
     if (this.listenError) return Promise.reject(this.listenError);
     const sockets = [...this.clients];
-    if (sockets.length === 0) return Promise.resolve(); // 无已连接客户端：本层无写对象；pending/snapshot+flush 语义归 transport/loops
-    return new Promise((resolve, reject) => {
+    if (sockets.length === 0) return Promise.resolve(0); // 无已连接客户端：送达 0（不假成功）；pending/snapshot+flush 语义归 transport/loops
+    return new Promise((resolve) => {
+      let delivered = 0;
       let pending = sockets.length;
-      let failed = false;
       for (const socket of sockets) {
         socket.write(line + "\n", (err) => {
-          if (err && !failed) {
-            failed = true;
-            reject(err);
-            return;
-          }
-          if (!failed && --pending === 0) resolve();
+          if (!err) delivered++;
+          if (--pending === 0) resolve(delivered);
         });
       }
     });

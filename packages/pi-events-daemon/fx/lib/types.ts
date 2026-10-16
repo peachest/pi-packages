@@ -33,9 +33,11 @@ export interface ExecResult {
   timedOut: boolean;
 }
 
-/** socket 通知推送：L2 投递出口。push resolve=accepted，reject=投递失败（fake 须镜像 close/reject 注入路径，票 13）。 */
+/** socket 通知推送：L2 投递出口。push resolve = 实际送达数（成功写的连接数；0 = 无人收到，
+ *  调用方不得迁移投递状态——票 38 评审 H：零客户端/写全败不假成功）；reject = 投递失败
+ *  （fake 须镜像 close/reject 注入路径，票 13）。 */
 export interface Pusher {
-  push(line: string): Promise<void>;
+  push(line: string): Promise<number>;
 }
 
 /** 只读文件面（fx.md“文件读写”的收窄裁定：MVP 消费者全部只读——transcript-adapter 只读、daemon-main 配置读）：接口无写方法。watch 是观察非写（票 18 fs-watch 原生推送停点）。 */

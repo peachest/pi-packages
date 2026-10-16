@@ -178,3 +178,19 @@ describe("ticket 29: transport 薄度（无策略渗入，源码审查）", () =
     }
   });
 });
+
+describe("票 38 评审修复 — Group Push：broadcastWake 返回实际送达数", () => {
+  it("0 注册连接 → 0；1 注册连接 → 1；断连后 → 0（0 送达上层不迁移投递状态）", async () => {
+    const registry = new Map<string, Push>();
+    const p = startServer({ onSessionStart: (sid, push) => registry.set(sid, push) });
+    expect(handle!.broadcastWake("wake", { n: 0 })).toBe(0); // 零客户端：不假成功
+
+    const a = await transport.connectEvents(p, { epoch: EPOCH });
+    a.startSession("s-A");
+    await waitFor(() => registry.has("s-A"), "registration");
+    expect(handle!.broadcastWake("wake", { n: 1 })).toBe(1);
+
+    await a.close();
+    await waitFor(() => handle!.broadcastWake("wake", { n: 2 }) === 0, "unregistration");
+  });
+});

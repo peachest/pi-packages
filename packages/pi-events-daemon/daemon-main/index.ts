@@ -167,8 +167,8 @@ export async function bootstrap(opts: BootstrapOptions = {}): Promise<DaemonHand
         } catch {
           /* 非信封行原样透传 */
         }
-        transport.broadcastWake("wake", params);
-        return Promise.resolve();
+        // 送达数透传（票 38 评审 H）：0 = 无人收到，loops 保持 pending 不迁移（零客户端不假成功）
+        return Promise.resolve(transport.broadcastWake("wake", params));
       },
     };
 
