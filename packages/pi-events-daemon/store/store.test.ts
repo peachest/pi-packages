@@ -126,6 +126,7 @@ function dualSuite(label: string, make: () => Store & { close?(): void }): void 
         tx.putDelivery(mk("n2", "sess1", "dead-letter"));
         tx.putDelivery(mk("n3", "sess2", "pending"));
         tx.putDelivery(mk("n4", "sess1", "parked"));
+        tx.putDelivery(mk("n5", "sess1", "accepted"));
       });
       expect(s.pendingDeliveries({ sessionId: "sess1" })).toHaveLength(1);
       expect(s.deadLetters({ sessionId: "sess1" })).toHaveLength(1);
@@ -135,6 +136,9 @@ function dualSuite(label: string, make: () => Store & { close?(): void }): void 
       // parkedDeliveries 同构直过滤（票 11 drain D2a 输入面）：只取 parked，不混入其它 state
       expect(s.parkedDeliveries({ sessionId: "sess1" })).toHaveLength(1);
       expect(s.parkedDeliveries({})).toHaveLength(1);
+      // acceptedDeliveries 同构直过滤（票 27 评审 H3：24h verified-absence 扫描输入面）
+      expect(s.acceptedDeliveries({ sessionId: "sess1" })).toHaveLength(1);
+      expect(s.acceptedDeliveries({})).toHaveLength(1);
       s.close?.();
     });
 

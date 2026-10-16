@@ -224,15 +224,16 @@ describe("票 23 组 3：链 C 里程碑 e2e（B 层进程外）——probe → 
     });
     expect(s.getEntity(REF.type, REF.key)?.state).toBe("failed");
 
-    // 投递面：fanOut 物化 notification（billboard verdict = probe verdict）+ pending delivery
-    new kernel.Kernel(s, STATES, 1).fanOut(notificationId, {
-      activeSessions: [{ sessionId: SESSION_ID, scope: "project" }],
-    });
+    // 投递面（票 27 起 L2 拥有 outbox 消费）：transition 落 outbox → L2 fanOut 编址（无活跃 session → parked）
+    // → SESSION_START drain（只投 parked，D2a）+ snapshot 推送；两段式 ack 段一：drained 行 parked→accepted。
+    // billboard verdict = probe verdict；notificationId 不变，仍为 verify 点查键。
+    l.sessionStart(SESSION_ID);
+    await tick(); // snapshot push settle（两段式 ack 段一落地）
     const billboard = JSON.parse(s.notifications({})[0]!.billboardJson) as { verdict: string };
     expect(billboard.verdict).toBe("failed");
-    expect(s.pendingDeliveries({ sessionId: SESSION_ID })).toEqual([
-      { notificationId, sessionId: SESSION_ID, state: "pending", recordEpoch: 0 },
-    ]);
+    expect(s.getDelivery(notificationId, SESSION_ID)).toMatchObject({
+      notificationId, sessionId: SESSION_ID, state: "accepted", recordEpoch: 0,
+    });
 
     // 进程外 leg：session transcript 落盘——extension 忠实转写 daemon 物化的通知（daemon 只读）
     const fs = new FakeFs({ [SESSION_FILE]: `${V3_HEADER}\n` });
