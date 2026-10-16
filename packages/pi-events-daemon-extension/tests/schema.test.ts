@@ -105,6 +105,21 @@ describe("票 34：完整校验器——daemon 最小校验同子集语义 + 扩
     ]);
   });
 
+  it("评审 M：递归 schema 同 $ref 不同值路径逐层校验——queryEntity children 嵌套子项类型不漏", () => {
+    const qe = (OP_SCHEMA.definitions as Record<string, JsonSchema>).queryEntity;
+    // 直接子项（既有行为锚点）
+    expect(validateFull(qe, { entityRef: "t:external/k", state: null, children: [42] }, OP_SCHEMA)).toEqual([
+      { path: "children[0]", message: '期望类型 "object"，实际 number' },
+    ]);
+    // 修复锚点：同 ref 二层（孙辈）曾因 visited 仅记 ref 被当循环截断跳过
+    const nested = { entityRef: "t:external/k", state: null, children: [{ entityRef: "t:external/k2", state: null, children: [42] }] };
+    expect(validateFull(qe, nested, OP_SCHEMA).map((i) => i.path)).toContain("children[0].children[0]");
+    // 合法嵌套仍放行
+    expect(
+      validateFull(qe, { entityRef: "t:external/k", state: null, children: [{ entityRef: "t:external/k2", state: null }] }, OP_SCHEMA),
+    ).toEqual([]);
+  });
+
   it("never-throw：垃圾 schema 与垃圾值只产出 issue 不崩", () => {
     expect(validateFull(null as unknown as JsonSchema, { x: 1 })).toEqual([]);
     expect(validateFull("garbage" as unknown as JsonSchema, 5)).toEqual([]);

@@ -14,6 +14,7 @@ import {
   buildToolDefs,
   createOpClient,
   loadOpSchema,
+  validateFull,
   type JsonSchema,
   type OpSender,
   type OpToolDef,
@@ -37,12 +38,38 @@ describe("票 34：9 op 工具注册 + 参数 schema 与 03 同源逐 op 对齐"
     expect(tools.map((t) => t.name).sort()).toEqual([...OP_NAMES].sort());
   });
 
-  it("每 op 工具 parameters 与 op.schema.json request 同源（deep equal，不复制不手写）", () => {
+  it("每 op 工具 parameters 与 op.schema.json request 同源（deep equal，不复制不手写；评审 H：definitions 内联）", () => {
     const props = OP_SCHEMA.properties as Record<string, { properties?: { request: JsonSchema }; description?: string }>;
     for (const tool of build()) {
-      expect(tool.parameters, `${tool.name} parameters 同源`).toEqual(props[tool.name].properties!.request);
+      expect(tool.parameters, `${tool.name} parameters 同源`).toEqual({
+        ...props[tool.name].properties!.request,
+        definitions: OP_SCHEMA.definitions,
+      });
       expect(tool.description, `${tool.name} description 来自 op schema`).toBe(props[tool.name].description);
     }
+  });
+
+  it("评审 H：工具 schema 自包含——$ref 全部落在工具级 definitions 内，host 独立校验可解析", () => {
+    for (const tool of build()) {
+      const refs: string[] = [];
+      const walk = (node: unknown): void => {
+        if (Array.isArray(node)) return node.forEach(walk);
+        if (!node || typeof node !== "object") return;
+        const r = node as Record<string, unknown>;
+        if (typeof r.$ref === "string") refs.push(r.$ref);
+        for (const v of Object.values(r)) walk(v);
+      };
+      walk(tool.parameters);
+      for (const ref of refs) {
+        expect(ref.startsWith("#/"), `${tool.name} $ref ${ref} 应为文档内指针`).toBe(true);
+        let node: unknown = tool.parameters;
+        for (const seg of ref.slice(2).split("/")) node = (node as Record<string, unknown>)?.[seg];
+        expect(node, `${tool.name} $ref ${ref} 应在工具级 schema 内解析`).toBeDefined();
+      }
+    }
+    // host 校验视角：以工具级 schema 自身为解析基准，request 节点引用的 $ref 必须可解析
+    const subscribe = build().find((t) => t.name === "subscribe")!;
+    expect(validateFull(subscribe.parameters, { entityRef: "t:external/k" }, subscribe.parameters)).toEqual([]);
   });
 
   it("flat + 显式 enums：subscribe 参数顶层字段即 request 字段，opts 枚举来自 schema（pi-fabric 教训）", () => {

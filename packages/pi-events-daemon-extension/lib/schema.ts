@@ -43,7 +43,7 @@ export type Issue = MiniIssue;
 export function validateFull(schema: JsonSchema | undefined, value: unknown, root: JsonSchema = schema as JsonSchema): Issue[] {
   const issues: Issue[] = [];
   try {
-    checkNode(root, schema, value, "", issues, []);
+    checkNode(root, schema, value, "", issues, new Set());
   } catch {
     // never-throw 兑底：递归意外异常归一为单条 issue，不外溢
     issues.push({ path: "", message: "schema 校验内部异常（垃圾 schema？）" });
@@ -57,7 +57,7 @@ function checkNode(
   value: unknown,
   path: string,
   out: Issue[],
-  refPath: string[],
+  visited: Set<string>,
 ): void {
   if (schema === undefined || schema === null || typeof schema !== "object" || Array.isArray(schema)) return;
 
@@ -67,8 +67,12 @@ function checkNode(
       out.push({ path, message: `schema $ref 无法解析：${schema.$ref}` });
       return;
     }
-    if (refPath.includes(schema.$ref)) return; // 循环引用：本路径已在校验中，截断
-    checkNode(root, resolved.node, value, path, out, [...refPath, schema.$ref]);
+    // 评审 M：循环截断按 (ref, 值路径) 记账而非仅 ref——同 ref 在不同值路径（如 queryEntity
+    // children 逐层）仍逐层校验；仅纯 $ref 链原路径重入（真 schema 循环）才截断。
+    const visitKey = `${schema.$ref}\u0000${path}`;
+    if (visited.has(visitKey)) return;
+    visited.add(visitKey);
+    checkNode(root, resolved.node, value, path, out, visited);
     return;
   }
 
@@ -80,7 +84,8 @@ function checkNode(
   if (Array.isArray(schema.oneOf)) {
     const branches = schema.oneOf.map((branch) => {
       const branchIssues: Issue[] = [];
-      checkNode(root, branch, value, path, branchIssues, refPath);
+      // 分支各自克隆 visited：同 ref 同路径的兄弟分支互不污染（ancestral 循环截断仍继承）
+      checkNode(root, branch, value, path, branchIssues, new Set(visited));
       return branchIssues;
     });
     const hits = branches.filter((b) => b.length === 0).length;
@@ -94,10 +99,10 @@ function checkNode(
   }
 
   if (isRecord(value)) {
-    checkObject(root, schema, value, path, out, refPath);
+    checkObject(root, schema, value, path, out, visited);
   }
   if (Array.isArray(value) && schema.items !== undefined) {
-    checkItems(root, schema, value, path, out, refPath);
+    checkItems(root, schema, value, path, out, visited);
   }
 }
 
@@ -154,7 +159,7 @@ function checkObject(
   value: Record<string, unknown>,
   path: string,
   out: Issue[],
-  refPath: string[],
+  visited: Set<string>,
 ): void {
   const props = isRecord(schema.properties) ? (schema.properties as Record<string, JsonSchema>) : {};
   if (Array.isArray(schema.required)) {
@@ -166,7 +171,7 @@ function checkObject(
   }
   for (const [key, sub] of Object.entries(props)) {
     if (Object.prototype.hasOwnProperty.call(value, key)) {
-      checkNode(root, sub, value[key], childPath(path, key), out, refPath);
+      checkNode(root, sub, value[key], childPath(path, key), out, visited);
     }
   }
   const extra = Object.keys(value).filter(
@@ -179,7 +184,7 @@ function checkObject(
     }
   } else if (isRecord(schema.additionalProperties)) {
     for (const key of extra) {
-      checkNode(root, schema.additionalProperties as JsonSchema, value[key], childPath(path, key), out, refPath);
+      checkNode(root, schema.additionalProperties as JsonSchema, value[key], childPath(path, key), out, visited);
     }
   }
 }
@@ -190,16 +195,16 @@ function checkItems(
   value: unknown[],
   path: string,
   out: Issue[],
-  refPath: string[],
+  visited: Set<string>,
 ): void {
   if (Array.isArray(schema.items)) {
     // draft-07 tuple 形态：按位校验
     schema.items.forEach((sub, i) => {
-      if (i < value.length) checkNode(root, sub, value[i], `${path}[${i}]`, out, refPath);
+      if (i < value.length) checkNode(root, sub, value[i], `${path}[${i}]`, out, visited);
     });
     return;
   }
-  value.forEach((el, i) => checkNode(root, schema.items as JsonSchema, el, `${path}[${i}]`, out, refPath));
+  value.forEach((el, i) => checkNode(root, schema.items as JsonSchema, el, `${path}[${i}]`, out, visited));
 }
 
 function resolveRef(root: JsonSchema, ref: string): { ok: true; node: JsonSchema } | { ok: false } {

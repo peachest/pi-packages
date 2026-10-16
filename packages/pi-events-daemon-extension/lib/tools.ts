@@ -67,11 +67,17 @@ function buildTool(op: OpName, opSchema: JsonSchema, sender: OpSender): OpToolDe
   const request = node?.properties?.request;
   if (!request) throw new Error(`op.schema.json 缺少 ${op}.request（同源契约损坏）`);
 
+  // 评审 H：request 内 $ref 指向根文档 definitions（entityRef/adhocSchedule）——host 校验只见
+  // 工具级 schema，definitions 必须随抽取内联；D1a validateFull 仍以 opSchema 为解析基准，不变。
+  const parameters: JsonSchema = opSchema.definitions
+    ? { ...request, definitions: opSchema.definitions }
+    : request;
+
   return {
     name: op,
     label: LABELS[op],
     description: node.description ?? "",
-    parameters: request,
+    parameters,
     promptSnippet: SNIPPETS[op],
     async execute(_toolCallId, params) {
       const issues = validateFull(request, params, opSchema);
@@ -97,7 +103,7 @@ function validationFailure(issues: Issue[]): ToolResult {
 
 function rpcShape(err: unknown): RpcError | undefined {
   const e = err as Partial<RpcError> | null | undefined;
-  if (e != null && typeof e.code === "number" && typeof e.message === "string") {
+  if (e !== null && e !== undefined && typeof e.code === "number" && typeof e.message === "string") {
     return { code: e.code, message: e.message };
   }
   return undefined;

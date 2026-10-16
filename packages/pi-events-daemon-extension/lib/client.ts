@@ -60,7 +60,7 @@ export function readDaemonEpoch(socketPath: string): number {
 
 export function isRpcError(err: unknown): err is RpcError {
   const e = err as Partial<RpcError> | null | undefined;
-  return e != null && typeof e.code === "number" && typeof e.message === "string";
+  return e !== null && e !== undefined && typeof e.code === "number" && typeof e.message === "string";
 }
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
