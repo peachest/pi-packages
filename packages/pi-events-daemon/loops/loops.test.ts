@@ -10,7 +10,7 @@
  */
 import { describe, it, expect } from "vitest";
 import { createMemoryStore, type Store } from "../store/index.ts";
-import { FakeClock, FakeExec, FakeFs, FakePusher } from "../fx/index.ts";
+import { FakeClock, FakeExec, FakeFs, FakePusher, type Pusher } from "../fx/index.ts";
 import { deterministicEventId } from "../domain/intent.ts";
 import { entityRefKeyOf } from "../domain/types.ts";
 import { Kernel } from "../kernel/index.ts";
@@ -736,8 +736,8 @@ describe("评审修复 — E 组（loops 面）", () => {
 
 const DELIVER_BATCH_MS = 2000;
 const NID = (order: number) => deterministicEventId(REF, order);
-type PushLine = { count: number; entries: { notificationId: string; entityRef: string; verdict: string }[] };
-const lineOf = (pusher: FakePusher, at: number): PushLine => JSON.parse(pusher.pushed[at]!) as PushLine;
+type PushLine = { sessionId: string; count: number; entries: { notificationId: string; entityRef: string; verdict: string }[] };
+const lineOf = (pusher: FakePusher | ScriptedPusher, at: number): PushLine => JSON.parse(pusher.pushed[at]!) as PushLine;
 
 /** 直接种订阅行（不经 subscribe op：绕开 RunnerSlot/prober，投递面测试只关心 fanOut 编址输入）。 */
 const seedSub = (store: MemStore, sessionId = "s1"): void => {
@@ -948,6 +948,385 @@ describe("票 27 组 L2-4 — SESSION_START→drain（只投 parked D2a）+ wake
     clock.step(48 * 3600_000);
     await micro();
     expect(pusher.pushed).toHaveLength(2); // verified 恒 hold；repushed 置位亦恒 hold
+    loops.stop();
+  });
+});
+
+// =============================================================================
+// 票 27 ocr 评审修复 — L2 异步边界缺陷群（8H3M1L，逐 finding 回归）
+// =============================================================================
+
+/** 可脚本化推送器：hold（手动放行）/reject 注入 + 在飞并发计数（M3 单飞守卫断言面）；未排脚本立即成功。 */
+class ScriptedPusher implements Pusher {
+  readonly pushed: string[] = [];
+  active = 0;
+  maxConcurrent = 0;
+  private script: (() => Promise<void>)[] = [];
+
+  push(line: string): Promise<void> {
+    this.pushed.push(line);
+    this.active += 1;
+    this.maxConcurrent = Math.max(this.maxConcurrent, this.active);
+    const next = this.script.shift();
+    const settle = () => {
+      this.active -= 1;
+    };
+    if (!next) return Promise.resolve().then(settle);
+    return next().then(settle, (err: unknown) => {
+      settle();
+      throw err;
+    });
+  }
+
+  enqueueHold(): { resolve(): void; reject(err: unknown): void } {
+    let r!: () => void;
+    let j!: (e: unknown) => void;
+    this.script.push(
+      () =>
+        new Promise<void>((res, rej) => {
+          r = res;
+          j = rej;
+        }),
+    );
+    return { resolve: () => r(), reject: (e: unknown) => j(e) };
+  }
+
+  enqueueReject(err: Error): void {
+    this.script.push(() => Promise.reject(err));
+  }
+}
+
+describe("票 27 评审修复 — H1/H2：I12 epoch fence 过异步结算与 24h 通道", () => {
+  it("H1：在飞 push 期间行换代 → 结算不 ack 替换行（保持 pending，行与簿记都不动）", async () => {
+    const store = createMemoryStore();
+    store.putEntity({ type: REF.type, key: REF.key, state: null });
+    seedSub(store);
+    const clock = new FakeClock();
+    const pusher = new ScriptedPusher();
+    const hold = pusher.enqueueHold();
+    const loops = startLoops(makeCtx(store, { clock, pusher }));
+    loops.sessionStart("s1");
+    loops.submit({ kind: "transition", ref: REF, verdict: "passed", occurredAt: at(1) });
+
+    clock.step(2000); // 窗口冲刷：push 在飞（held）
+    store.putDelivery({ notificationId: NID(1), sessionId: "s1", state: "pending", recordEpoch: 1 }); // 在飞期间换代
+    hold.resolve();
+    await micro();
+    // 替换行保持 pending：本 owner 从未推过它（recordEpoch=1 ≠ ownerEpoch=0）
+    expect(store.getDelivery(NID(1), "s1")).toEqual({
+      notificationId: NID(1),
+      sessionId: "s1",
+      state: "pending",
+      recordEpoch: 1,
+    });
+    expect(loops.errors).toHaveLength(0);
+    loops.stop();
+  });
+
+  it("H2：已推行换代 → 24h 扫描不 re-push 且簿记清出", async () => {
+    const store = createMemoryStore();
+    store.putEntity({ type: REF.type, key: REF.key, state: null });
+    seedSub(store);
+    const clock = new FakeClock();
+    const pusher = new FakePusher();
+    const loops = startLoops(makeCtx(store, { clock, pusher }));
+    loops.sessionStart("s1");
+    loops.submit({ kind: "transition", ref: REF, verdict: "passed", occurredAt: at(1) });
+    clock.step(2000);
+    await micro();
+    expect(pusher.pushed).toHaveLength(1);
+    store.putDelivery({ notificationId: NID(1), sessionId: "s1", state: "accepted", recordEpoch: 1 }); // 换代
+    clock.step(24 * 3600_000 + 60_000);
+    await micro();
+    expect(pusher.pushed).toHaveLength(1); // 旧世代 owner 不 re-push 他人行
+    loops.stop();
+  });
+});
+
+describe("票 27 评审修复 — H3：重启种子（24h 恢复通道跨重启存活）", () => {
+  it("既有 accepted 行窗口自重启重新计时；重启后满 24h 恢复推（不经 drain 状态不迁移）", async () => {
+    const store = createMemoryStore();
+    store.putEntity({ type: REF.type, key: REF.key, state: null });
+    seedSub(store);
+    const clock = new FakeClock();
+    const pusher1 = new FakePusher();
+    const life1 = startLoops(makeCtx(store, { clock, pusher: pusher1 }));
+    life1.sessionStart("s1");
+    life1.submit({ kind: "transition", ref: REF, verdict: "passed", occurredAt: at(1) });
+    clock.step(2000);
+    await micro();
+    expect(pusher1.pushed).toHaveLength(1);
+    life1.stop();
+
+    clock.step(23 * 3600_000); // 重启前再走 23h（自原推累计已 24h+）
+    const pusher2 = new FakePusher();
+    const life2 = startLoops(makeCtx(store, { clock, pusher: pusher2 })); // 种子：pushedAt=重启点
+    clock.step(3600_000); // 重启后 1h：自原推已满 24h，但窗口重新计时 → hold
+    await micro();
+    expect(pusher2.pushed).toHaveLength(0);
+    clock.step(23 * 3600_000); // 重启后满 24h → 恢复推
+    await micro();
+    expect(pusher2.pushed).toHaveLength(1);
+    expect(lineOf(pusher2, 0).entries[0]!.notificationId).toBe(NID(1));
+    expect(store.getDelivery(NID(1), "s1")?.state).toBe("accepted"); // 不经 drain：状态不迁移
+    life2.stop();
+  });
+});
+
+describe("票 27 评审修复 — H4：wire envelope 携带目标 sessionId", () => {
+  it("两 session 各收各的批次（编址不丢、不跨 session 合流）", async () => {
+    const store = createMemoryStore();
+    store.putEntity({ type: REF.type, key: REF.key, state: null });
+    seedSub(store, "s1");
+    seedSub(store, "s2");
+    const clock = new FakeClock();
+    const pusher = new FakePusher();
+    const loops = startLoops(makeCtx(store, { clock, pusher }));
+    loops.sessionStart("s1");
+    loops.sessionStart("s2");
+    loops.submit({ kind: "transition", ref: REF, verdict: "passed", occurredAt: at(1) }); // fanOut → s1/s2 各一行 pending
+    clock.step(2000);
+    await micro();
+    expect(pusher.pushed).toHaveLength(2); // 每 session 一条
+    const l1 = lineOf(pusher, 0);
+    const l2 = lineOf(pusher, 1);
+    expect([l1.sessionId, l2.sessionId]).toEqual(["s1", "s2"]);
+    expect(l1.count).toBe(1);
+    expect(l1.entries[0]!.notificationId).toBe(NID(1));
+    expect(l2.count).toBe(1);
+    expect(l2.entries[0]!.notificationId).toBe(NID(1));
+    loops.stop();
+  });
+});
+
+describe("票 27 评审修复 — H5：耗尽只结算失败尝试快照", () => {
+  it("末次重试在飞期间新入批行不被连带 dead-letter，重开窗获得自己的投递机会", async () => {
+    const store = createMemoryStore();
+    store.putEntity({ type: REF.type, key: REF.key, state: null });
+    seedSub(store);
+    const clock = new FakeClock();
+    const pusher = new ScriptedPusher();
+    for (let i = 0; i < 13; i++) pusher.enqueueReject(new Error(`down-${i}`)); // 尝试 1-13 失败
+    const hold = pusher.enqueueHold(); // 尝试 14（末次重试）在飞挂起
+    const loops = startLoops(makeCtx(store, { clock, pusher }));
+    loops.sessionStart("s1");
+    loops.submit({ kind: "transition", ref: REF, verdict: "failed", occurredAt: at(1) }); // failed 绕行首推
+    await micro();
+    expect(store.getDelivery(NID(1), "s1")?.state).toBe("pending");
+
+    for (const w of [2, 4, 8, 16, 32, 64, 128, 256, 300, 300, 300, 300, 300]) {
+      clock.step(w * 1000);
+      await micro();
+    }
+    expect(store.getDelivery(NID(1), "s1")?.state).toBe("pending"); // 末次重试在飞
+
+    loops.submit({ kind: "transition", ref: REF, verdict: "waiting", occurredAt: at(2) }); // 新行在飞期入批
+    hold.reject(new Error("final down"));
+    await micro();
+    expect(store.getDelivery(NID(1), "s1")?.state).toBe("dead-letter"); // 耗尽只结算尝试快照（行 1）
+    expect(store.getDelivery(NID(2), "s1")?.state).toBe("pending"); // 未参与失败推送：不连带
+
+    clock.step(2000); // 幸存行重开窗自投
+    await micro();
+    expect(store.getDelivery(NID(2), "s1")?.state).toBe("accepted");
+    loops.stop();
+  });
+});
+
+describe("票 27 评审修复 — H6：outbox 成功才消费", () => {
+  it("fanOut 三次事务尝试耗尽 → errors 可见；Store 恢复后兜底 tick 重试创建投递（无重启）", async () => {
+    const base = createMemoryStore();
+    base.putEntity({ type: REF.type, key: REF.key, state: null });
+    seedSub(base);
+    base.appendEventIfMissing({ eventId: NID(1), eventSeq: 1, entityRefType: REF.type, entityRefKey: REF.key, from: "passed", to: "passed", occurredAt: at(1) });
+    base.putOutbox({ notificationId: NID(1), eventSeq: 1 }); // 投递行不存在：fanOut 尚未成功
+    let failTx = 0;
+    const store: Store = Object.create(base);
+    store.tx = (fn) => {
+      if (failTx > 0) {
+        failTx -= 1;
+        throw new Error("store down");
+      }
+      return base.tx(fn);
+    };
+    const clock = new FakeClock();
+    const pusher = new FakePusher();
+    const loops = startLoops(makeCtx(store, { clock, pusher }));
+    loops.sessionStart("s1"); // 活跃登记：fanOut 重试成功后在线直投（pending 而非 parked）
+
+    failTx = 3; // MAX_INTENT_ATTEMPTS=3：三次事务尝试全失败
+    clock.step(1000);
+    await micro();
+    expect(loops.errors).toHaveLength(1);
+    expect(String(loops.errors[0])).toContain("fanOut");
+    expect(store.getDelivery(NID(1), "s1")).toBeUndefined(); // 未消费：投递行未创建
+
+    failTx = 0; // Store 恢复
+    clock.step(1000); // 兜底 tick 重试
+    await micro();
+    expect(store.getDelivery(NID(1), "s1")?.state).toBe("pending"); // 投递行终创建（无重启）
+    clock.step(2000);
+    await micro();
+    expect(store.getDelivery(NID(1), "s1")?.state).toBe("accepted");
+    loops.stop();
+  });
+});
+
+describe("票 27 评审修复 — H7/L12：pre-cancel fanOut 活跃投影统一", () => {
+  it("H7：once 订阅达标即推终端事件（活跃 session 直投），不等重连 drain", async () => {
+    const store = createMemoryStore();
+    store.putEntity({ type: REF.type, key: REF.key, state: null });
+    const clock = new FakeClock();
+    const exec = new FakeExec();
+    exec.enqueue({ exitCode: 0 });
+    const pusher = new FakePusher();
+    const loops = startLoops(makeCtx(store, { clock, exec, pusher }));
+    subVia(loops, {}, { opts: { once: true, schedule: { type: "interval", intervalMs: 60_000 } } });
+    loops.sessionStart("session-1"); // 活跃登记先于达标翻转沿
+
+    clock.step(0); // 首探 passed：transition + pre-cancel fanOut（活跃投影）+ cancel
+    await micro();
+    expect(store.getDelivery(NID(1), "session-1")?.state).toBe("pending"); // 在线直投（非 parked）
+    clock.step(2000);
+    await micro();
+    expect(pusher.pushed).toHaveLength(1); // 终端事件已推，无需重连
+    expect(lineOf(pusher, 0).entries[0]).toEqual({
+      notificationId: NID(1),
+      entityRef: "fixture:widget:external/fixture-1",
+      verdict: "passed",
+    });
+    expect(store.querySubscriptions({ sessionId: "session-1" })[0]?.closedReason).toBe("once-passed");
+    loops.stop();
+  });
+});
+
+describe("票 27 评审修复 — H8：结算异常 containment", () => {
+  it("推送成功后 putDelivery 失败 → 记 errors 批转退避（不自困 inflight、无未处理 rejection）；恢复后 session 复活", async () => {
+    const base = createMemoryStore();
+    base.putEntity({ type: REF.type, key: REF.key, state: null });
+    seedSub(base);
+    let failPut = 0;
+    const store: Store = Object.create(base);
+    store.putDelivery = (row) => {
+      if (failPut > 0) {
+        failPut -= 1;
+        throw new Error("put down");
+      }
+      base.putDelivery(row);
+    };
+    const clock = new FakeClock();
+    const pusher = new FakePusher();
+    const loops = startLoops(makeCtx(store, { clock, pusher }));
+    loops.sessionStart("s1");
+    loops.submit({ kind: "transition", ref: REF, verdict: "passed", occurredAt: at(1) });
+    failPut = 1; // 首次结算 putDelivery 失败
+    clock.step(2000);
+    await micro();
+    expect(store.getDelivery(NID(1), "s1")?.state).toBe("pending"); // ack 未落
+    expect(loops.errors).toHaveLength(1); // containment：errors 可见
+    clock.step(2000); // 退避 2s 重试（failPut 已耗尽 = Store 恢复）
+    await micro();
+    expect(store.getDelivery(NID(1), "s1")?.state).toBe("accepted"); // session 复活，非困死 inflight
+    loops.stop();
+  });
+});
+
+describe("票 27 评审修复 — M1：failed 绕行在飞期到达", () => {
+  it("结算即冲刷余量 failed 行，不再吃整窗 2000ms（零时钟推进证据）", async () => {
+    const store = createMemoryStore();
+    store.putEntity({ type: REF.type, key: REF.key, state: null });
+    seedSub(store);
+    const clock = new FakeClock();
+    const pusher = new ScriptedPusher();
+    const hold = pusher.enqueueHold();
+    const loops = startLoops(makeCtx(store, { clock, pusher }));
+    loops.sessionStart("s1");
+    loops.submit({ kind: "transition", ref: REF, verdict: "passed", occurredAt: at(1) });
+    clock.step(2000); // 窗口冲刷：push#1 在飞挂起
+    loops.submit({ kind: "transition", ref: REF, verdict: "failed", occurredAt: at(2) }); // failed 事件在飞期到达
+    hold.resolve();
+    await micro(); // 结算 → 余量含 failed → 立即冲刷 push#2（零时钟推进）
+    expect(pusher.pushed).toHaveLength(2);
+    expect(lineOf(pusher, 1).entries[0]).toEqual({
+      notificationId: NID(2),
+      entityRef: "fixture:widget:external/fixture-1",
+      verdict: "failed",
+    });
+    expect(store.getDelivery(NID(2), "s1")?.state).toBe("accepted");
+    loops.stop();
+  });
+});
+
+describe("票 27 评审修复 — M2：兜底扫异常自愈", () => {
+  it("单次 outboxBatch 读异常 → 记 errors 后照常重排；24h 扫描通道同 tick 照跑、后续 tick 无重复异常", async () => {
+    const base = createMemoryStore();
+    base.putEntity({ type: REF.type, key: REF.key, state: null });
+    seedSub(base);
+    let failOutbox = 0;
+    const store: Store = Object.create(base);
+    store.outboxBatch = (limit) => {
+      if (failOutbox > 0) {
+        failOutbox -= 1;
+        throw new Error("read down");
+      }
+      return base.outboxBatch(limit);
+    };
+    const clock = new FakeClock();
+    const pusher = new FakePusher();
+    const loops = startLoops(makeCtx(store, { clock, pusher }));
+    loops.sessionStart("s1");
+    loops.submit({ kind: "transition", ref: REF, verdict: "passed", occurredAt: at(1) });
+    clock.step(2000);
+    await micro();
+    expect(pusher.pushed).toHaveLength(1); // accepted，pushedAt=2000
+
+    failOutbox = 1;
+    clock.step(1000); // 下一兜底 tick：deliverScan 抛（contained）→ repushScan 同 tick 照跑（hold）→ 重排
+    await micro();
+    expect(loops.errors).toHaveLength(1);
+    expect(String(loops.errors[0])).toContain("read down");
+    failOutbox = 0;
+    clock.step(24 * 3600_000); // 24h 扫描通道未被禁用：恢复推照常发生
+    await micro();
+    expect(pusher.pushed).toHaveLength(2);
+    expect(lineOf(pusher, 1).entries[0]!.notificationId).toBe(NID(1));
+    expect(loops.errors).toHaveLength(1); // 后续 tick 无重复异常（重排存活）
+    loops.stop();
+  });
+});
+
+describe("票 27 评审修复 — M3：24h re-push 与常规批共享 per-session 单飞守卫", () => {
+  it("批在飞时 re-push 让路（不产生第二未结算 push）；守卫释放后下一兜底 tick 恰一次补推", async () => {
+    const store = createMemoryStore();
+    store.putEntity({ type: REF.type, key: REF.key, state: null });
+    seedSub(store);
+    const clock = new FakeClock();
+    const pusher = new ScriptedPusher();
+    const loops = startLoops(makeCtx(store, { clock, pusher }));
+    loops.sessionStart("s1");
+    loops.submit({ kind: "transition", ref: REF, verdict: "passed", occurredAt: at(1) });
+    clock.step(2000); // push#1 成功 → accepted（pushedAt=2000）
+    await micro();
+    expect(store.getDelivery(NID(1), "s1")?.state).toBe("accepted");
+
+    const hold = pusher.enqueueHold(); // push#2（常规批）挂起
+    loops.submit({ kind: "transition", ref: REF, verdict: "waiting", occurredAt: at(2) });
+    clock.step(2000); // 窗口冲刷：push#2 在飞
+    expect(store.getDelivery(NID(2), "s1")?.state).toBe("pending");
+
+    clock.step(24 * 3600_000); // re-push 到点：守卫 busy → 全程让路，无第二未结算 push
+    expect(pusher.maxConcurrent).toBe(1);
+    expect(pusher.pushed).toHaveLength(2); // 无 re-push 行
+
+    hold.resolve();
+    await micro(); // push#2 结算 → 守卫释放
+    expect(store.getDelivery(NID(2), "s1")?.state).toBe("accepted");
+    clock.step(1000); // 下一兜底 tick：re-push 获守卫 → 恰一次
+    await micro();
+    expect(pusher.pushed).toHaveLength(3);
+    expect(lineOf(pusher, 2).entries[0]!.notificationId).toBe(NID(1));
+    expect(store.getDelivery(NID(1), "s1")?.state).toBe("accepted"); // 不经 drain：状态不迁移
+    expect(pusher.maxConcurrent).toBe(1);
     loops.stop();
   });
 });

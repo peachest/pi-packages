@@ -161,11 +161,17 @@ export function startLoops(ctx: LoopsCtx): LoopsHandle {
       case "probeVerdict":
         applyProbeVerdict(req);
         return;
-      case "fanOut":
-        kernel.fanOut(req.notificationId, {
-          activeSessions: [...activeSessions].map(([sessionId, scope]) => ({ sessionId, scope })),
-        });
+      case "fanOut": {
+        // 评审 H6：in-progress 标记防重入（fanOut 提交回调 onWrite 会重入 deliverScan）+ 成功才消费——
+        // withRetry 耗尽（临时 Store 故障）不丢投递：finally 清未决标记，下个兜底 tick 重试（I10 幂等兑底）
+        try {
+          kernel.fanOut(req.notificationId, { activeSessions: fanOutSessions() });
+          consumedOutbox.add(req.notificationId);
+        } finally {
+          inProgressOutbox.delete(req.notificationId);
+        }
         return;
+      }
       case "sessionStart":
         applySessionStart(req.sessionId, req.scope ?? "project");
         return;
@@ -218,10 +224,10 @@ export function startLoops(ctx: LoopsCtx): LoopsHandle {
     if (actions.some((a) => a.action.action === "close")) {
       // 评审 F11/C7：关闭前物化该事件投递目标（事件→fanOut→cancel 各自事务；fanOut/cancel 幂等，
       // 崩溃重放安全）。transition null = 同态重放（崩溃重启后归零重评，事件已在 outbox）——
-      // 按实体+verdict 扫尾补 eventId。loops 无 session runtime：activeSessions 空 → 全部 parked
-      // 走 drain 重投（I12 epoch fence 过滤；transport 票接线后改直投）。
+      // 按实体+verdict 扫尾补 eventId。评审 H7/L12：pre-cancel fanOut 同用活跃 session 投影
+      // （fanOutSessions）——once 达标即推终端事件不等重连 drain；消灭内联重复投影。
       const eventId = result ? result.eventId : lastEventIdFor(ref, req.verdict);
-      if (eventId) kernel.fanOut(eventId, { activeSessions: [] });
+      if (eventId) kernel.fanOut(eventId, { activeSessions: fanOutSessions() });
     }
     thresholdStates.set(req.slotKey, { generation, state: step.state });
     mirrorLedger(); // 镜像先于生命周期：cancel 的 refcount 重算会读本行并保留/清零计数
@@ -368,15 +374,36 @@ export function startLoops(ctx: LoopsCtx): LoopsHandle {
     timer: { cancel(): void } | null;
   }
   const batches = new Map<string, DeliverBatch>();
+  /** per-session 推送单飞守卫（评审 M3）：常规批与 24h re-push 共享——一 session 至多一未结算 push。
+   *  batch.mode=inflight 是批内三态；本守卫跨通道：re-push 见批在飞让路，批见 re-push 在飞同样让路。 */
+  const sessionPushInflight = new Set<string>();
   /** I9 在等 verified 的已推行簿记（24h repush 扫描输入）：sessionId → notificationId → {pushedAt, repushed}。
    *  shortcut: 推送簿记是 L2 runtime（store 行 4 字段冻结，票 09 裁定）；repushed/pushedAt 持久载体归 store 行形状扩展票。
    *  重启清零 = 24h 窗口重新计时（R1 A5 归零重探同精神）；窗口内恰一次由 repushed 置位保证。 */
   const pushBook = new Map<string, Map<string, { pushedAt: number; repushed: boolean }>>();
+  /** 簿记行桶（缺省建桶）。 */
+  const bookOf = (sessionId: string): Map<string, { pushedAt: number; repushed: boolean }> => {
+    let book = pushBook.get(sessionId);
+    if (!book) {
+      book = new Map();
+      pushBook.set(sessionId, book);
+    }
+    return book;
+  };
   /** 活跃 session 运行时（sessionStart 登记；断连注销归 transport 票 29 接线）——fanOut auto 编址消费面。 */
   const activeSessions = new Map<string, SubscriptionScope>();
   /** 已消费 outbox 行（fire-once；fanOut 幂等 I10 兑底重启重放）。shortcut: 全量扫 O(outbox)，事件量级下可接受，量大归 store 接口位点精化。 */
   const consumedOutbox = new Set<string>();
+  /** outbox 未决标记（评审 H6）：fanOut 消费中防 onWrite 重入 deliverScan 双发；成功转 consumed、失败清除待重试。 */
+  const inProgressOutbox = new Set<string>();
   const ownerEpoch = ctx.ownerEpoch ?? 0;
+  // 评审 H3：重启种子——簿记是 L2 runtime（重启清零 = 24h 窗口重新计时，R1 A5 归零重探同精神），
+  // 但 accepted 行既不在 pendingDeliveries（只含 pending）也不经 drain（只读 parked）：不播种则
+  // 24h 恢复通道对重启前 accepted 行消失。种子 pushedAt=本进程起点 → 窗口自重启重新计时。
+  for (const row of ctx.store.acceptedDeliveries({})) {
+    if (!epochAccepts(row.recordEpoch, ownerEpoch)) continue; // I12：僵尸世代行不纳管
+    bookOf(row.sessionId).set(row.notificationId, { pushedAt: ctx.clock.now(), repushed: false });
+  }
 
   /** 票 27 L2 入口（transport 连接回调接线）：SESSION_START 进 L0 队列——drain 是 kernel 方法，唯一写者路径。 */
   const sessionStart = (sessionId: string, scope?: SubscriptionScope): void =>
@@ -398,8 +425,9 @@ export function startLoops(ctx: LoopsCtx): LoopsHandle {
       .map((r) => ctx.store.getDelivery(r.notificationId, r.sessionId))
       .filter((r): r is DeliveryRowData => !!r && (r.state === "pending" || r.state === "accepted") && epochAccepts(r.recordEpoch, ownerEpoch));
 
-  /** 合流行（billboard 条目形态 #31：count + 实体 + verdict；notificationId 随行 = I9 transcript 点查匹配键；eventSeq 序确定性）。 */
-  const assembleLine = (rows: readonly DeliveryRowData[]): string => {
+  /** 合流行（billboard 条目形态 #31：count + 实体 + verdict；notificationId 随行 = I9 transcript 点查匹配键；eventSeq 序确定性）。
+   *  评审 H4：envelope 携带目标 sessionId——SocketPusher 逐行广播，接收端据 sessionId 过滤（编址不丢）。 */
+  const assembleLine = (sessionId: string, rows: readonly DeliveryRowData[]): string => {
     const entries = rows
       .map((r) => ({ row: r, ev: ctx.store.tx((tx) => tx.getEvent(r.notificationId)) }))
       .sort((a, b) => (a.ev?.eventSeq ?? 0) - (b.ev?.eventSeq ?? 0))
@@ -408,22 +436,20 @@ export function startLoops(ctx: LoopsCtx): LoopsHandle {
         entityRef: ev ? entityRefKeyOf({ type: ev.entityRefType, key: ev.entityRefKey }) : "",
         verdict: (ev?.to ?? "") as Verdict,
       }));
-    return JSON.stringify({ count: entries.length, entries });
+    return JSON.stringify({ sessionId, count: entries.length, entries });
   };
 
-  /** 推送成功簿记（两段式 ack 段一：pending→accepted 正典边；verified 归 I9/L3，L2 永不写 verified）。 */
+  /** 推送成功簿记（两段式 ack 段一：pending→accepted 正典边；verified 归 I9/L3，L2 永不写 verified）。
+   *  评审 H1：结算前重读行并复核 I12 epoch fence——在飞期间被换代的行是他人所有，行与簿记都不 ack。 */
   const markPushed = (rows: readonly DeliveryRowData[]): void => {
     const now = ctx.clock.now();
     for (const r of rows) {
-      let book = pushBook.get(r.sessionId);
-      if (!book) {
-        book = new Map();
-        pushBook.set(r.sessionId, book);
-      }
+      const cur = ctx.store.getDelivery(r.notificationId, r.sessionId);
+      if (!cur || !epochAccepts(cur.recordEpoch, ownerEpoch)) continue;
+      const book = bookOf(r.sessionId);
       const prev = book.get(r.notificationId);
       book.set(r.notificationId, { pushedAt: now, repushed: prev?.repushed ?? false });
-      const cur = ctx.store.getDelivery(r.notificationId, r.sessionId);
-      if (cur?.state !== "pending") continue;
+      if (cur.state !== "pending") continue;
       const edge = transitionDelivery("pending", "wake-accepted");
       if (!edge.ok) {
         errors.push(new Error(`L2: canonical edge pending+wake-accepted rejected: ${edge.reason}`));
@@ -433,54 +459,96 @@ export function startLoops(ctx: LoopsCtx): LoopsHandle {
     }
   };
 
-  /** E2 退避重试/耗尽：指数 2s→5min，封顶值上 5 次后 pending/accepted → dead-letter（正典边 retry-exhausted）。 */
-  const failBatch = (batch: DeliverBatch, sessionId: string): void => {
+  /** E2 退避重试/耗尽：指数 2s→5min，封顶值上 5 次后 pending/accepted → dead-letter（正典边 retry-exhausted）。
+   *  评审 H5：耗尽只结算本次推送尝试快照（attempted）——在飞期间新入批行未参与失败推送，不连带
+   *  dead-letter；清出后重开窗获得自己的投递机会（fails 一并归零，不背旧账）。 */
+  const failBatch = (batch: DeliverBatch, sessionId: string, attempted: readonly DeliveryRowData[]): void => {
     batch.fails += 1;
-    if (batch.fails >= DELIVER_BACKOFF_PRE_CAP_ATTEMPTS + DELIVER_BACKOFF_CAP_ATTEMPTS) {
-      for (const r of liveOf(batch.rows.values())) {
-        const cur = ctx.store.getDelivery(r.notificationId, r.sessionId)!;
+    if (batch.fails < DELIVER_BACKOFF_PRE_CAP_ATTEMPTS + DELIVER_BACKOFF_CAP_ATTEMPTS) {
+      batch.mode = "retry";
+      const wait = Math.min(DELIVER_BACKOFF_BASE_MS * 2 ** (batch.fails - 1), DELIVER_BACKOFF_MAX_MS);
+      batch.timer = ctx.clock.setTimeout(() => flushBatch(sessionId), wait);
+      return;
+    }
+    batch.mode = "window";
+    try {
+      for (const r of liveOf(attempted)) {
+        const cur = ctx.store.getDelivery(r.notificationId, r.sessionId);
+        if (!cur) continue;
         const edge = transitionDelivery(cur.state, "retry-exhausted");
-        if (edge.ok) ctx.store.putDelivery({ ...cur, state: edge.to });
-        else errors.push(new Error(`L2: canonical edge ${cur.state}+retry-exhausted rejected: ${edge.reason}`));
+        if (!edge.ok) {
+          errors.push(new Error(`L2: canonical edge ${cur.state}+retry-exhausted rejected: ${edge.reason}`));
+          continue;
+        }
+        ctx.store.putDelivery({ ...cur, state: edge.to });
       }
+    } catch (err) {
+      errors.push(err); // 评审 H8：耗尽结算写失败 containment——行留批内随 level-trigger 自愈
+    }
+    for (const r of attempted) batch.rows.delete(r.notificationId);
+    batch.fails = 0;
+    if (liveOf(batch.rows.values()).length === 0) {
       batches.delete(sessionId);
       return;
     }
-    batch.mode = "retry";
-    const wait = Math.min(DELIVER_BACKOFF_BASE_MS * 2 ** (batch.fails - 1), DELIVER_BACKOFF_MAX_MS);
-    batch.timer = ctx.clock.setTimeout(() => flushBatch(sessionId), wait);
+    batch.timer = ctx.clock.setTimeout(() => flushBatch(sessionId), DELIVER_BATCH_MS);
   };
 
-  /** 冲刷一批（窗口到期 / 重试到点 / failed 绕行 / snapshot 直推共用）：成功→ack+余量重开窗；失败→退避重排。 */
+  /** 冲刷一批（窗口到期 / 重试到点 / failed 绕行 / snapshot 直推共用）：成功→ack+余量重开窗；失败→退避重排。
+   *  评审 H8：组装与结算全程 containment——Store 读/写异常记 errors 并转退避态，不自困 inflight、
+   *  不产生未处理 rejection；评审 M1：结算时余量行含 failed 事件 → 立即冲刷（在飞期到达的绕行不再被开窗吞掉）。 */
   const flushBatch = (sessionId: string): void => {
     if (stopped) return;
     const batch = batches.get(sessionId);
-    if (!batch || batch.mode === "inflight" || batch.rows.size === 0) return;
+    if (!batch || batch.mode === "inflight" || sessionPushInflight.has(sessionId) || batch.rows.size === 0) return;
     batch.timer?.cancel();
     batch.timer = null;
-    const live = liveOf(batch.rows.values());
-    if (live.length === 0) {
-      batches.delete(sessionId);
+    let live: DeliveryRowData[];
+    let line: string;
+    try {
+      live = liveOf(batch.rows.values());
+      if (live.length === 0) {
+        batches.delete(sessionId);
+        return;
+      }
+      batch.mode = "inflight";
+      sessionPushInflight.add(sessionId);
+      line = assembleLine(sessionId, live);
+    } catch (err) {
+      sessionPushInflight.delete(sessionId);
+      errors.push(err);
+      failBatch(batch, sessionId, []);
       return;
     }
-    batch.mode = "inflight";
-    void ctx.pusher.push(assembleLine(live)).then(
+    void ctx.pusher.push(line).then(
       () => {
+        sessionPushInflight.delete(sessionId);
         if (stopped) return;
-        markPushed(live);
-        for (const r of live) batch.rows.delete(r.notificationId);
-        batch.fails = 0; // 传输恢复：余量行不从旧失败继承退避
-        const remaining = liveOf(batch.rows.values()); // 在飞期间新入批的行（wake pending / sessionStart snapshot）结算后冲刷，不丢弃
-        if (remaining.length === 0) {
-          batches.delete(sessionId);
-          return;
+        try {
+          markPushed(live);
+          for (const r of live) batch.rows.delete(r.notificationId);
+          batch.fails = 0; // 传输恢复：余量行不从旧失败继承退避
+          const remaining = liveOf(batch.rows.values()); // 在飞期间新入批的行（wake pending / sessionStart snapshot）结算后冲刷，不丢弃
+          if (remaining.length === 0) {
+            batches.delete(sessionId);
+            return;
+          }
+          batch.mode = "window";
+          batch.timer = null;
+          if (remaining.some((r) => eventVerdictOf(r.notificationId) === "failed")) {
+            flushBatch(sessionId); // 评审 M1：failed 绕行在飞期到达 → 结算即冲刷，不再吃整窗
+            return;
+          }
+          batch.timer = ctx.clock.setTimeout(() => flushBatch(sessionId), DELIVER_BATCH_MS);
+        } catch (err) {
+          errors.push(err); // 评审 H8：结算异常 containment——批转退避（行留在批内，恢复后重试）
+          failBatch(batch, sessionId, live);
         }
-        batch.mode = "window";
-        batch.timer = ctx.clock.setTimeout(() => flushBatch(sessionId), DELIVER_BATCH_MS);
       },
       () => {
+        sessionPushInflight.delete(sessionId);
         if (stopped) return;
-        failBatch(batch, sessionId);
+        failBatch(batch, sessionId, live);
       },
     );
   };
@@ -511,10 +579,12 @@ export function startLoops(ctx: LoopsCtx): LoopsHandle {
   /** 唤醒扫描（update_hook 毫秒级主路径 + 1s 兑底扫共用）：outbox 消费编址 + pending 行入批开窗。 */
   const deliverScan = (): void => {
     if (stopped) return;
-    // outbox 消费（票 11 落点：投递循环消费 outbox → L0 队列内 fanOut 编址；fire-once，fanOut 幂等兑底重启重放）
+    // outbox 消费（票 11 落点：投递循环消费 outbox → L0 队列内 fanOut 编址；fire-once，fanOut 幂等兑底重启重放）。
+    // 评审 H6：in-progress 防重入（fanOut 提交回调 onWrite 同 tick 重入）+ 成功才消费（apply fanOut 分支）——
+    // withRetry 耗尽（临时 Store 故障）只进 errors，未决标记清除后由下个兜底 tick 重试，投递不丢。
     for (const row of ctx.store.outboxBatch(Number.MAX_SAFE_INTEGER)) {
-      if (consumedOutbox.has(row.notificationId)) continue;
-      consumedOutbox.add(row.notificationId);
+      if (consumedOutbox.has(row.notificationId) || inProgressOutbox.has(row.notificationId)) continue;
+      inProgressOutbox.add(row.notificationId);
       doSubmit({ kind: "fanOut", notificationId: row.notificationId });
     }
     for (const row of ctx.store.pendingDeliveries({})) {
@@ -535,20 +605,21 @@ export function startLoops(ctx: LoopsCtx): LoopsHandle {
     }
   };
 
-  /** 24h verified-absence 独立通道（D2a）：accepted 行 verified 迟到 24h → 恰一次幂等 re-push（不经 drain、不改状态）。 */
+  /** 24h verified-absence 独立通道（D2a）：accepted 行 verified 迟到 24h → 恰一次幂等 re-push（不经 drain、不改状态）。
+   *  评审 H2：I12 epoch fence——换代行出簿记不 re-push；评审 M3：与常规批共享 per-session 单飞守卫，
+   *  busy 让路（恰一次置位延后到获得守卫，不提前），retain 一次/不经 drain 语义。 */
   const repushScan = (): void => {
     const now = ctx.clock.now();
     const due = new Map<string, DeliveryRowData[]>();
     for (const [sessionId, book] of pushBook) {
       for (const [notificationId, entry] of book) {
         const row = ctx.store.getDelivery(notificationId, sessionId);
-        if (!row || row.state !== "accepted") {
-          book.delete(notificationId); // verified/failed/dead-letter 终态或行消失：出簿记（verified 恒 hold，无复活语义）
+        if (!row || row.state !== "accepted" || !epochAccepts(row.recordEpoch, ownerEpoch)) {
+          book.delete(notificationId); // verified/failed/dead-letter 终态、行消失或换代（I12）：出簿记（verified 恒 hold，无复活语义）
           continue;
         }
         // verified 行已在上行出簿记（hold 语义）：窗口与 repushed 棘智由 domain 判定正典持有
         if (repushDecision({ verified: false, repushed: entry.repushed, pushedAt: entry.pushedAt }, now) === "hold") continue;
-        entry.repushed = true; // 恰一次置位（attempt-marked：push 失败不复活，#31 无其他复活路径）
         const list = due.get(sessionId) ?? [];
         list.push(row);
         due.set(sessionId, list);
@@ -556,7 +627,16 @@ export function startLoops(ctx: LoopsCtx): LoopsHandle {
       if (book.size === 0) pushBook.delete(sessionId);
     }
     for (const [sessionId, rows] of due) {
-      void ctx.pusher.push(assembleLine(rows)).then(undefined, () => undefined); // 尽力一次：结果不改变幂等置位
+      if (sessionPushInflight.has(sessionId)) continue; // 评审 M3：批在飞让路——本 tick 跳过，下个兜底 tick 重判（未置位不违恰一次）
+      for (const r of rows) {
+        const entry = pushBook.get(sessionId)?.get(r.notificationId);
+        if (entry) entry.repushed = true; // 恰一次置位（attempt-marked：push 失败不复活，#31 无其他复活路径）
+      }
+      sessionPushInflight.add(sessionId);
+      void ctx.pusher.push(assembleLine(sessionId, rows)).then(
+        () => sessionPushInflight.delete(sessionId),
+        () => sessionPushInflight.delete(sessionId),
+      ); // 尽力一次：结果不改变幂等置位
     }
   };
 
@@ -564,9 +644,19 @@ export function startLoops(ctx: LoopsCtx): LoopsHandle {
   let fallbackTimer: { cancel(): void } | null = null;
   const fallbackTick = (): void => {
     if (stopped) return;
-    deliverScan();
-    repushScan();
-    fallbackTimer = ctx.clock.setTimeout(fallbackTick, DELIVER_FALLBACK_MS);
+    // 评审 M2：单次扫异常 containment——两通道各自隔离，异常记 errors 后照常重排兜底定时器
+    //（否则一次 Store 读抖动永久禁用丢唤醒自愈与 24h 恢复通道）
+    try {
+      deliverScan();
+    } catch (err) {
+      errors.push(err);
+    }
+    try {
+      repushScan();
+    } catch (err) {
+      errors.push(err);
+    }
+    if (!stopped) fallbackTimer = ctx.clock.setTimeout(fallbackTick, DELIVER_FALLBACK_MS);
   };
   fallbackTimer = ctx.clock.setTimeout(fallbackTick, DELIVER_FALLBACK_MS);
 
@@ -602,6 +692,7 @@ export function startLoops(ctx: LoopsCtx): LoopsHandle {
       for (const batch of batches.values()) batch.timer?.cancel();
       batches.clear();
       activeSessions.clear();
+      sessionPushInflight.clear();
       offWrite(); // 幂等取消订阅（票 25 Finding 2）：重复启停不累积监听器、旧闭包可回收
     },
   };
