@@ -334,6 +334,11 @@ export class Kernel {
               `register rejected: entity ${entityRefKeyOf(req.entityRef)} already belongs to profile "${existing.profileId}" — refusing re-register under "${req.profileId}" (one entity, one profile/state machine)`,
             );
           }
+          if (!existing.profileId) {
+            // 评审 E16：无 profileId 遗留实体——register 同事务补写（保留 state/payload/parent），
+            // 补写后异 profile 注册走上方拒绝路径（US-32：一实体一 profile）
+            tx.putEntity({ ...existing, profileId: req.profileId });
+          }
           return { entityRef: req.entityRef, state: existing.state, created: false };
         }
         if (req.state !== undefined && req.state !== null) requireStateIn(this.states, req.state);
@@ -437,13 +442,16 @@ export class Kernel {
         // 幂等：同参返回既有（R1）；schedule/source 变化探测行为，同参比较含槽配置（评审 F19）
         const existing = mine.find((s) => sameSubscribeParams(s, req, opts) && sameProbeConfig);
         if (existing) {
+          // 评审 E15：幂等分支的槽现值必须含 existing 自身——thresholds 不入比较域，同参异阈值仍幂等；
+          // 异阈值 → warning + 沿用既有槽值（槽不重建，先建者定跨幂等重订阅延续）
+          const adoptedExisting = adoptThresholds(slotThresholdsOf([...slotOthers, existing]), incoming);
           return {
             subscribed: true,
             subscriptionId: existing.subscriptionId,
             entityRef: req.entityRef,
             state: entity.state,
             validate,
-            warnings: adopted.warning ? [adopted.warning] : [],
+            warnings: adoptedExisting.warning ? [adoptedExisting.warning] : [],
           };
         }
         // 换参 = 关旧开新（checker 替换；同槽其余 session 订阅不动）

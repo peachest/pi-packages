@@ -1089,3 +1089,38 @@ describe("评审修复 — D 组（kernel 面）", () => {
     expect(store.getProbeSpec(SLOT_KEY)).toBeUndefined();
   });
 });
+
+// ==================== 评审修复 — E 组（kernel 面）：幂等阈值 warning / 遗留实体补写 profileId ====================
+describe("评审修复 — E 组（kernel 面）", () => {
+  it("E15：幂等重订阅异阈值 → warning + 沿用既有（existing 自身计入槽现值，不重建不改阈值）", () => {
+    const store = createMemoryStore();
+    seedEntity(store, null);
+    const kernel = new Kernel(store, VERDICT_STATES, 0);
+    const id = subId(kernel.subscribe(subReq({ opts: { failureThreshold: 3, successThreshold: 2 } })));
+    const same = kernel.subscribe(subReq({ opts: { failureThreshold: 3, successThreshold: 2 } }));
+    expect(same.subscribed && same.warnings).toEqual([]); // 同阈值零 warning
+    const diff = kernel.subscribe(subReq({ opts: { failureThreshold: 5, successThreshold: 5 } }));
+    expect(diff.subscribed && diff.warnings).toEqual([expect.stringContaining("first-creator-wins")]);
+    expect(diff.subscribed && diff.subscriptionId).toBe(id); // thresholds 不入比较域 → 仍幂等返回既有
+    const row = store.querySubscriptions({ sessionId: "session-1" }).find((s) => s.subscriptionId === id);
+    expect(row?.thresholds).toEqual({ failureThreshold: 3, successThreshold: 2 }); // 沿用既有不改写
+  });
+
+  it("E16：无 profileId 遗留实体 register 同事务补写（保留 state/payload），其后异 profile 注册拒绝", () => {
+    const store = createMemoryStore();
+    store.putEntity({ type: REF.type, key: REF.key, state: "passed", payload: { legacy: true } });
+    const kernel = new Kernel(store, VERDICT_STATES, 0);
+    expect(kernel.register({ entityRef: REF, profileId: "fixture-profile" })).toEqual({
+      entityRef: REF,
+      state: "passed",
+      created: false,
+    });
+    const row = store.getEntity(REF.type, REF.key);
+    expect(row?.profileId).toBe("fixture-profile"); // 补写
+    expect(row?.state).toBe("passed"); // 保留既有
+    expect(row?.payload).toEqual({ legacy: true }); // 保留既有
+    expect(() => kernel.register({ entityRef: REF, profileId: "other-profile" })).toThrow(
+      /already belongs to profile "fixture-profile"/, // 补写后跨 profile 走拒绝路径
+    );
+  });
+});

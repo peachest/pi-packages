@@ -713,3 +713,21 @@ describe("评审修复 — D 组补充：同步完成不残留 in-flight 标记"
     loops.stop();
   });
 });
+
+// ==================== 评审修复 — E 组（loops 面）：启动 dispatch TDZ ====================
+describe("评审修复 — E 组（loops 面）", () => {
+  it("E14：启动 dispatch 即同步完成（exec 同步抛错）→ completion 不丢（doSubmit 先于启动 dispatch 定义）", async () => {
+    const store = createMemoryStore();
+    store.putEntity({ type: REF.type, key: REF.key, state: null });
+    store.putProbeSpec({ slotKey: SLOT_KEY, check: "fixture-check", schedule: { type: "interval", intervalMs: 60_000 }, source: "poll" });
+    store.putRunLedger({ slotKey: SLOT_KEY, epoch: 0, refcount: 1, consecutiveFails: 0, entityRefType: REF.type, entityRefKey: REF.key });
+    store.putSubscription({ subscriptionId: "sub-seed", sessionId: "session-1", entityRefType: REF.type, entityRefKey: REF.key, template: TPL, check: "fixture-check", origin: "session", createdAt: 0 });
+    const exec = new FakeExec();
+    exec.enqueueFailure(new Error("sync-boom"), true); // 同步抛错 → 启动 dispatch 窗口内同步回流
+    const loops = startLoops(makeCtx(store, { exec }));
+    await micro();
+    expect(loops.errors).toHaveLength(0); // 无 TDZ ReferenceError（也未静默吞进 prober.deliver）
+    expect(store.getRunLedger(SLOT_KEY)?.lastVerdict).toBe("waiting"); // verdict 已应用（未修时 completion 丢失）
+    loops.stop();
+  });
+});

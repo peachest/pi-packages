@@ -281,7 +281,10 @@ export function startLoops(ctx: LoopsCtx): LoopsHandle {
         // 若探后置位则残留脏标记 → 槽被永久跳过（L1 死槽）
         inflight.set(row.slotKey, row.generation ?? 0);
         prober.probe({ slotKey: row.slotKey, check: spec.check, source: spec.source });
-        ctx.store.putRunLedger({ ...row, nextDueAt: nextDue });
+        // 重读后写（评审 E14）：同步完成的 probe 在 probe 内已回流应用（mirrorLedger 可能已写
+        // lastVerdict/consecutiveFails）——用捕获的 row 直接覆盖会把它冲掉
+        const current = ctx.store.getRunLedger(row.slotKey);
+        if (current) ctx.store.putRunLedger({ ...current, nextDueAt: nextDue });
       } catch (err) {
         inflight.delete(row.slotKey); // probe 同步抛错未完成回流：清标记，槽不被卡死
         errors.push(err); // 评审 D11：坏槽（如非法 cron spec）记 error 跳过，不拖垮其余槽 dispatch、不 abort 启动
@@ -316,6 +319,13 @@ export function startLoops(ctx: LoopsCtx): LoopsHandle {
     reschedule();
   };
 
+  const doSubmit = (req: MutationRequest): void => {
+    if (stopped) throw new Error("loops stopped: L0 queue closed");
+    queue.push(req);
+    drain();
+    reschedule(); // subscribe/cancel 改变槽面（新建槽首探、销毁槽撤定时器）——level-trigger 重排
+  };
+
   // 评审 D13：重启即重探（R1 A5 归零重探）——持久 nextDueAt 是停机前调度遗留，重启一律清零
   // （清零后走新建槽同路径首探）；refcount 0 槽不重探，非 poll 源不归调度管。
   for (const row of ctx.store.listRunLedger()) {
@@ -328,15 +338,10 @@ export function startLoops(ctx: LoopsCtx): LoopsHandle {
   // missed tick catch_up_one：停机跨过的 cron/interval 到点补触发一次且仅一次（#31 正典：补触发，
   // 非投递 redrive）——N 个 missed tick（nextDueAt 已成过去）合并为本次一次探针，nextDueAt 直接
   // 跳到下一未来到点不逐点补；新建槽（nextDueAt 缺省）同路径获得首探（归零重探同精神）。
+  // 评审 E14：启动 dispatch 在 doSubmit 定义之后——启动即同步完成的 probe（exec 同步抛错）经
+  // ingestProbeResult→doSubmit，先于定义则 TDZ ReferenceError 被 prober.deliver 吞掉、completion 静默丢失。
   dispatchDue(ctx.clock.now());
   reschedule();
-
-  const doSubmit = (req: MutationRequest): void => {
-    if (stopped) throw new Error("loops stopped: L0 queue closed");
-    queue.push(req);
-    drain();
-    reschedule(); // subscribe/cancel 改变槽面（新建槽首探、销毁槽撤定时器）——level-trigger 重排
-  };
 
   return {
     submit: doSubmit,
