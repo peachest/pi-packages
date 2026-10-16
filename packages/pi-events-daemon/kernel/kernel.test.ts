@@ -1163,3 +1163,144 @@ describe("票 28 — kernel.verify 收口", () => {
     expect(store.getDelivery("evt:x#1", "sess-1")?.state).toBe("verified");
   });
 });
+
+// =============================================================================
+// 票 40 评审修复 — F3/F9 kernel.publish 经 domain publish 纯函数 + F2 register firstTransition
+// + F5 query scope/session 过滤
+// =============================================================================
+
+describe("票 40 评审 F3 — kernel.publish edge-trigger 归 domain publish 纯函数", () => {
+  it("同 state 同 contentIdentity 二次 publish → null 无新事件；(state, contentIdentity) 对未变（ADR 0003）", () => {
+    const store = createMemoryStore();
+    const kernel = new Kernel(store, VERDICT_STATES, 0);
+    kernel.register({ entityRef: REF, profileId: "p" });
+    expect(kernel.publish(REF, "passed", { contentIdentity: "digest-1", occurredAt: at(1) })).toMatchObject({
+      eventSeq: 1,
+      from: null,
+      to: "passed",
+    });
+    // 同对二次：edge-trigger → null，无事件无游标推进（修复前：只查 to 不查身份 → 重复发事件）
+    expect(kernel.publish(REF, "passed", { contentIdentity: "digest-1", occurredAt: at(2) })).toBeNull();
+    expect(store.outboxBatch(10)).toHaveLength(1);
+    // 异身份同态：真实对变化 → 新事件 + 身份写回
+    expect(kernel.publish(REF, "passed", { contentIdentity: "digest-2", occurredAt: at(3) })).toMatchObject({
+      eventSeq: 2,
+      from: "passed",
+      to: "passed",
+    });
+    expect(store.getEntity(REF.type, REF.key)?.contentIdentity).toBe("digest-2");
+    expect(store.outboxBatch(10)).toHaveLength(2);
+  });
+
+  it("身份对随 probe 转换保留：绕行 probe 后回到同 (state, contentIdentity) 对仍不重发", () => {
+    const store = createMemoryStore();
+    const kernel = new Kernel(store, VERDICT_STATES, 0);
+    kernel.register({ entityRef: REF, profileId: "p" });
+    kernel.publish(REF, "passed", { contentIdentity: "digest-1", occurredAt: at(1) });
+    kernel.transition(REF, "failed", at(2)); // probe 路径无身份字段 → 保留既有值
+    kernel.transition(REF, "passed", at(3));
+    expect(kernel.publish(REF, "passed", { contentIdentity: "digest-1", occurredAt: at(4) })).toBeNull();
+    expect(store.outboxBatch(10)).toHaveLength(3);
+  });
+
+  it("payload 保真：publish 不携带 payload 不清既有快照（与 probe 路径同形）", () => {
+    const store = createMemoryStore();
+    const kernel = new Kernel(store, VERDICT_STATES, 0);
+    kernel.register({ entityRef: REF, profileId: "p", payload: { keep: true } });
+    kernel.publish(REF, "passed", { occurredAt: at(1) });
+    expect(store.getEntity(REF.type, REF.key)?.payload).toEqual({ keep: true });
+    kernel.publish(REF, "failed", { payload: { next: 1 }, occurredAt: at(2) });
+    expect(store.getEntity(REF.type, REF.key)?.payload).toEqual({ next: 1 });
+  });
+});
+
+describe("票 40 评审 F9 — kernel.publish from 封闭集执法（B7 绕行收口）", () => {
+  it("from 是历史旧名态 → 拒且零写入；显式 migrateState 迁移仍是唯一出口", () => {
+    const store = createMemoryStore();
+    store.putEntity({ type: REF.type, key: REF.key, state: "legacy" });
+    const kernel = new Kernel(store, VERDICT_STATES, 0);
+    expect(() => kernel.publish(REF, "passed", { occurredAt: at(1) })).toThrow(/outside profile closed set/);
+    expect(store.outboxBatch(10)).toHaveLength(0);
+    expect(store.getEntity(REF.type, REF.key)?.state).toBe("legacy");
+    // to 侧执法保持（既有面）
+    store.putEntity({ type: REF.type, key: REF.key, state: "passed" });
+    expect(() => kernel.publish(REF, "bogus", { occurredAt: at(1) })).toThrow(/outside profile closed set/);
+    // migrateState 显式迁移不受影响（例外保留）
+    expect(kernel.migrateState(REF, { from: "passed", to: "waiting" }, at(2))).toMatchObject({ from: "passed", to: "waiting" });
+  });
+});
+
+describe("票 40 评审 F2 — register firstTransition 同事务（status op 底座）", () => {
+  it("新实体 register+首转换同事务发事件；同态重注册不重发", () => {
+    const store = createMemoryStore();
+    const kernel = new Kernel(store, VERDICT_STATES, 0);
+    const r = kernel.register({ entityRef: REF, profileId: "p", firstTransition: { to: "waiting", occurredAt: at(1) } });
+    expect(r.created).toBe(true);
+    expect(r.event).toMatchObject({ eventSeq: 1, from: null, to: "waiting" });
+    expect(store.getEntity(REF.type, REF.key)?.state).toBe("waiting");
+    expect(store.outboxBatch(10)).toHaveLength(1);
+    const again = kernel.register({ entityRef: REF, profileId: "p", firstTransition: { to: "waiting", occurredAt: at(2) } });
+    expect(again.created).toBe(false);
+    expect(again.event).toBeUndefined();
+    expect(store.outboxBatch(10)).toHaveLength(1);
+  });
+
+  it("无效 state：register+transition 整体回滚，无残留实体（半注册收口）", () => {
+    const store = createMemoryStore();
+    const kernel = new Kernel(store, VERDICT_STATES, 0);
+    expect(() =>
+      kernel.register({ entityRef: REF, profileId: "p", firstTransition: { to: "bogus", occurredAt: at(1) } }),
+    ).toThrow(/outside profile closed set/);
+    expect(store.getEntity(REF.type, REF.key)).toBeUndefined();
+    expect(store.outboxBatch(10)).toHaveLength(0);
+    // 既有无 profileId 遗留实体同理：E16 补写随事务回滚
+    store.putEntity({ type: REF.type, key: REF.key, state: "passed" });
+    expect(() =>
+      kernel.register({ entityRef: REF, profileId: "p", firstTransition: { to: "bogus", occurredAt: at(1) } }),
+    ).toThrow(/outside profile closed set/);
+    expect(store.getEntity(REF.type, REF.key)?.profileId).toBeUndefined();
+  });
+
+  it("register 首转换后游标推进：后续 publish 从新位点分配（同 id 异内容 corruption 收口）", () => {
+    const store = createMemoryStore();
+    const kernel = new Kernel(store, VERDICT_STATES, 0);
+    kernel.register({ entityRef: REF, profileId: "p", firstTransition: { to: "waiting", occurredAt: at(1) } });
+    expect(kernel.publish(REF, "passed", { occurredAt: at(2) })).toMatchObject({ eventSeq: 2 });
+    expect(store.tx((tx) => tx.getEvent(deterministicEventId(REF, 2)))).toMatchObject({ to: "passed" });
+    expect(store.outboxBatch(10).map((r) => r.eventSeq)).toEqual([1, 2]);
+  });
+});
+
+describe("票 40 评审 F5 — query scope/session 过滤（开放订阅-实体 join）", () => {
+  it("session/scope 过滤命中持有开放订阅的实体；closed 订阅不携带可见性；deadLetters 随 entity 可见性与自身 session 过滤", () => {
+    const store = createMemoryStore();
+    const kernel = new Kernel(store, VERDICT_STATES, 0);
+    const e1 = { type: "fixture:widget", key: "external/1" };
+    const e2 = { type: "fixture:widget", key: "external/2" };
+    const e3 = { type: "fixture:widget", key: "external/3" };
+    for (const e of [e1, e2, e3]) kernel.register({ entityRef: e, profileId: "p" });
+    const base = { origin: "session" as const, createdAt: 1 };
+    store.putSubscription({ subscriptionId: "sub-1", sessionId: "s1", entityRefType: e1.type, entityRefKey: e1.key, template: "t", ...base });
+    store.putSubscription({ subscriptionId: "sub-2", sessionId: "s2", entityRefType: e2.type, entityRefKey: e2.key, template: "t", scope: "user", ...base });
+    store.putSubscription({
+      subscriptionId: "sub-3", sessionId: "s1", entityRefType: e3.type, entityRefKey: e3.key, template: "t",
+      closedAt: 9, closedReason: "cancelled", ...base,
+    });
+    const keys = (r: { entities: { entityRef: { key: string } }[] }) => r.entities.map((e) => e.entityRef.key);
+    expect(keys(kernel.query({ sessionId: "s1" }))).toEqual(["external/1"]);
+    expect(keys(kernel.query({ scope: "user" }))).toEqual(["external/2"]);
+    expect(keys(kernel.query({ scope: "project", sessionId: "s2" }))).toEqual([]);
+    expect(kernel.query({}).entities).toHaveLength(3);
+    // deadLetters：sessionId 直配 + entity 可见性
+    store.putDelivery({ notificationId: "n1", sessionId: "s9", state: "dead-letter", recordEpoch: 0 });
+    store.putDelivery({ notificationId: "n2", sessionId: "s1", state: "dead-letter", recordEpoch: 0 });
+    store.tx((tx) => {
+      tx.putEvent({ eventId: "n1", eventSeq: 1, entityRefType: e2.type, entityRefKey: e2.key, from: null, to: "failed", occurredAt: at(1) });
+      tx.putEvent({ eventId: "n2", eventSeq: 2, entityRefType: e1.type, entityRefKey: e1.key, from: null, to: "failed", occurredAt: at(1) });
+    });
+    expect(kernel.query({ sessionId: "s1" }).deadLetters.map((d) => d.notificationId)).toEqual(["n2"]);
+    expect(kernel.query({ sessionId: "s2" }).deadLetters.map((d) => d.notificationId)).toEqual([]);
+    // scope 是实体可见性过滤（delivery 行无 scope）：实体经 user 订阅可见 → 其 dead-letter 可见
+    expect(kernel.query({ scope: "user" }).deadLetters.map((d) => d.notificationId)).toEqual(["n1"]);
+  });
+});

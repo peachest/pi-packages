@@ -63,6 +63,7 @@ CREATE TABLE IF NOT EXISTS entities (
   parent_type TEXT,
   parent_key TEXT,
   retired INTEGER,
+  content_identity TEXT,
   PRIMARY KEY (type, entity_key)
 );
 CREATE TABLE IF NOT EXISTS outbox (
@@ -158,6 +159,7 @@ const MIGRATIONS: ReadonlyArray<{ table: string; column: string; ddl: string }> 
   { table: "run_ledger", column: "entity_ref_type", ddl: "ALTER TABLE run_ledger ADD COLUMN entity_ref_type TEXT" },
   { table: "run_ledger", column: "entity_ref_key", ddl: "ALTER TABLE run_ledger ADD COLUMN entity_ref_key TEXT" },
   { table: "run_ledger", column: "generation", ddl: "ALTER TABLE run_ledger ADD COLUMN generation INTEGER" },
+  { table: "entities", column: "content_identity", ddl: "ALTER TABLE entities ADD COLUMN content_identity TEXT" },
 ];
 
 /** node:sqlite 行值域（SQLOutputValue 的本地形状，不依赖类型导出面）。 */
@@ -191,6 +193,7 @@ function rowToEntity(r: RawRow): EntityRow {
     ...str(r.parent_type) !== undefined ? { parentType: str(r.parent_type) } : {},
     ...str(r.parent_key) !== undefined ? { parentKey: str(r.parent_key) } : {},
     ...bool(r.retired) !== undefined ? { retired: bool(r.retired) } : {},
+    ...str(r.content_identity) !== undefined ? { contentIdentity: str(r.content_identity) } : {},
   };
 }
 
@@ -358,10 +361,11 @@ export class SqliteStore implements Store {
         return r && rowToEntity(r);
       },
       putEntity: (row) => {
-        this.st("INSERT INTO entities (type, entity_key, state, payload_json, profile_id, parent_type, parent_key, retired) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (type, entity_key) DO UPDATE SET state = excluded.state, payload_json = excluded.payload_json, profile_id = excluded.profile_id, parent_type = excluded.parent_type, parent_key = excluded.parent_key, retired = excluded.retired").run(
+        this.st("INSERT INTO entities (type, entity_key, state, payload_json, profile_id, parent_type, parent_key, retired, content_identity) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (type, entity_key) DO UPDATE SET state = excluded.state, payload_json = excluded.payload_json, profile_id = excluded.profile_id, parent_type = excluded.parent_type, parent_key = excluded.parent_key, retired = excluded.retired, content_identity = excluded.content_identity").run(
           row.type, row.key, row.state ?? null, row.payload === undefined ? null : JSON.stringify(row.payload),
           row.profileId ?? null, row.parentType ?? null, row.parentKey ?? null,
           row.retired === undefined ? null : Number(row.retired),
+          row.contentIdentity ?? null,
         );
         mark("entities");
       },

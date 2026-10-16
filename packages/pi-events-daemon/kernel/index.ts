@@ -41,6 +41,7 @@ import {
   onMatches,
   transitionDelivery,
 } from "../domain/delivery.ts";
+import { publish as domainPublish, type Entity } from "../domain/entity.ts";
 import type { EventRow, Store, SubscriptionRow, TxView } from "../store/index.ts";
 import type { EntityRow } from "../store/index.ts";
 
@@ -64,9 +65,18 @@ export type RegisterRequest = {
   state?: string | null;
   payload?: unknown;
   parent?: EntityRef;
+  /** 票 40 评审 F2：status op register+首转换同事务（一个 store.tx 单元）——transition 拒绝
+   *  （封闭集/retired）整体回滚，无半注册残留。结构位承载 to+occurredAt 的耦合（缺一即类型错）。 */
+  firstTransition?: { to: string; occurredAt: string };
 };
 
-export type RegisterResult = { entityRef: EntityRef; state: string | null; created: boolean };
+export type RegisterResult = {
+  entityRef: EntityRef;
+  state: string | null;
+  created: boolean;
+  /** firstTransition 实际产生的转换事件（同态无事件 = 缺省）。 */
+  event?: TransitionResult;
+};
 
 /** subscribe opts（#31 操作面正典：{on, once, flip, template, smoke, sessionId, readyCheck, ttl, thresholds}；
  *  template 提升为请求结构位；schedule/source 是模板资产解析产物（caller 传入，kernel 零 profile import——opts 永不含 shell）。 */
@@ -327,36 +337,56 @@ export class Kernel {
   /**
    * register（簿记底座）：实体注册记 profileId。同 EntityRef 已归属异 profile → 明确拒绝
    * （不静默覆盖，US-32：一实体不跨两 profile）；同 profile 重注册幂等（不覆盖既有 state/payload）。
+   * firstTransition（票 40 评审 F2）：status op 的 register+首转换同事务——转换拒绝（封闭集/retired）
+   * 整体回滚（含 E16 profileId 补写），无半注册残留。
    */
   register(req: RegisterRequest): RegisterResult {
-    return this.withRetry(`register ${entityRefKeyOf(req.entityRef)}`, () =>
-      this.store.tx((tx) => {
-        const existing = tx.getEntity(req.entityRef.type, req.entityRef.key);
-        if (existing) {
-          if (existing.profileId && existing.profileId !== req.profileId) {
-            throw new Error(
-              `register rejected: entity ${entityRefKeyOf(req.entityRef)} already belongs to profile "${existing.profileId}" — refusing re-register under "${req.profileId}" (one entity, one profile/state machine)`,
-            );
+    return this.withRetry(`register ${entityRefKeyOf(req.entityRef)}`, () => {
+      const planned = this.store.tx(
+        (tx): { result: RegisterResult; sequences?: IntentSequences } => {
+          const existing = tx.getEntity(req.entityRef.type, req.entityRef.key);
+          let state: string | null;
+          let created: boolean;
+          if (existing) {
+            if (existing.profileId && existing.profileId !== req.profileId) {
+              throw new Error(
+                `register rejected: entity ${entityRefKeyOf(req.entityRef)} already belongs to profile "${existing.profileId}" — refusing re-register under "${req.profileId}" (one entity, one profile/state machine)`,
+              );
+            }
+            if (!existing.profileId) {
+              // 评审 E16：无 profileId 遗留实体——register 同事务补写（保留 state/payload/parent），
+              // 补写后异 profile 注册走上方拒绝路径（US-32：一实体一 profile）
+              tx.putEntity({ ...existing, profileId: req.profileId });
+            }
+            state = existing.state;
+            created = false;
+          } else {
+            if (req.state !== undefined && req.state !== null) requireStateIn(this.states, req.state);
+            tx.putEntity({
+              type: req.entityRef.type,
+              key: req.entityRef.key,
+              state: req.state ?? null,
+              ...(req.payload !== undefined ? { payload: req.payload } : {}),
+              profileId: req.profileId,
+              ...(req.parent ? { parentType: req.parent.type, parentKey: req.parent.key } : {}),
+            });
+            state = req.state ?? null;
+            created = true;
           }
-          if (!existing.profileId) {
-            // 评审 E16：无 profileId 遗留实体——register 同事务补写（保留 state/payload/parent），
-            // 补写后异 profile 注册走上方拒绝路径（US-32：一实体一 profile）
-            tx.putEntity({ ...existing, profileId: req.profileId });
-          }
-          return { entityRef: req.entityRef, state: existing.state, created: false };
-        }
-        if (req.state !== undefined && req.state !== null) requireStateIn(this.states, req.state);
-        tx.putEntity({
-          type: req.entityRef.type,
-          key: req.entityRef.key,
-          state: req.state ?? null,
-          ...(req.payload !== undefined ? { payload: req.payload } : {}),
-          profileId: req.profileId,
-          ...(req.parent ? { parentType: req.parent.type, parentKey: req.parent.key } : {}),
-        });
-        return { entityRef: req.entityRef, state: req.state ?? null, created: true };
-      }),
-    );
+          if (req.firstTransition === undefined) return { result: { entityRef: req.entityRef, state, created } };
+          // 同事务首转换：transitionTx 拒绝即整 tx 回滚（register 无残留）
+          const t = this.transitionTx(tx, req.entityRef, req.firstTransition.to as Verdict, req.firstTransition.occurredAt);
+          if (t === null) return { result: { entityRef: req.entityRef, state, created } };
+          return {
+            result: { entityRef: req.entityRef, state: t.result.to, created, event: t.result },
+            sequences: t.sequences,
+          };
+        },
+      );
+      // F1 同 transition：游标推进仅在 Store.tx 成功返回后（提交失败不烧号，重试重排同序）
+      if (planned.sequences !== undefined) this.sequences = planned.sequences;
+      return planned.result;
+    });
   }
 
   /**
@@ -608,6 +638,36 @@ export class Kernel {
   }
 
   /**
+   * transition 事务体（transition/register firstTransition 共用；调用方必须在 store.tx 内调）。
+   * verdict → 校验（存在/未 retired/I3 封闭集含 from）→ planTransition 双轨分配 → 串行消费
+   * （tx 内 appendIfMissing + 实体写回 + outbox 行，I1 原子）。同态 verdict → null（无转换无事件，ADR 0003）。
+   */
+  private transitionTx(
+    tx: TxView,
+    ref: EntityRef,
+    verdict: Verdict,
+    occurredAt: string,
+  ): { result: TransitionResult; sequences: IntentSequences } | null {
+    const entity = tx.getEntity(ref.type, ref.key);
+    if (!entity) throw new Error(`transition rejected: unknown entity ${entityRefKeyOf(ref)}`);
+    if (entity.retired) {
+      throw new Error(`transition rejected: entity ${entityRefKeyOf(ref)} is retired — retired entities never revive`);
+    }
+    requireStateIn(this.states, verdict);
+    // F3：from 态同受封闭集执法（null 首转换豁免）——已删除旧态的唯一出口是 migrateState 显式迁移
+    requireStateIn(this.states, entity.state);
+    if (entity.state === verdict) return null;
+    const { intent, sequences } = planTransition(this.sequences, {
+      entityRef: ref,
+      from: entity.state,
+      to: verdict,
+      occurredAt,
+    });
+    this.consumeTx(tx, intent);
+    return { result: { eventSeq: intent.eventSeq, from: intent.from, to: intent.to, eventId: intent.eventId }, sequences };
+  }
+
+  /**
    * probe 路径唯一写入口：verdict → 校验（存在/未 retired/I3 封闭集/edge-trigger）
    * → planTransition 双轨分配 → 串行消费（tx 内 appendIfMissing + 实体写回 + outbox 行，I1 原子）。
    * 同态 verdict → null（无转换无事件，ADR 0003）。
@@ -616,27 +676,7 @@ export class Kernel {
     return this.withRetry(`transition ${entityRefKeyOf(ref)}/${verdict}`, () => {
       // F1：回调只产出 {业务结果, 待推进游标}，Store.tx 成功返回后才推进——
       // 回调完成、提交失败的回滚场景下重试重排同序 → 同确定性 eventId（幂等不烧号）
-      const planned = this.store.tx(
-        (tx): { result: TransitionResult; sequences: IntentSequences } | null => {
-          const entity = tx.getEntity(ref.type, ref.key);
-          if (!entity) throw new Error(`transition rejected: unknown entity ${entityRefKeyOf(ref)}`);
-          if (entity.retired) {
-            throw new Error(`transition rejected: entity ${entityRefKeyOf(ref)} is retired — retired entities never revive`);
-          }
-          requireStateIn(this.states, verdict);
-          // F3：from 态同受封闭集执法（null 首转换豁免）——已删除旧态的唯一出口是 migrateState 显式迁移
-          requireStateIn(this.states, entity.state);
-          if (entity.state === verdict) return null;
-          const { intent, sequences } = planTransition(this.sequences, {
-            entityRef: ref,
-            from: entity.state,
-            to: verdict,
-            occurredAt,
-          });
-          this.consumeTx(tx, intent);
-          return { result: { eventSeq: intent.eventSeq, from: intent.from, to: intent.to, eventId: intent.eventId }, sequences };
-        },
-      );
+      const planned = this.store.tx((tx) => this.transitionTx(tx, ref, verdict, occurredAt));
       if (planned === null) return null;
       this.sequences = planned.sequences;
       return planned.result;
@@ -660,23 +700,54 @@ export class Kernel {
     const planned = this.withRetry(`publish ${entityRefKeyOf(ref)}/${to}`, () =>
       this.store.tx(
         (tx): { result: TransitionResult; sequences: IntentSequences } | null => {
-          const entity = tx.getEntity(ref.type, ref.key);
-          if (!entity) throw new Error(`publish rejected: unknown entity ${entityRefKeyOf(ref)} — register/status first`);
-          if (entity.retired) {
+          const row = tx.getEntity(ref.type, ref.key);
+          if (!row) throw new Error(`publish rejected: unknown entity ${entityRefKeyOf(ref)} — register/status first`);
+          if (row.retired) {
             throw new Error(`publish rejected: entity ${entityRefKeyOf(ref)} is retired — retired entities never revive`);
           }
+          // F3（票 40 评审 F9）：from 态同受封闭集执法（null 首态豁免）——旧名态不经 publish 绕行 B7，
+          // 唯一出口是 migrateState 显式迁移；同步拒保持 kernel 错误面（domain 同款检查仅双保险）
           requireStateIn(this.states, to);
-          if (entity.state === to && (opts.contentIdentity === undefined || opts.contentIdentity === null)) return null;
-          const { intent, sequences } = planTransition(this.sequences, {
-            entityRef: ref,
-            from: entity.state,
-            to,
-            occurredAt: opts.occurredAt,
-            ...(opts.contentIdentity !== undefined ? { contentIdentity: opts.contentIdentity } : {}),
-            ...(opts.payload !== undefined ? { payload: opts.payload } : {}),
-          });
-          this.consumeTx(tx, intent);
-          return { result: { eventSeq: intent.eventSeq, from: intent.from, to: intent.to, eventId: intent.eventId }, sequences };
+          requireStateIn(this.states, row.state);
+          // 票 40 评审 F3：edge-trigger（(state, contentIdentity) 对未变 → null，ADR 0003）判定
+          // 归 domain publish 纯函数——kernel 不自写判定（只查 to 不查身份 → 同对重复发事件的根因）
+          const sequences = {
+            decisionOrder: this.sequences.decisionOrder + 1,
+            eventSeq: this.sequences.eventSeq + 1,
+          };
+          const intent = domainPublish(
+            {
+              ref,
+              profileId: row.profileId ?? "",
+              state: row.state,
+              contentIdentity: row.contentIdentity ?? null,
+              payload: row.payload ?? null,
+              parent:
+                row.parentType !== undefined && row.parentKey !== undefined
+                  ? { type: row.parentType, key: row.parentKey }
+                  : null,
+              retired: row.retired ?? false,
+            },
+            {
+              to,
+              ...(typeof opts.contentIdentity === "string" ? { contentIdentity: opts.contentIdentity } : {}),
+              ...(opts.payload !== undefined ? { payload: opts.payload } : {}),
+            },
+            {
+              states: this.states,
+              occurredAt: opts.occurredAt,
+              eventSeq: sequences.eventSeq,
+              decisionOrder: sequences.decisionOrder,
+            },
+          );
+          if (intent === null) return null;
+          // payload 保真：publish 契约=不携带则不动既有快照（domain 无 payload 快照置 null，此处还原为不写）
+          const effect = opts.payload === undefined && intent.payload === null ? { ...intent, payload: undefined } : intent;
+          this.consumeTx(tx, effect);
+          return {
+            result: { eventSeq: intent.eventSeq, from: intent.from, to: intent.to, eventId: intent.eventId },
+            sequences,
+          };
         },
       ),
     );
@@ -857,10 +928,26 @@ export class Kernel {
    * query（票 11，读侧归一）：实体清单（state/payload 摘要/eventSeq/lastProbedAt/backlog）
    * + listChildren 单层展开 + per-entity backlog + deadLetters 清单 + B4 懒重探标记。
    * backlog/deadLetters/eventSeq 归属：delivery/notificationId 经事件 join（tx 批量点查）。
-   * 过滤面本票最小化 {entityRef}（op 表 scope/session 过滤需订阅-实体 join 面，随订阅票补）。
+   * 过滤面：entityRef 点查 + scope/session（票 40 评审 F5：开放订阅-实体 join——可见实体 =
+   * 持有匹配 scope/session 的开放订阅；deadLetters 另按自身 sessionId 过滤）。
    */
-  query(filter: { entityRef?: EntityRef } = {}, probe?: QueryProbeCtx): QueryResult {
+  query(
+    filter: { entityRef?: EntityRef; scope?: SubscriptionScope; sessionId?: string } = {},
+    probe?: QueryProbeCtx,
+  ): QueryResult {
     const entities = this.store.queryEntities({});
+    // scope/session 可见集（订阅-实体 join；closed 订阅不携带可见性；scope 缺省 project 同 L0 编址口径）
+    let visible: Set<string> | null = null;
+    if (filter.scope !== undefined || filter.sessionId !== undefined) {
+      visible = new Set();
+      for (const s of this.store.querySubscriptions(
+        filter.sessionId !== undefined ? { sessionId: filter.sessionId } : {},
+      )) {
+        if (s.closedAt !== undefined) continue;
+        if (filter.scope !== undefined && (s.scope ?? "project") !== filter.scope) continue;
+        visible.add(entityRefKeyOf({ type: s.entityRefType, key: s.entityRefKey }));
+      }
+    }
     const outbox = this.store.outboxBatch(Number.MAX_SAFE_INTEGER);
     const pending = this.store.pendingDeliveries({});
     const dead = this.store.deadLetters({});
@@ -920,12 +1007,17 @@ export class Kernel {
       return entry;
     };
 
-    const selected = filter.entityRef
-      ? entities.filter((e) => e.type === filter.entityRef!.type && e.key === filter.entityRef!.key)
-      : entities;
-    const deadLetters = filter.entityRef
-      ? joins.deadList.filter((d) => sameEntityRef(d.entityRef, filter.entityRef!))
-      : joins.deadList;
+    const selected = entities.filter((e) => {
+      if (filter.entityRef && !(e.type === filter.entityRef.type && e.key === filter.entityRef.key)) return false;
+      if (visible && !visible.has(entityRefKeyOf({ type: e.type, key: e.key }))) return false;
+      return true;
+    });
+    const deadLetters = joins.deadList.filter((d) => {
+      if (filter.entityRef && !sameEntityRef(d.entityRef, filter.entityRef)) return false;
+      if (filter.sessionId !== undefined && d.sessionId !== filter.sessionId) return false;
+      if (visible && !visible.has(entityRefKeyOf(d.entityRef))) return false;
+      return true;
+    });
     return { entities: selected.map((e) => entryOf(e, true)), deadLetters };
   }
 
@@ -1038,6 +1130,9 @@ export class Kernel {
       ...entity,
       state: intent.to,
       ...(intent.payload !== undefined ? { payload: intent.payload } : {}),
+      // 票 40 评审 F3：自转换身份对现值随 publish 路径写回（edge-trigger 的跨调用输入；
+      // probe 路径无身份字段 → 保留既有值）；显式 null = 清除（身份对回到无身份态）
+      ...(intent.contentIdentity !== undefined ? { contentIdentity: intent.contentIdentity ?? undefined } : {}),
     });
     tx.putOutbox({ notificationId: intent.eventId, eventSeq: intent.eventSeq });
     return { kind: "appended", event };

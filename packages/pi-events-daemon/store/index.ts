@@ -34,6 +34,9 @@ export type EntityRow = {
   parentType?: string;
   parentKey?: string;
   retired?: boolean;
+  /** 自转换身份对 (state, contentIdentity) 现值（ADR 0003 edge-trigger 输入；publish 路径写回，
+   *  probe 路径保留；缺省/null = 无身份）。票 40 评审 F3。 */
+  contentIdentity?: string;
 };
 
 export type SubscriptionRow = {

@@ -553,4 +553,24 @@ describe("ticket 22: 真 SQLite（B 层）", () => {
   it("defaultStorePath：正典数据布局形状（不触盘）", () => {
     expect(defaultStorePath().endsWith(join(".pi", "data", "pi-events", "store.db"))).toBe(true);
   });
+
+  it("entities.content_identity：旧库迁移补列不丢行 + 身份对落库往返（票 40 评审 F3）", () => {
+    const p = tmpDbPath();
+    // 旧版库（无 content_identity 列）手工铸形 → SqliteStore 打开即迁移补列
+    const legacy = new DatabaseSync(p);
+    legacy.exec(
+      "CREATE TABLE entities (type TEXT NOT NULL, entity_key TEXT NOT NULL, state TEXT, payload_json TEXT, profile_id TEXT, parent_type TEXT, parent_key TEXT, retired INTEGER, PRIMARY KEY (type, entity_key))",
+    );
+    legacy.prepare("INSERT INTO entities (type, entity_key, state) VALUES ('t', 'k', 'passed')").run();
+    legacy.close();
+    const s = new SqliteStore(p);
+    expect(s.getEntity("t", "k")?.state).toBe("passed");
+    expect(s.getEntity("t", "k")?.contentIdentity).toBeUndefined();
+    // 身份对写回 + 重开往返（edge-trigger 的跨重启输入）
+    s.putEntity({ type: "t", key: "k", state: "failed", contentIdentity: "digest-9" });
+    s.close();
+    const s2 = new SqliteStore(p);
+    expect(s2.getEntity("t", "k")).toMatchObject({ state: "failed", contentIdentity: "digest-9" });
+    s2.close();
+  });
 });
