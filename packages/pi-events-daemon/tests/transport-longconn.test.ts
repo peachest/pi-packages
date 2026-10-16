@@ -137,7 +137,7 @@ describe("ticket 29 fix: client 终态（评审 F6/F7/F8）", () => {
     const pendingReq = c.request("status", {});
     await new Promise((r) => setTimeout(r, 60));
     await handle!.close(); // 服务端正常断连
-    await expect(pendingReq).rejects.toMatchObject({ code: -32000 });
+    await expect(pendingReq).rejects.toMatchObject({ code: -32000, phase: "transport" }); // 传输本地失败标记（票 37：与 daemon 业务 RpcError 区分）
     await c.close();
   });
 

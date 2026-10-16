@@ -160,8 +160,8 @@ export type OpResponse<N extends OpName = OpName> = OpContract[N]["res"];
 // JSON-RPC 单行帧编解码
 // ---------------------------------------------------------------------------
 
-/** JSON-RPC error object。错误信息一律列可用选项（#31）。 */
-export type RpcError = { code: number; message: string; data?: unknown };
+/** JSON-RPC error object。错误信息一律列可用选项（#31）；phase:"transport" = 传输本地失败标记（socket close/error 清算 pending 时注入，daemon 业务错误无此字段）——消费方以此区分传输失败与业务错误（重试策略只对传输失败生效，票 37）。 */
+export type RpcError = { code: number; message: string; data?: unknown; phase?: "transport" };
 
 /** op 请求帧（短连接，带请求 id）。 */
 /** op 请求帧可选携带 daemon epoch（I12：帧级所有权校验，transport 执行点；缺省 = 旧 epoch 残留帧被拒）。 */

@@ -60,10 +60,16 @@ export function readDaemonEpoch(socketPath: string): number {
 
 export function isRpcError(err: unknown): err is RpcError {
   const e = err as Partial<RpcError> | null | undefined;
-  return e !== null && e !== undefined && typeof e.code === "number" && typeof e.message === "string";
+  // 评审 M：传输本地失败（socket close/error，-32000）带 phase:"transport" 标记——不计为 daemon
+  // 业务错误，重试策略只对传输失败生效。
+  return e !== null && e !== undefined && typeof e.code === "number" && typeof e.message === "string" && e.phase !== "transport";
 }
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+/** 失败相位：连接建立失败（唯一触发惰性拉起的相位）vs 响应相位失败（daemon 已活，只重试）。 */
+type AttemptPhase = "connection" | "response";
+type AttemptError = Error & { phase: AttemptPhase };
 
 /**
  * 缺省惰性拉起器：spawn `pi-events-daemon` 包内 daemon-main 入口（detached，PI_EVENTS_SOCK 指向本 socket），
@@ -116,19 +122,26 @@ export function createOpClient(cfg: OpClientConfig = {}): OpClient {
   const launcher = cfg.launcher ?? defaultDaemonLauncher(socketPath, cfg.env ?? process.env);
   const delay = cfg.retryDelayMs ?? sleep;
 
-  /** 单次尝试：一条短连接（连接→请求→关闭）。 */
+  /** 单次尝试：一条短连接（连接→请求→关闭）；非业务失败带 phase 标记供重试策略消费。 */
   const once = async (op: OpName, params: Record<string, unknown>): Promise<unknown> => {
     let client: EventsClient | null = null;
+    let phase: AttemptPhase = "connection";
     try {
       const epoch = cfg.epoch ?? readDaemonEpoch(socketPath);
       client = await connectEvents(socketPath, { epoch });
+      phase = "response";
       const p = client.request(op, params);
       p.catch(() => {}); // 超时竞速输家的 rejection 不得成为 unhandled
       return await withTimeout(p, timeoutMs, `op ${op} 响应超时（${timeoutMs}ms）——daemon 停摆或 epoch 过期？检查 ${socketPath}.epoch / 重启 daemon`);
     } catch (err) {
       if (isRpcError(err)) throw err; // daemon 业务错误原样上抛（错误文案已列可用选项）
       const msg = (err as Error | undefined)?.message ?? String(err);
-      throw new Error(`daemon 连接失败（${socketPath}）: ${msg}`);
+      // 评审 M：错误带相位——响应相位失败（含 transport 断连/超时）不得触发惰性拉起
+      const wrapped = new Error(
+        `${phase === "connection" ? "daemon 连接失败" : "daemon 调用失败"}（${socketPath}）: ${msg}`,
+      ) as AttemptError;
+      wrapped.phase = phase;
+      throw wrapped;
     } finally {
       await client?.close();
     }
@@ -145,8 +158,8 @@ export function createOpClient(cfg: OpClientConfig = {}): OpClient {
           if (isRpcError(err)) throw err; // 业务错误不重试
           lastErr = err;
           if (attempt >= maxAttempts) break;
-          if (attempt === 1) {
-            // 惰性拉起：daemon 未运行 → 拉起后重试（拉起失败并入末错误）
+          // 评审 M：惰性拉起仅对连接相位失败（daemon 未运行）；响应相位失败（daemon 已活）只重试
+          if (attempt === 1 && (err as { phase?: AttemptPhase }).phase === "connection") {
             try {
               await launcher();
             } catch (launchErr) {

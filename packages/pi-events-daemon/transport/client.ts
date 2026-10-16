@@ -57,7 +57,7 @@ export function connectEvents(path: string, opts: { epoch: number }): Promise<Ev
 
   // close 即终态：正常断连（对端 destroy）没有 error 事件——pending 必须清算，否则永久悬挂
   socket.on("close", () => {
-    const error: RpcError = { code: -32000, message: "connection closed" };
+    const error: RpcError = { code: -32000, message: "connection closed", phase: "transport" };
     for (const p of pending.values()) p.reject(error);
     pending.clear();
     closeHandler?.();
@@ -105,7 +105,7 @@ export function connectEvents(path: string, opts: { epoch: number }): Promise<Ev
       resolve(client);
     });
     socket.on("error", (err) => {
-      const error: RpcError = { code: -32000, message: err.message };
+      const error: RpcError = { code: -32000, message: err.message, phase: "transport" };
       for (const p of pending.values()) p.reject(error);
       pending.clear();
       if (!settled) {
