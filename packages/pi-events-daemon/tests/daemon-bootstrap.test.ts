@@ -1,0 +1,288 @@
+/**
+ * Ticket 38 acceptance tests — 组合根 bootstrap 正典顺序 + flock/pidfile 仲裁 + 优雅停机 + epoch 共用 + C1 降级。
+ * C 层进程级双启动/SIGTERM 用真子进程（bin 入口）；启动顺序/epoch/降级用进程内 bootstrap（MemoryStore 注入 + 临时目录）。
+ */
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import { daemonMain, fx, store, transport } from "../index.ts";
+
+const { FileLock, FakeExec, FakeFs, FakePusher, SystemClock } = fx;
+
+/** 每个 case 独立临时目录（unix path 长度受限，tmpdir 足够短）。 */
+function makeDir(): string {
+  return mkdtempSync(join(tmpdir(), "pi-events-t38-"));
+}
+
+/** 合法 profile 资产（profiles-registry.test 同构最小形）。 */
+const PROFILE = {
+  id: "fixture-widget",
+  entityType: "fixture:widget",
+  version: 1,
+  states: ["green", "red"],
+  transitions: [
+    { from: "green", to: "red" },
+    { from: "red", to: "green" },
+  ],
+  payloadSchema: { type: "object" },
+  keyGenerator: { kind: "path", param: "path" },
+  schedule: { type: "interval", every: "60s" },
+  onTransition: [],
+  templates: [
+    { name: "watch", check: "cat {path}", params: { path: "被监视文件路径" }, usage: "监视文件判定器" },
+  ],
+  stateMigrations: {},
+};
+
+interface TestDaemon {
+  daemon: daemonMain.DaemonHandle;
+  dir: string;
+  sockPath: string;
+  pidPath: string;
+  dbPath: string;
+}
+
+/** 进程内 bootstrap（MemoryStore + Fake exec/fs/pusher；时钟真值——自检/L3 面不依赖步进确定性）。 */
+async function bootInProcess(overrides: Partial<daemonMain.BootstrapOptions> = {}): Promise<TestDaemon> {
+  const dir = makeDir();
+  const paths = { dir, sockPath: join(dir, "d.sock"), pidPath: join(dir, "d.pid") };
+  const daemon = await daemonMain.bootstrap({
+    ...paths,
+    store: store.createMemoryStore(),
+    clock: new SystemClock(),
+    exec: new FakeExec(),
+    pusher: new FakePusher(),
+    fs: new FakeFs(),
+    ...overrides,
+  });
+  return { daemon, dbPath: join(dir, "store.db"), ...paths };
+}
+
+const spawned: import("node:child_process").ChildProcess[] = [];
+const dirs: string[] = [];
+afterEach(() => {
+  for (const child of spawned.splice(0)) {
+    child.kill("SIGKILL");
+  }
+  for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+});
+
+/** 真子进程启动（bin 入口）；ready = pidfile 出现 + socket 可连。 */
+async function bootChild(dir: string, extra: Record<string, string> = {}): Promise<{
+  child: import("node:child_process").ChildProcess;
+  sockPath: string;
+  pidPath: string;
+}> {
+  const { spawn } = await import("node:child_process");
+  const { fileURLToPath } = await import("node:url");
+  const binPath = fileURLToPath(new URL("../bin/pi-events-daemon.ts", import.meta.url));
+  const sockPath = join(dir, "d.sock");
+  const pidPath = join(dir, "d.pid");
+  const child = spawn(
+    process.execPath,
+    [
+      "--experimental-transform-types",
+      "--no-warnings",
+      binPath,
+      "--sock",
+      sockPath,
+      "--db",
+      join(dir, "store.db"),
+      "--pid",
+      pidPath,
+      ...Object.entries(extra).flatMap(([k, v]) => [`--${k}`, v]),
+    ],
+    { stdio: ["ignore", "pipe", "pipe"] },
+  );
+  spawned.push(child);
+  const deadline = Date.now() + 8000;
+  for (;;) {
+    if (child.exitCode !== null || child.signalCode !== null) {
+      throw new Error(`daemon child exited early (code=${child.exitCode} signal=${child.signalCode})`);
+    }
+    if (existsSync(pidPath) && existsSync(sockPath)) {
+      try {
+        const c = await transport.connectEvents(sockPath, { epoch: 0 }); // epoch 0 必被静默拒：能连上即 ready
+        c.close();
+        return { child, sockPath, pidPath };
+      } catch {
+        /* 未监听：继续等 */
+      }
+    }
+    if (Date.now() > deadline) throw new Error(`timeout waiting daemon ready (pidfile=${existsSync(pidPath)})`);
+    await new Promise((r) => setTimeout(r, 50));
+  }
+}
+
+describe("票 38 组 1：bootstrap 正典顺序逐项断言", () => {
+  it("十步顺序 lock→pidfile→epoch→store→profiles→selfcheck→queue→ledger→loops→serve；自检 ok（未注册会话 ENOENT=新会话常态）", async () => {
+    const seen: daemonMain.BootstrapStep[] = [];
+    const { daemon, pidPath } = await bootInProcess({
+      profileAssets: [PROFILE],
+      profileSchema: {},
+      onStep: (s) => seen.push(s),
+    });
+    try {
+      expect(daemon.steps).toEqual([
+        "lock",
+        "pidfile",
+        "epoch",
+        "store",
+        "profiles",
+        "selfcheck",
+        "queue",
+        "ledger",
+        "loops",
+        "serve",
+      ]);
+      expect(seen).toEqual(daemon.steps);
+      expect(daemon.selfCheck.ok).toBe(true);
+      expect(existsSync(pidPath)).toBe(true); // pidfile 已写入
+      expect(daemon.epoch).toBeGreaterThan(0);
+    } finally {
+      await daemon.stop();
+    }
+  });
+
+  it("profile 装载产物注入 kernel：states 并集执法（profile 外状态拒、内状态落）", async () => {
+    const { daemon } = await bootInProcess({ profileAssets: [PROFILE], profileSchema: {} });
+    try {
+      const ref = { type: "fixture:widget", key: "external/1" };
+      daemon.store.putEntity({ type: ref.type, key: ref.key, state: "green" });
+      daemon.loops.submit({ kind: "transition", ref, verdict: "failed", occurredAt: "2026-10-16T00:00:01Z" }); // ∉ profile states（green/red）→ 拒
+      daemon.loops.submit({ kind: "transition", ref, verdict: "red" as "failed", occurredAt: "2026-10-16T00:00:02Z" }); // ∈ profile states → 落
+      expect(daemon.loops.errors.length).toBe(1);
+      expect(daemon.store.getEntity(ref.type, ref.key)?.state).toBe("red");
+    } finally {
+      await daemon.stop();
+    }
+  });
+});
+
+describe("票 38 组 2：flock 冲突 → 双启动拒绝报状态", () => {
+  it("同 pidfile 二次 bootstrap → 报 already running（pid + pidfile 路径）；原 daemon 不受影响", async () => {
+    const { daemon, pidPath, sockPath } = await bootInProcess();
+    try {
+      const err = await daemonMain
+        .bootstrap({
+          sockPath: join(makeDir(), "other.sock"),
+          pidPath,
+          store: store.createMemoryStore(),
+          exec: new FakeExec(),
+          pusher: new FakePusher(),
+          fs: new FakeFs(),
+        })
+        .then(
+          () => null,
+          (e: unknown) => e as Error,
+        );
+      expect(err).not.toBeNull();
+      expect(err!.message).toMatch(/already running \(pid \d+, pidfile .+\)/);
+      // 原 daemon 存活可服务：错误 epoch 帧被静默拒 + 计数（I12 门活着）
+      expect(daemon.transport.epochMismatches()).toBe(0);
+      const c = await transport.connectEvents(sockPath, { epoch: daemon.epoch });
+      await c.close();
+    } finally {
+      await daemon.stop();
+    }
+  });
+
+  it("kill -9 残留 pidfile（死 pid）→ 新 daemon 回收重取可启动（自愈前置）", async () => {
+    const dir = makeDir();
+    dirs.push(dir);
+    const pidPath = join(dir, "d.pid");
+    writeFileSync(pidPath, "2147483646\n"); // 必不存在的 pid（ESRCH = 死持有者）
+    const daemon = await daemonMain.bootstrap({
+      sockPath: join(dir, "d.sock"),
+      pidPath,
+      store: store.createMemoryStore(),
+      exec: new FakeExec(),
+      pusher: new FakePusher(),
+      fs: new FakeFs(),
+    });
+    await daemon.stop();
+  });
+});
+
+describe("票 38 组 3：SIGTERM 优雅退出（真子进程）+ stop 语义", () => {
+  it("SIGTERM → 退出码 0 + pidfile 清除 + socket 关闭（drain 后干净退场）", async () => {
+    const dir = makeDir();
+    dirs.push(dir);
+    const { child, pidPath, sockPath } = await bootChild(dir);
+    const exited = new Promise<{ code: number | null; signal: string | null }>((resolve) => {
+      child.once("exit", (code, signal) => resolve({ code, signal }));
+    });
+    expect(existsSync(pidPath)).toBe(true);
+    child.kill("SIGTERM");
+    const result = await exited;
+    expect(result).toEqual({ code: 0, signal: null });
+    expect(existsSync(pidPath)).toBe(false); // 锁已释放（重启可立即获锁）
+    expect(existsSync(sockPath)).toBe(false); // socket 已清理
+  });
+
+  it("handle.stop() 幂等 + pidfile 清除（进程内路径）", async () => {
+    const { daemon, pidPath } = await bootInProcess();
+    await daemon.stop();
+    await daemon.stop(); // 幂等
+    expect(existsSync(pidPath)).toBe(false);
+  });
+});
+
+describe("票 38 组 4：epoch 生成 + transport/run_ledger 共用", () => {
+  it("transport 帧门与 run_ledger 行共用同一 epoch（getEpoch 单源；L0 subscribe 落 ownerEpoch）", async () => {
+    const { daemon, sockPath } = await bootInProcess();
+    try {
+      // transport 端：错误 epoch → 静默拒 + 计数（无响应帧，不能 await —— 发后即查计数）；正确 epoch → 帧过门到 dispatch
+      const wrong = await transport.connectEvents(sockPath, { epoch: daemon.epoch + 999 });
+      void wrong.request("query", {}).catch(() => {});
+      await new Promise((r) => setTimeout(r, 100));
+      await wrong.close();
+      expect(daemon.transport.epochMismatches()).toBe(1);
+
+      const right = await transport.connectEvents(sockPath, { epoch: daemon.epoch });
+      await expect(right.request("query", {})).rejects.toMatchObject({ code: -32601 }); // dispatch 显式报错（票 40 接线点）= 帧过了 epoch 门
+      await right.close();
+
+      // run_ledger 端：L0 subscribe → RunLedger.epoch === daemon.epoch（共用断言）
+      daemon.store.putEntity({ type: "fixture:widget", key: "external/1", state: "waiting" });
+      daemon.loops.submit({
+        kind: "subscribe",
+        req: { sessionId: "t1", entityRef: { type: "fixture:widget", key: "external/1" }, template: "watch", check: "true", now: Date.now() },
+      });
+      expect(daemon.store.getRunLedger("slot:fixture:widget:external/1#watch")?.epoch).toBe(daemon.epoch);
+    } finally {
+      await daemon.stop();
+    }
+  });
+});
+
+describe("票 38 组 5：自检失败 → 降级运行（C1 联动）", () => {
+  it("sessionFile 不可读（目录=EISDIR 非 ENOENT）→ selfCheck 失败降级，daemon 仍 serving", async () => {
+    const seen: daemonMain.BootstrapStep[] = [];
+    const { daemon } = await bootInProcess({
+      sessionRefs: [{ sessionId: "s1", sessionFile: makeDir() }], // 目录：readFile → EISDIR → unreadable
+      fs: new fx.NodeFs(), // 真文件面：FakeFs 会把目录读遮蔽成 ENOENT（新会话常态）——EISDIR 路径需真 fs
+      onStep: (s) => seen.push(s),
+    });
+    try {
+      expect(daemon.selfCheck.ok).toBe(false);
+      expect(daemon.selfCheck.reason).toMatch(/unreadable/i);
+      expect(daemon.steps).toEqual([
+        "lock",
+        "pidfile",
+        "epoch",
+        "store",
+        "profiles",
+        "selfcheck",
+        "queue",
+        "ledger",
+        "loops",
+        "serve",
+      ]); // 降级不阻断启动：serve 照常到达
+      expect(daemon.transport.epochMismatches()).toBe(0);
+    } finally {
+      await daemon.stop();
+    }
+  });
+});
