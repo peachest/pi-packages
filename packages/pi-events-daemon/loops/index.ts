@@ -38,6 +38,7 @@ import {
   Kernel,
   type CancelRequest,
   type ProfileRegistryEntry,
+  type RegisterRequest,
   type SubscribeDeps,
   type SubscribeRequest,
 } from "../kernel/index.ts";
@@ -52,6 +53,10 @@ import type { SessionRef, TranscriptAdapter } from "../transcript-adapter/index.
 export type MutationRequest =
   | { kind: "transition"; ref: EntityRef; verdict: Verdict; occurredAt: string }
   | { kind: "consumeIntent"; intent: TransitionIntent }
+  // 票 40：publish op（#31 操作面 agent 断言）——to 为封闭集任意状态，可携带 contentIdentity/payload
+  | { kind: "publish"; ref: EntityRef; to: string; contentIdentity?: string | null; payload?: unknown; occurredAt: string }
+  // 票 40 评审 F1/F2：register 经 L0（status/subscribe 的簿记底座；firstTransition 同事务含首转换）
+  | { kind: "register"; req: RegisterRequest }
   | { kind: "subscribe"; req: SubscribeRequest; deps?: SubscribeDeps }
   | { kind: "cancel"; req: CancelRequest }
   | { kind: "probeVerdict"; slotKey: string; verdict: Verdict; occurredAt: string;
@@ -64,6 +69,10 @@ export type MutationRequest =
   | { kind: "verify"; notificationId: string; sessionId: string }
   | { kind: "drain"; sessionId?: string };
 
+
+/** submit 结算面（票 40 op 结果管道）：消费成功携 kernel 结果，失败携原错误（不 reject——
+ *  fire-and-forget 内部提交方忽略返回值也不产生 unhandled rejection；errors[] 面不变）。 */
+export type SubmitOutcome = { ok: true; value: unknown } | { ok: false; error: unknown };
 
 /** 提交回调维护的状态缓存（只读视图；运行期唯一写点在 store.onWrite 回调内，启动时另有种子投影 = 已提交状态初始快照，票 25 验收面）。 */
 export interface LoopsCache {
@@ -105,8 +114,10 @@ export interface LoopsCtx {
 }
 
 export interface LoopsHandle {
-  /** L0 唯一写路径：变更请求入队串行消费；stopped 后抛错（重启经 stop → 重新 startLoops）。 */
-  submit(req: MutationRequest): void;
+  /** L0 唯一写路径：变更请求入队串行消费；stopped 后抛错（重启经 stop → 重新 startLoops）。
+   *  票 40：返回结算 promise（队列同步消费，await 即得该请求的 kernel 结果/错误；
+   *  op 结果管道选型 = submit 返回 Promise<SubmitOutcome>，消费回调回写方案备选未采）。 */
+  submit(req: MutationRequest): Promise<SubmitOutcome>;
   /** L1 回流入口：prober completion queue 消费（startLoops 构造 Prober 时 onResult 接线；
    *  fs-watch/k8s-watch 原生推送回流同路）；stopped 后迟到 completion 静默丢弃。 */
   ingestProbeResult(result: ProbeResult): void;
@@ -128,6 +139,10 @@ export interface LoopsHandle {
   sessionEnd(sessionId: string): void;
   /** 停机：L0 队列关闭、提交回调脱钩、L1 调度定时器取消（幂等）。 */
   stop(): void;
+  /** 票 40 评审 F1：op 直调面只余读侧（query/evidence/templates + validate 静态面）——变更类
+   *  （subscribe/transition/register）只经 L0 submit 单一写路径，stopped 后 submit 结算拒绝，
+   *  不再存在绕过队列的活变更方法。kernel 实例仍由 startLoops 私有构造（票 25 裁定不变）。 */
+  readonly kernel: Pick<Kernel, "query" | "evidence" | "templates" | "validate">;
 }
 
 /**
@@ -173,55 +188,60 @@ export function startLoops(ctx: LoopsCtx): LoopsHandle {
   });
   reproject();
 
-  const queue: MutationRequest[] = [];
+  const queue: { req: MutationRequest; settle: (o: SubmitOutcome) => void }[] = [];
   const errors: unknown[] = [];
   let draining = false;
 
-  const apply = (req: MutationRequest): void => {
+  const apply = (req: MutationRequest): unknown => {
     switch (req.kind) {
       case "transition":
-        kernel.transition(req.ref, req.verdict, req.occurredAt);
-        return;
+        return kernel.transition(req.ref, req.verdict, req.occurredAt);
       case "consumeIntent":
-        kernel.consumeIntent(req.intent);
-        return;
+        return kernel.consumeIntent(req.intent);
+      case "publish":
+        // 票 40：publish op 消费终点（kernel.publish = #31 agent 断言路径；同态无身份变化 = null 无事件）
+        return kernel.publish(req.ref, req.to, {
+          contentIdentity: req.contentIdentity,
+          payload: req.payload,
+          occurredAt: req.occurredAt,
+        });
+      case "register":
+        // 票 40 评审 F1/F2：register（含 firstTransition 同事务）唯一经 L0 串行——直调面不暴露变更方法
+        return kernel.register(req.req);
       case "subscribe":
-        kernel.subscribe(req.req, req.deps);
-        return;
+        return kernel.subscribe(req.req, req.deps);
       case "cancel":
-        kernel.cancel(req.req);
-        return;
+        return kernel.cancel(req.req);
       case "probeVerdict":
         applyProbeVerdict(req);
-        return;
+        return undefined;
       case "fanOut": {
         // 评审 H6：in-progress 标记防重入（fanOut 提交回调 onWrite 会重入 deliverScan）+ 成功才消费——
         // withRetry 耗尽（临时 Store 故障）不丢投递：finally 清未决标记，下个兜底 tick 重试（I10 幂等兑底）
         try {
-          kernel.fanOut(req.notificationId, { activeSessions: fanOutSessions() });
+          const result = kernel.fanOut(req.notificationId, { activeSessions: fanOutSessions() });
           consumedOutbox.add(req.notificationId);
+          return result;
         } finally {
           inProgressOutbox.delete(req.notificationId);
         }
-        return;
       }
       case "sessionStart":
         applySessionStart(req.sessionId, req.scope ?? "project");
-        return;
-      case "sessionEnd":
+        return undefined;
+      case "sessionEnd": {
         // 票 38 评审 M：断连注销——fanOut 编址不再含它，pending 行留待重连 drain（不丢）
         activeSessions.delete(req.sessionId);
-        return;
+        return undefined;
+      }
       case "verify":
         // 出参 outcome 由 store 真相承载（level-trigger 下一扫自愈）；reason 面契约已由 kernel.verify 钉死
-        kernel.verify(req.notificationId, req.sessionId);
-        return;
+        return kernel.verify(req.notificationId, req.sessionId);
       case "drain":
-        kernel.drain({
+        return kernel.drain({
           ...(req.sessionId !== undefined ? { sessionId: req.sessionId } : {}),
           now: ctx.clock.now(),
         });
-        return;
     }
   };
 
@@ -305,11 +325,12 @@ export function startLoops(ctx: LoopsCtx): LoopsHandle {
     draining = true;
     try {
       while (!stopped && queue.length > 0) {
-        const req = queue.shift()!;
+        const entry = queue.shift()!;
         try {
-          apply(req);
+          entry.settle({ ok: true, value: apply(entry.req) });
         } catch (err) {
           errors.push(err); // 队列不死：坏请求不阻断后续消费（level-trigger 自愈），dead-letter 语义在 errors 可见
+          entry.settle({ ok: false, error: err });
         }
       }
     } finally {
@@ -393,11 +414,14 @@ export function startLoops(ctx: LoopsCtx): LoopsHandle {
     reschedule();
   };
 
-  const doSubmit = (req: MutationRequest): void => {
+  const doSubmit = (req: MutationRequest): Promise<SubmitOutcome> => {
     if (stopped) throw new Error("loops stopped: L0 queue closed");
-    queue.push(req);
+    let settle!: (o: SubmitOutcome) => void;
+    const settled = new Promise<SubmitOutcome>((res) => (settle = res));
+    queue.push({ req, settle });
     drain();
     reschedule(); // subscribe/cancel 改变槽面（新建槽首探、销毁槽撤定时器）——level-trigger 重排
+    return settled;
   };
 
   // --- L2 Deliver（票 27）：唤醒双通道 + 投递铁律 + batch 合流 + 退避重试 + drain/snapshot + 24h re-push ---
@@ -453,11 +477,14 @@ export function startLoops(ctx: LoopsCtx): LoopsHandle {
   }
 
   /** 票 27 L2 入口（transport 连接回调接线）：SESSION_START 进 L0 队列——drain 是 kernel 方法，唯一写者路径。 */
-  const sessionStart = (sessionId: string, scope?: SubscriptionScope): void =>
-    doSubmit({ kind: "sessionStart", sessionId, scope });
+  const sessionStart = (sessionId: string, scope?: SubscriptionScope): void => {
+    void doSubmit({ kind: "sessionStart", sessionId, scope });
+  };
 
   /** 票 38 评审 M：断连注销（transport onSessionEnd 接线）——从活跃面删除，fanOut 编址不再含它。 */
-  const sessionEnd = (sessionId: string): void => doSubmit({ kind: "sessionEnd", sessionId });
+  const sessionEnd = (sessionId: string): void => {
+    void doSubmit({ kind: "sessionEnd", sessionId });
+  };
 
   /** 活跃 session 消费面（fanOut deps 形状）。 */
   const fanOutSessions = (): { sessionId: string; scope: SubscriptionScope }[] =>
@@ -924,8 +951,18 @@ export function startLoops(ctx: LoopsCtx): LoopsHandle {
     cache: { states },
     housekeeping: housekeepingView,
     errors,
+    // 票 40 评审 F1：运行期真收窄（非仅类型 Pick）——变更类方法不再可从 handle 直调，
+    // 内部消费用闭包内 kernel 变量不受影响
+    kernel: {
+      query: kernel.query.bind(kernel),
+      evidence: kernel.evidence.bind(kernel),
+      templates: kernel.templates.bind(kernel),
+      validate: kernel.validate.bind(kernel),
+    },
     stop(): void {
       stopped = true;
+      // 票 40：未消费请求结算为 stopped 错误（提交方 await 不悬挂；stop 后无重放窗口）
+      for (const e of queue.splice(0)) e.settle({ ok: false, error: new Error("loops stopped: L0 queue closed") });
       scheduleTimer?.cancel();
       scheduleTimer = null;
       fallbackTimer?.cancel();

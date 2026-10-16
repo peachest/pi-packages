@@ -1399,3 +1399,37 @@ describe("票 38 评审修复 — Group Push M：sessionEnd 注销（断连后 f
     expect(() => loops.sessionEnd("s1")).toThrow(/loops stopped/); // stopped 后抛错
   });
 });
+
+// =============================================================================
+// 票 40 评审 F1 — register 经 L0（LoopsHandle 变更面收窄）
+// =============================================================================
+
+describe("票 40 评审 F1 — register 经 L0 submit（变更类只经单一写路径）", () => {
+  it("submit kind register：簿记落库 + firstTransition 同事务；stopped 后 submit 结算拒绝", async () => {
+    const store = createMemoryStore();
+    const loops = startLoops(makeCtx(store));
+    const outcome = await loops.submit({
+      kind: "register",
+      req: { entityRef: REF, profileId: "p", firstTransition: { to: "waiting", occurredAt: at(1) } },
+    });
+    expect(outcome).toMatchObject({ ok: true, value: { created: true, event: { to: "waiting" } } });
+    expect(store.getEntity(REF.type, REF.key)).toMatchObject({ profileId: "p", state: "waiting" });
+
+    loops.stop();
+    // stopped 后 submit 同步抛（submit 契约：stopped 后抛错；在途请求结算 {ok:false}）
+    expect(() =>
+      loops.submit({ kind: "register", req: { entityRef: { type: "fixture:widget", key: "external/x" }, profileId: "p" } }),
+    ).toThrow(/loops stopped/);
+  });
+
+  it("handle.kernel 收窄：直调面只余读方法（变更类 register/transition 不再暴露）", () => {
+    const store = createMemoryStore();
+    const loops = startLoops(makeCtx(store));
+    expect("register" in loops.kernel).toBe(false);
+    expect("transition" in loops.kernel).toBe(false);
+    for (const m of ["query", "evidence", "templates", "validate"] as const) {
+      expect(typeof loops.kernel[m]).toBe("function");
+    }
+    loops.stop();
+  });
+});

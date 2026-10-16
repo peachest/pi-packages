@@ -152,12 +152,13 @@ module.exports = {
     },
     {
       name: "eda-daemon-main-composition",
-      comment: "daemon-main 组合根：只 import 各模块入口（index.ts），不得深入模块内部。",
+      // 票 40：规则意图 = 跨模块只经模块入口；daemon-main 模块内部文件（op-dispatch 等装配胶水）自洽放行
+      comment: "daemon-main 组合根：跨模块只 import 各模块入口（index.ts），不得深入他模块内部；模块内部文件自洽。",
       severity: "error",
       from: { path: `^${R}/pi-events-daemon/daemon-main/` },
       to: {
         path: `^${R}/pi-events-daemon/[^/]+/`,
-        pathNot: `^${R}/pi-events-daemon/[^/]+/index\\.ts$`,
+        pathNot: `^${R}/pi-events-daemon/(daemon-main/.+|[^/]+/index\\.ts)$`,
       },
     },
   ],

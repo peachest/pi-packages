@@ -362,6 +362,34 @@ describe("票 16 修复 — ocr 评审 Finding 2：onResult 回调异常隔离",
     expect(clock.pendingCount).toBe(0); // 两笔定时器都取消（都结算）
   });
 });
+describe("票 40 评审 F10 — runOnce 超时规范化（与池路径同一 normalizeTimeoutMs）", () => {
+  it("timeoutMs 非法（0/负/NaN/Infinity）→ 同步抛参数错，不触 exec", async () => {
+    const exec = new DeferredExec();
+    const p = new prober.Prober({ exec, clock: new fx.FakeClock(), onResult: () => undefined });
+    await expect(p.runOnce("x", 0)).rejects.toThrow(/timeoutMs/);
+    await expect(p.runOnce("x", -1)).rejects.toThrow(/timeoutMs/);
+    await expect(p.runOnce("x", Number.NaN)).rejects.toThrow(/timeoutMs/);
+    await expect(p.runOnce("x", Number.POSITIVE_INFINITY)).rejects.toThrow(/timeoutMs/);
+    expect(exec.calls).toHaveLength(0);
+  });
+
+  it(">300s 封顶 + 小数取整：exec 收到规范化后的 timeoutMs", async () => {
+    const exec = new DeferredExec();
+    const p = new prober.Prober({ exec, clock: new fx.FakeClock(), onResult: () => undefined });
+    const run = (ms: number) => p.runOnce("x", ms);
+    const a = run(1500.7);
+    const b = run(999_999);
+    const c = p.runOnce("x"); // 缺省 10s（缺省参数路径本身不被封顶改写）
+    exec.resolve(0);
+    exec.resolve(1);
+    exec.resolve(2);
+    const [ra, rb, rc] = await Promise.all([a, b, c]);
+    expect(exec.calls.map((c2) => c2.opts?.timeoutMs)).toEqual([1501, prober.PROBE_TIMEOUT_MAX_MS, prober.PROBE_TIMEOUT_DEFAULT_MS]);
+    expect(ra.verdict).toBe("passed");
+    expect(rb.verdict).toBe("passed");
+    expect(rc.verdict).toBe("passed");
+  });
+});
 
 describe("票 16 修复 — ocr 评审 Finding 4：timeoutMs 分配前校验/规范化", () => {
   it("timeoutMs 非法（0/负数/NaN/Infinity）→ probe 同步抛参数错，不启动 exec 不占容量", () => {

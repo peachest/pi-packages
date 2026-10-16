@@ -227,6 +227,31 @@ describe("票 38 组 3：SIGTERM 优雅退出（真子进程）+ stop 语义", (
     await daemon.stop(); // 幂等
     expect(existsSync(pidPath)).toBe(false);
   });
+
+  it("epoch 旁车原子写先于 ready 宣布（票 40 评审 F8）：ready 行可见一刻旁车已就绪、无 tmp 残留、停机回收", async () => {
+    const dir = makeDir();
+    dirs.push(dir);
+    const { child, sockPath } = await bootChild(dir);
+    const readyLine = new Promise<string>((resolve) => {
+      child.stdout!.on("data", (d: Buffer) => {
+        for (const line of d.toString().split("\n")) {
+          if (line.includes("pi-events-daemon ready")) resolve(line);
+        }
+      });
+    });
+    const line = await readyLine;
+    const epochPath = `${sockPath}.epoch`;
+    // ready 已宣布：旁车必须已原子就绪（修复前 writeFileSync 排在 ready 之后，本断言存在竞态窗口）
+    expect(existsSync(epochPath)).toBe(true);
+    expect(readFileSync(epochPath, "utf8")).toMatch(/^\d{10,}$/);
+    expect(line).toContain(`epoch ${readFileSync(epochPath, "utf8").trim()}`);
+    expect(existsSync(`${epochPath}.tmp`)).toBe(false); // tmp+rename 无半写残留
+    // 停机回收面不变
+    const exited = new Promise<{ code: number | null }>((resolve) => child.once("exit", (code) => resolve({ code })));
+    child.kill("SIGTERM");
+    expect((await exited).code).toBe(0);
+    expect(existsSync(epochPath)).toBe(false);
+  });
 });
 
 describe("票 38 组 4：epoch 生成 + transport/run_ledger 共用", () => {
@@ -241,7 +266,8 @@ describe("票 38 组 4：epoch 生成 + transport/run_ledger 共用", () => {
       expect(daemon.transport.epochMismatches()).toBe(1);
 
       const right = await transport.connectEvents(sockPath, { epoch: daemon.epoch });
-      await expect(right.request("query", {})).rejects.toMatchObject({ code: -32601 }); // dispatch 显式报错（票 40 接线点）= 帧过了 epoch 门
+      // 票 40：9 op dispatch 已接线——query 读侧 kernel 直调真实应答（帧过 epoch 门后进 op 面）
+      await expect(right.request("query", {})).resolves.toEqual({ entities: [], deadLetters: [] });
       await right.close();
 
       // run_ledger 端：L0 subscribe → RunLedger.epoch === daemon.epoch（共用断言）
