@@ -238,3 +238,16 @@ export function deliveryTargets(
 		.filter((s) => s.scope === addressing.scope)
 		.map((s) => s.sessionId);
 }
+
+// --- evidence 保留期（#31 L154：failed 30d / passed 7d；票 28 L4 执行，判定纯函数归 domain）---
+
+/** 保留期常量（ms）：failed 30d / passed 7d。waiting/未归类（无事件可 join）沿用 failed 长桶——不销毁未决事项的证据。 */
+export const EVIDENCE_RETENTION = {
+	failedMs: 30 * 24 * 60 * 60 * 1000,
+	passedMs: 7 * 24 * 60 * 60 * 1000,
+} as const;
+
+/** 保留期到期判定（> 严格过期，ttlExpired 同法；now 由调用方注入，零时钟）。 */
+export function evidenceRetentionExpired(recordedAt: number, verdict: string, now: number): boolean {
+	return now - recordedAt > (verdict === "passed" ? EVIDENCE_RETENTION.passedMs : EVIDENCE_RETENTION.failedMs);
+}

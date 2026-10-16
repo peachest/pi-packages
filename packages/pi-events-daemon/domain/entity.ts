@@ -86,3 +86,13 @@ export function publish(entity: Entity, cmd: PublishCommand, ctx: PublishContext
 }
 
 
+
+// --- ephemeral retired 到期清理（#31 L114：terminal → retired（7d 清理）；判定纯函数）---
+
+/** retired 残留保留窗（ms）：retired 后 7d 清理（US-33 one-shot facts leave no permanent residue）。 */
+export const RETIRED_CLEANUP_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** retired 到期判定（> 严格过期；retiredSince = 终态转换事件 occurredAt 的 ms，调用方注入零时钟）。 */
+export function retiredCleanupDue(retiredSinceMs: number, now: number): boolean {
+	return now - retiredSinceMs > RETIRED_CLEANUP_MS;
+}

@@ -436,6 +436,29 @@ export class SqliteStore implements Store {
         );
         mark("run_ledger");
       },
+      // 票 28 删除面：staged 删除，提交语义与 put* 一致
+      deleteEvidence: (refs) => {
+        for (const ref of refs) {
+          // FTS 行先于基础行删（rowid 对齐面同 putEvidence 正典：非索引列点删 O(1)）
+          const base = this.st("SELECT rowid FROM evidence WHERE evidence_ref = ?").get(ref) as RawRow | undefined;
+          if (!base) continue;
+          this.st("DELETE FROM evidence_fts WHERE rowid = ?").run(base.rowid);
+          this.st("DELETE FROM evidence WHERE evidence_ref = ?").run(ref);
+        }
+        if (refs.length > 0) mark("evidence");
+      },
+      deleteNotification: (notificationId) => {
+        const r = this.st("DELETE FROM notifications WHERE notification_id = ?").run(notificationId);
+        const had = Number(r.changes) > 0;
+        if (had) mark("notifications");
+        return had;
+      },
+      deleteEntity: (type, key) => {
+        const r = this.st("DELETE FROM entities WHERE type = ? AND entity_key = ?").run(type, key);
+        const had = Number(r.changes) > 0;
+        if (had) mark("entities");
+        return had;
+      },
     };
   }
 
@@ -541,9 +564,6 @@ export class SqliteStore implements Store {
     return this.deliveriesByState("parked", filter);
   }
 
-  acceptedDeliveries(filter: DeliveryFilter): DeliveryRowData[] {
-    return this.deliveriesByState("accepted", filter);
-  }
 
   /** fake 语义对齐：state 固定为本方法的 target（pending/dead-letter/parked），matchDelivery 的 filter.state 若与此矛盾则空集。 */
   private deliveriesByState(state: string, filter: DeliveryFilter): DeliveryRowData[] {
@@ -565,6 +585,37 @@ export class SqliteStore implements Store {
       content: String(r.content),
       recordedAt: Number(r.recorded_at),
     }));
+  }
+
+  acceptedDeliveries(filter: DeliveryFilter): DeliveryRowData[] {
+    return this.deliveriesByState("accepted", filter);
+  }
+
+  evidenceOlderThan(cutoffMs: number): EvidenceRow[] {
+    return (this.st("SELECT * FROM evidence WHERE recorded_at < ? ORDER BY rowid").all(cutoffMs) as RawRow[]).map((r) => ({
+      evidenceRef: String(r.evidence_ref),
+      content: String(r.content),
+      recordedAt: Number(r.recorded_at),
+    }));
+  }
+
+  deleteEvidence(refs: readonly string[]): void {
+    this.tx((tx) => { tx.deleteEvidence(refs); });
+  }
+
+  /** 事件 id 扫描在事务外（只读；occurred_at ISO 文本在 JS 侧 Date.parse 保毫秒精度——
+   *  SQL unixepoch 秒级截断会破期界边界），删除在 tx 内 staged（与 fake 实现同序同语义）。 */
+  deleteEventsBefore(entityRefType: string, entityRefKey: string, cutoffMs: number): number {
+    const rows = this.st("SELECT event_id, occurred_at FROM events WHERE entity_ref_type = ? AND entity_ref_key = ?").all(entityRefType, entityRefKey) as RawRow[];
+    const ids = rows
+      .filter((r) => Date.parse(String(r.occurred_at)) < cutoffMs)
+      .map((r) => String(r.event_id));
+    if (ids.length === 0) return 0;
+    return this.tx((tx) => ids.reduce((n, id) => n + (tx.deleteNotification(id) ? 1 : 0), 0));
+  }
+
+  deleteEntity(type: string, key: string): boolean {
+    return this.tx((tx) => tx.deleteEntity(type, key));
   }
 
   notifications(filter: NotificationFilter): NotificationRow[] {

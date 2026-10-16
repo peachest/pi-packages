@@ -134,6 +134,11 @@ export interface TxView {
   putOutbox(row: OutboxRow): void;
   getRunLedger(slotKey: string): RunLedgerRow | undefined;
   putRunLedger(row: RunLedgerRow): void;
+  // --- 票 28 删除面（enumeration-completion，2026-10-16 派发裁定：票 09 "无 delete" 故意后置在此收口）---
+  // staged 删除原语，提交语义（X1 原子/update_hook 等价回调）与 put* 一致。
+  deleteEvidence(evidenceRefs: readonly string[]): void;
+  deleteNotification(notificationId: string): boolean;
+  deleteEntity(type: string, key: string): boolean;
 }
 
 export interface Store {
@@ -170,6 +175,21 @@ export interface Store {
   getRunLedger(slotKey: string): RunLedgerRow | undefined;
   putRunLedger(row: RunLedgerRow): void;
   listRunLedger(): RunLedgerRow[];
+  // 票 28 读面：L3 verify 扫描输入 + evidence 按期查询（store spec：清理执行归 loops，store 提供按期查询）
+  /** accepted 行读取（pendingDeliveries/parkedDeliveries/deadLetters 同构直过滤）。 */
+  acceptedDeliveries(filter: DeliveryFilter): DeliveryRowData[];
+  /** recordedAt < cutoffMs 的 evidence 行（严格小于，期界不含）。 */
+  evidenceOlderThan(cutoffMs: number): EvidenceRow[];
+  // --- 票 28 删除面（enumeration-completion，同 TxView 注；便捷路径各自单事务）---
+  /** evidence 保留期执行面：按 ref 精确删（SQLite 侧 FTS 行同步对齐）。 */
+  deleteEvidence(evidenceRefs: readonly string[]): void;
+  /** 实体事件残留清理：删该实体 occurredAt < cutoffMs 事件的派生投递残留（notifications billboard 物化行），
+   *  返回删除行数。events 行本体不删（D2 append-only 正典，SQLite 层触发器拒绝）；outbox 行不删
+   *  （decisionOrder 恢复真相源——删除会令同 key 重注册的确定性 event id 与幸存事件碰撞 → corruption）。 */
+  deleteEventsBefore(entityRefType: string, entityRefKey: string, cutoffMs: number): number;
+  /** 实体行删除（ephemeral retired 到期清理收口，US-33 残留归零）：复活防护不依赖行存在
+   *  （transition/publish 对未知实体同拒）；返回是否存在。 */
+  deleteEntity(type: string, key: string): boolean;
   // update_hook 等价回调注册：提交成功后按提交序同步触发（真实现=SQLite update_hook）；
   // 返回取消订阅函数（幂等，票 25 Finding 2：stop 不累积监听器）
   onWrite(cb: (tables: readonly string[]) => void): () => void;
@@ -268,6 +288,21 @@ export class MemoryStore implements Store {
       },
       getRunLedger: (k) => table("run_ledger").get(k) as RunLedgerRow | undefined,
       putRunLedger: (row) => { table("run_ledger").set(row.slotKey, row); mark("run_ledger"); },
+      // 票 28 删除面：staged 删除，提交语义与 put* 一致
+      deleteEvidence: (refs) => {
+        for (const r of refs) table("evidence").delete(r);
+        if (refs.length > 0) mark("evidence");
+      },
+      deleteNotification: (notificationId) => {
+        const had = table("notifications").delete(notificationId);
+        if (had) mark("notifications");
+        return had;
+      },
+      deleteEntity: (type, key) => {
+        const had = table("entities").delete(`${type}/${key}`);
+        if (had) mark("entities");
+        return had;
+      },
     };
 
     let result: T;
@@ -376,17 +411,42 @@ export class MemoryStore implements Store {
     );
   }
 
-  acceptedDeliveries(filter: DeliveryFilter): DeliveryRowData[] {
-    return [...this.tables.deliveries.values() as IterableIterator<DeliveryRowData>].filter((d) =>
-      this.matchDelivery(d, filter) && d.state === "accepted",
-    );
-  }
 
   evidenceSearch(fts5Query: string): EvidenceRow[] {
     // fake 语义钉死：朴素子串匹配（真实现 FTS5 MATCH）
     return [...this.tables.evidence.values() as IterableIterator<EvidenceRow>].filter((e) =>
       e.content.includes(fts5Query) || e.evidenceRef.includes(fts5Query),
     );
+  }
+
+  acceptedDeliveries(filter: DeliveryFilter): DeliveryRowData[] {
+    return [...this.tables.deliveries.values() as IterableIterator<DeliveryRowData>].filter((d) =>
+      this.matchDelivery(d, filter) && d.state === "accepted",
+    );
+  }
+
+  evidenceOlderThan(cutoffMs: number): EvidenceRow[] {
+    return [...this.tables.evidence.values() as IterableIterator<EvidenceRow>].filter((e) => e.recordedAt < cutoffMs);
+  }
+
+  deleteEvidence(refs: readonly string[]): void {
+    this.tx((tx) => { tx.deleteEvidence(refs); });
+  }
+
+  /** 事件 id 扫描在事务外（只读已提交态），删除在 tx 内 staged（与 SQLite 实现同序同语义）。 */
+  deleteEventsBefore(entityRefType: string, entityRefKey: string, cutoffMs: number): number {
+    const ids: string[] = [];
+    for (const e of this.tables.events.values() as IterableIterator<EventRow>) {
+      if (e.entityRefType === entityRefType && e.entityRefKey === entityRefKey && Date.parse(e.occurredAt) < cutoffMs) {
+        ids.push(e.eventId);
+      }
+    }
+    if (ids.length === 0) return 0;
+    return this.tx((tx) => ids.reduce((n, id) => n + (tx.deleteNotification(id) ? 1 : 0), 0));
+  }
+
+  deleteEntity(type: string, key: string): boolean {
+    return this.tx((tx) => tx.deleteEntity(type, key));
   }
 
   notifications(filter: NotificationFilter): NotificationRow[] {

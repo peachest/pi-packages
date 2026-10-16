@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
+	evidenceRetentionExpired,
 	DELIVERY_STATES,
 	DELIVERY_OPS,
 	transitionDelivery,
@@ -208,5 +209,19 @@ describe("Notification 值对象（billboard 视图）", () => {
 			addressing: { origin: "session", scope: "project", sourceSessionId: "sess-A" },
 		};
 		expect(sub.addressing.origin).toBe("session");
+	});
+});
+
+describe("票 28 — evidence 保留期判定（30d/7d 边界）", () => {
+	const DAY = 24 * 60 * 60 * 1000;
+	it("passed 7d 桶：恰 7d 未到期、7d+1ms 到期；failed/waiting/未归类 30d 桶：恰 30d 未到期、30d+1ms 到期", () => {
+		const now = 100 * DAY;
+		expect(evidenceRetentionExpired(now - 7 * DAY, "passed", now)).toBe(false);
+		expect(evidenceRetentionExpired(now - 7 * DAY - 1, "passed", now)).toBe(true);
+		expect(evidenceRetentionExpired(now - 8 * DAY, "failed", now)).toBe(false);
+		expect(evidenceRetentionExpired(now - 30 * DAY, "failed", now)).toBe(false);
+		expect(evidenceRetentionExpired(now - 30 * DAY - 1, "failed", now)).toBe(true);
+		expect(evidenceRetentionExpired(now - 8 * DAY, "waiting", now)).toBe(false); // 长桶
+		expect(evidenceRetentionExpired(now - 31 * DAY, "", now)).toBe(true); // 未归类长桶到期
 	});
 });

@@ -1124,3 +1124,42 @@ describe("评审修复 — E 组（kernel 面）", () => {
     );
   });
 });
+
+// =============================================================================
+// 票 28 — kernel.verify：两段式 ack 收口（accepted → verified，I9 点查命中后的唯一写路径）
+// =============================================================================
+
+describe("票 28 — kernel.verify 收口", () => {
+  const seedDelivery = (store: MemStore, state: DeliveryStateForTest, notificationId = "evt:x#1") =>
+    store.putDelivery({ notificationId, sessionId: "sess-1", state, recordEpoch: 0 });
+  type DeliveryStateForTest = "pending" | "accepted" | "verified" | "parked" | "failed" | "dead-letter";
+
+  it("accepted → verified：正典边收口，出参 {verified:true}；行状态落库", () => {
+    const store = createMemoryStore();
+    seedDelivery(store, "accepted");
+    const kernel = new Kernel(store, VERDICT_STATES, 0);
+    expect(kernel.verify("evt:x#1", "sess-1")).toEqual({ verified: true });
+    expect(store.getDelivery("evt:x#1", "sess-1")?.state).toBe("verified");
+  });
+
+  it("幂等/非法边：已 verified 再 verify → {verified:false, reason:not-accepted}，无第二写；未知行 → unknown-delivery", () => {
+    const store = createMemoryStore();
+    seedDelivery(store, "verified");
+    const kernel = new Kernel(store, VERDICT_STATES, 0);
+    expect(kernel.verify("evt:x#1", "sess-1")).toEqual({ verified: false, reason: "not-accepted" });
+
+    expect(kernel.verify("evt:ghost#1", "sess-1")).toEqual({ verified: false, reason: "unknown-delivery" });
+    // 非 accepted 态同拒（pending/parked 收口归 L2 wake / L3 链路，不经本方法）
+    seedDelivery(store, "pending", "evt:x#2");
+    expect(kernel.verify("evt:x#2", "sess-1")).toEqual({ verified: false, reason: "not-accepted" });
+    expect(store.getDelivery("evt:x#2", "sess-1")?.state).toBe("pending");
+  });
+
+  it("I12 无 epoch fence（与 drain 相反）：异 epoch 行同收口——verified 判定来自 transcript 全局真相，fence 只挡重投不挡对账", () => {
+    const store = createMemoryStore();
+    store.putDelivery({ notificationId: "evt:x#1", sessionId: "sess-1", state: "accepted", recordEpoch: 7 });
+    const kernel = new Kernel(store, VERDICT_STATES, 0, { ownerEpoch: 9 });
+    expect(kernel.verify("evt:x#1", "sess-1")).toEqual({ verified: true });
+    expect(store.getDelivery("evt:x#1", "sess-1")?.state).toBe("verified");
+  });
+});

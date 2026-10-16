@@ -26,9 +26,11 @@ import {
   repushDecision,
   restoreSlotThresholds,
   runnerSlotKey,
+  ttlExpired,
   type ThresholdState,
 } from "../domain/intent.ts";
-import { transitionDelivery, type SubscriptionScope } from "../domain/delivery.ts";
+import { transitionDelivery, type SubscriptionScope, EVIDENCE_RETENTION, evidenceRetentionExpired } from "../domain/delivery.ts";
+import { retiredCleanupDue } from "../domain/entity.ts";
 
 // cronNextMs 归 domain（单一解析：kernel subscribe 校验 + loops 调度共用）；此处保持既有导出位兼容
 export { cronNextMs } from "../domain/intent.ts";
@@ -42,6 +44,7 @@ import {
 import { Prober, type ProbeResult } from "../prober/index.ts";
 import type { Clock, Exec, Fs, Pusher } from "../fx/index.ts";
 import type { DeliveryRowData, ProbeSpecRow, Store, SubscriptionRow } from "../store/index.ts";
+import type { SessionRef, TranscriptAdapter } from "../transcript-adapter/index.ts";
 
 /** L0 变更请求——kernel 变更方法（票 10 消费终点 transition/consumeIntent + 票 24/26 subscribe/cancel）的队列载体；
  *  probeVerdict 是 L1 回流（prober completion queue）进 L0 的串行链入口（D4：L1 消费回流，L0 唯一写者）；
@@ -55,7 +58,10 @@ export type MutationRequest =
       /** 评审 B 组：dispatch 时刻的槽 generation——旧代 completion 拒应用；缺省（watch 回流等无 dispatch 来源）不判代。 */
       generation?: number }
   | { kind: "fanOut"; notificationId: string }
-  | { kind: "sessionStart"; sessionId: string; scope?: SubscriptionScope };
+  | { kind: "sessionStart"; sessionId: string; scope?: SubscriptionScope }
+  // 票 28：L3 verify 收口（I9 点查命中后经唯一写路径落账）+ drain 触发载体（L2/transport 接线前的队列面）
+  | { kind: "verify"; notificationId: string; sessionId: string }
+  | { kind: "drain"; sessionId?: string };
 
 
 /** 提交回调维护的状态缓存（只读视图；运行期唯一写点在 store.onWrite 回调内，启动时另有种子投影 = 已提交状态初始快照，票 25 验收面）。 */
@@ -78,6 +84,23 @@ export interface LoopsCtx {
   registry?: ReadonlyArray<ProfileRegistryEntry>;
   /** I12：本 daemon 实例世代（缺省 0 = 未接线） */
   ownerEpoch?: number;
+  /** 票 28 L3：I9 唯一权威点接线（adapter + session→transcript 解析，transport 注册面在组合根接入）。
+   *  缺省 = L3 关闭（零扫描零定时器）。 */
+  transcript?: {
+    adapter: TranscriptAdapter;
+    /** sessionId → SessionRef；未注册 session 的投递保持 accepted 待扫（level-trigger 自愈）。 */
+    sessionRefOf(sessionId: string): SessionRef | undefined;
+  };
+  /** 票 28 L4：housekeeping 配置。缺省 = 保留期清理/dead-letter 提示（开）执行；ephemeral/快照域缺省关闭。 */
+  housekeeping?: {
+    /** dead-letter 每日提示开关（settings 可关，#31 B6③；缺省开）。 */
+    deadLetterNotice?: boolean;
+    /** ephemeral 清理域：profileIds ∩ terminalStates 命中的实体走 terminal→retired 标记与 7d 到期清理
+     *  （profiles 票接线后由组合根注入；缺省无域 = 职责不激活）。 */
+    ephemeral?: { profileIds: ReadonlySet<string>; terminalStates: ReadonlySet<string> };
+    /** 快照触发阈值（单实体事件数；#31 性能条件 MVP 面——快照机制本体归后票，候选上报在 handle.housekeeping）。 */
+    snapshotThreshold?: number;
+  };
 }
 
 export interface LoopsHandle {
@@ -88,6 +111,12 @@ export interface LoopsHandle {
   ingestProbeResult(result: ProbeResult): void;
   /** 提交回调维护的缓存快照（L1-L4 的 level-trigger 扫描输入）。 */
   readonly cache: LoopsCache;
+  /** 票 28 L4：housekeeping 最近一次扫的可观测面（snapshotNeeded = 快照触发候选——性能条件上报，
+   *  快照机制本体归后票）。 */
+  readonly housekeeping: {
+    readonly lastSweepAt: number | null;
+    readonly snapshotNeeded: readonly string[];
+  };
   /** 逐请求捕获的消费错误（kernel 越界 dead-letter 抛出在此可见；队列不死，消费继续）。 */
   readonly errors: readonly unknown[];
   /** 票 27 L2 入口：SESSION_START 注册（transport 连接回调接线）——登记活跃 session（fanOut auto 编址消费面）
@@ -174,6 +203,16 @@ export function startLoops(ctx: LoopsCtx): LoopsHandle {
       }
       case "sessionStart":
         applySessionStart(req.sessionId, req.scope ?? "project");
+        return;
+      case "verify":
+        // 出参 outcome 由 store 真相承载（level-trigger 下一扫自愈）；reason 面契约已由 kernel.verify 钉死
+        kernel.verify(req.notificationId, req.sessionId);
+        return;
+      case "drain":
+        kernel.drain({
+          ...(req.sessionId !== undefined ? { sessionId: req.sessionId } : {}),
+          now: ctx.clock.now(),
+        });
         return;
     }
   };
@@ -677,11 +716,194 @@ export function startLoops(ctx: LoopsCtx): LoopsHandle {
   dispatchDue(ctx.clock.now());
   reschedule();
 
+  // --- L3 Verify（票 28）：accepted 投递的 I9 点查收口（两段式 ack 段二）---
+  // 周期扫（1s，对齐 L2 兼底扫节奏；level-trigger：丢唤醒/迟到由下一扫自愈）。C1 降级（票 21 对接）：
+  // 降级期不点查不收口——推送即 accepted 权威基面；恢复后下一扫正常收口。
+  const L3_SCAN_INTERVAL_MS = 1_000;
+  const transcript = ctx.transcript;
+  let scanTimer: { cancel(): void } | null = null;
+  let scanning = false;
+  const verifyScan = (): void => {
+    if (!transcript || stopped || scanning) return;
+    if (transcript.adapter.isDegraded()) return;
+    const accepted = ctx.store.acceptedDeliveries({});
+    if (accepted.length === 0) return;
+    scanning = true;
+    void (async () => {
+      try {
+        for (const row of accepted) {
+          if (stopped) return;
+          const sessionRef = transcript.sessionRefOf(row.sessionId);
+          if (!sessionRef) continue; // 未注册 session：保持 accepted 待扫
+          const result = await transcript.adapter.verify(sessionRef, row.notificationId);
+          if (transcript.adapter.isDegraded()) break; // await 期间降级（ocr M）：复查门——余行零点查零收口，留待恢复后重扫
+          // I9 判定（domain transcriptVerifies 同语义：notificationId 落盘即投递）——
+          // 非 unknown 且非 not-found = 命中条目（passed/failed/waiting 皆已落盘）→ 经 L0 队列收口
+          if (result.verdict !== "unknown" && result.reason !== "not-found") {
+            doSubmit({ kind: "verify", notificationId: row.notificationId, sessionId: row.sessionId });
+          }
+        }
+      } catch (err) {
+        errors.push(err); // 扫描不死：下一 tick level-trigger 重扫
+      } finally {
+        scanning = false;
+      }
+    })();
+  };
+  let scannedOnce = false;
+  const scheduleVerifyScan = (): void => {
+    if (!transcript || stopped) return;
+    scanTimer = ctx.clock.setTimeout(
+      () => {
+        scannedOnce = true;
+        scanTimer = null;
+        try {
+          verifyScan();
+        } catch (err) {
+          errors.push(err); // 同步异常不逃逸（store 读面等）：扫描不死语义
+        } finally {
+          scheduleVerifyScan(); // 重排在 finally（ocr M）：同步异常不再永久停摆 L3
+        }
+      },
+      scannedOnce ? L3_SCAN_INTERVAL_MS : 0, // 启动首扫不等首周期
+    );
+  };
+  scheduleVerifyScan();
+
+  // --- L4 Housekeeping（票 28）：保留期清理 / ephemeral retired 清理 / dead-letter 每日提示 /
+  // ttl 关订阅 / run_ledger 对账 / 快照触发。启动惰性首扫（#31 L154）+ 1h 周期；簿记/审计直写
+  // store（#31 L82：ephemeral 清理是簿记非事件，不经 kernel；缓存一致性由提交回调保全），
+  // 例外 = ttl 关订阅（kernel 变更，经 L0 队列 submit 唯一写路径）。
+  const HOUSEKEEPING_INTERVAL_MS = 3_600_000;
+  const DAY_MS = 86_400_000;
+  const hk = ctx.housekeeping;
+  const housekeepingView = { lastSweepAt: null as number | null, snapshotNeeded: [] as string[] };
+  let sweepTimer: { cancel(): void } | null = null;
+  let lastNoticeDay: number | null = null;
+  let sweptOnce = false;
+  const sweep = (): void => {
+    if (stopped) return;
+    const now = ctx.clock.now();
+    // ① evidence 保留期清理（判定归 domain 纯函数）：7d 桶下界取回，30d 长桶在谓词内收口。
+    //    verdict join：evidenceRef → 事件终态（outbox 行与事件 1:1 全扫；shortcut: O(outbox)，量大时归 store 接口按 evidenceRef 索引查）。
+    const verdictByRef = new Map<string, string>();
+    const latestEventMsByEntity = hk?.ephemeral ? new Map<string, number>() : null;
+    const snapshotThreshold = hk?.snapshotThreshold;
+    const eventCountByEntity = snapshotThreshold !== undefined ? new Map<string, number>() : null;
+    for (const row of ctx.store.outboxBatch(Number.MAX_SAFE_INTEGER)) {
+      const ev = ctx.store.tx((tx) => tx.getEvent(row.notificationId));
+      if (!ev) continue;
+      // 共享 ref 连坐守门（ocr H）：桶判定取最严格——任一非 passed 引用即 30d，后枚举的 passed
+      // 不得把 failed/waiting 在案的 ref 降级成 7d 桶误删
+      if (ev.evidenceRef) {
+        const prev = verdictByRef.get(ev.evidenceRef);
+        if (prev === undefined || prev === "passed") verdictByRef.set(ev.evidenceRef, ev.to);
+      }
+      const entityKey = `${ev.entityRefType}/${ev.entityRefKey}`;
+      if (latestEventMsByEntity) {
+        const t = Date.parse(ev.occurredAt);
+        if (Number.isFinite(t) && t > (latestEventMsByEntity.get(entityKey) ?? -Infinity)) latestEventMsByEntity.set(entityKey, t);
+      }
+      if (eventCountByEntity) eventCountByEntity.set(entityKey, (eventCountByEntity.get(entityKey) ?? 0) + 1);
+    }
+    const stale = ctx.store.evidenceOlderThan(now - EVIDENCE_RETENTION.passedMs);
+    const due = stale.filter((r) => evidenceRetentionExpired(r.recordedAt, verdictByRef.get(r.evidenceRef) ?? "", now));
+    if (due.length > 0) ctx.store.deleteEvidence(due.map((r) => r.evidenceRef));
+    // ② ephemeral terminal → retired 标记 + retired 7d 到期清理（标记与清理同扫：daemon 停机一周后
+    //    首扫一次完成）。到期锚 = 终态转换事件 occurredAt（标记时刻可能滞后，锚取终态到达时刻）；
+    //    无事件锚（注册即终态）不清理——到期时刻不可知，保守保留（profiles 票接线后由注册元数据承载）。
+    const eph = hk?.ephemeral;
+    if (eph) {
+      for (const e of ctx.store.queryEntities({})) {
+        if (!e.profileId || !eph.profileIds.has(e.profileId)) continue;
+        if (e.state === null || !eph.terminalStates.has(e.state)) continue;
+        if (!e.retired) ctx.store.putEntity({ ...e, retired: true });
+        const anchor = latestEventMsByEntity?.get(`${e.type}/${e.key}`);
+        if (anchor !== undefined && retiredCleanupDue(anchor, now)) {
+          ctx.store.deleteEventsBefore(e.type, e.key, now); // 派生投递残留（events/outbox 永久，见 store 契约注）
+          ctx.store.deleteEntity(e.type, e.key);
+        }
+      }
+    }
+    // ③ dead-letter 每日提示（#31 B6③）：非空 → 活跃 session 提示一次/日（day-key 门控；settings 可关）。
+    //    单连接推送（SocketPusher = 活跃 session 面）；逐 session 编址归 transport 票接线。
+    const dead = ctx.store.deadLetters({});
+    if (dead.length > 0 && (hk?.deadLetterNotice ?? true)) {
+      const day = Math.floor(now / DAY_MS);
+      if (lastNoticeDay !== day) {
+        // 门在推送成功后置位（ocr M）：断连失败不抑制当天余时重试
+        void ctx.pusher.push(JSON.stringify({ kind: "dead-letter-notice", count: dead.length })).then(
+          () => {
+            lastNoticeDay = day;
+          },
+          (err: unknown) => errors.push(err),
+        );
+      }
+    }
+    // ④ ttl 到期关订阅（#57 ttl 触发）：判定归 domain ttlExpired（严格过期，与 evidence/retired 边界同法）；
+    //    关闭经 L0 队列（kernel 变更唯一写路径）复用 cancel 幂等（重扫安全）；先于对账——关后槽
+    //    refcount 由 kernel 归算，对账只补残余漂移。
+    for (const s of ctx.store.querySubscriptions({})) {
+      if (s.closedAt !== undefined || s.ttlMs === undefined) continue;
+      if (!ttlExpired({ createdAt: s.createdAt, ttlMs: s.ttlMs }, now)) continue;
+      doSubmit({ kind: "cancel", req: { subscriptionId: s.subscriptionId, reason: "ttl", now } });
+    }
+    // ⑤ run_ledger 对账（A2：槽账本是 runtime 簿记非真相源，订阅表是真相）：逐活跃订阅聚槽计数，
+    //    账本行 refcount 与真相不符即纠正；归零走槽销毁语义（计数/镜像态清零，行保留惰性终结，
+    //    与 kernel.refreshSlotRefCount 归零同形）。惰性 0 行不复活、缺行不重建——重建需
+    //    checker/schedule（subscribe 路径职责），L4 不发明。
+    const openCountBySlot = new Map<string, number>();
+    for (const s of ctx.store.querySubscriptions({})) {
+      if (s.closedAt !== undefined) continue;
+      const k = runnerSlotKey({ type: s.entityRefType, key: s.entityRefKey }, s.template ?? "");
+      openCountBySlot.set(k, (openCountBySlot.get(k) ?? 0) + 1);
+    }
+    for (const row of ctx.store.listRunLedger()) {
+      if (row.refcount <= 0) continue; // 已归零惰性行不复活（B4 陈旧实体停探是正常态）
+      const expected = openCountBySlot.get(row.slotKey) ?? 0;
+      if (expected === row.refcount) continue;
+      ctx.store.putRunLedger(
+        expected === 0
+          ? { ...row, refcount: 0, consecutiveFails: 0, lastVerdict: undefined, nextDueAt: undefined }
+          : { ...row, refcount: expected },
+      );
+    }
+    // ⑥ 快照触发候选（#31 性能条件 MVP 面：单实体事件数阈值；快照机制本体归后票，候选上报
+    //    handle.housekeeping）：计数来自 ① 的 outbox 扫描面；候选 = 存活实体且事件数严格超阈值。
+    if (eventCountByEntity && snapshotThreshold !== undefined) {
+      const alive = new Set(ctx.store.queryEntities({}).map((e) => `${e.type}/${e.key}`));
+      housekeepingView.snapshotNeeded = [...eventCountByEntity]
+        .filter(([k, n]) => n > snapshotThreshold && alive.has(k))
+        .map(([k]) => k);
+    } else {
+      housekeepingView.snapshotNeeded = [];
+    }
+    housekeepingView.lastSweepAt = now;
+  };
+  const scheduleSweep = (): void => {
+    if (stopped) return;
+    sweepTimer = ctx.clock.setTimeout(
+      () => {
+        sweptOnce = true;
+        sweepTimer = null;
+        try {
+          sweep();
+        } catch (err) {
+          errors.push(err); // sweep 单步失败不死循环（level-trigger 下一周期重试）
+        }
+        scheduleSweep();
+      },
+      sweptOnce ? HOUSEKEEPING_INTERVAL_MS : 0, // 启动惰性清理（#31 L154）
+    );
+  };
+  scheduleSweep();
+
   return {
     submit: doSubmit,
     ingestProbeResult,
     sessionStart,
     cache: { states },
+    housekeeping: housekeepingView,
     errors,
     stop(): void {
       stopped = true;
@@ -693,6 +915,10 @@ export function startLoops(ctx: LoopsCtx): LoopsHandle {
       batches.clear();
       activeSessions.clear();
       sessionPushInflight.clear();
+      scanTimer?.cancel(); // 票 28 L3 扫描定时器（未接线时为 null）
+      scanTimer = null;
+      sweepTimer?.cancel(); // 票 28 L4 housekeeping 定时器
+      sweepTimer = null;
       offWrite(); // 幂等取消订阅（票 25 Finding 2）：重复启停不累积监听器、旧闭包可回收
     },
   };
