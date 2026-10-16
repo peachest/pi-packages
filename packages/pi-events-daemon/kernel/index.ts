@@ -44,6 +44,10 @@ import {
 import type { EventRow, Store, SubscriptionRow, TxView } from "../store/index.ts";
 import type { EntityRow } from "../store/index.ts";
 
+// I-01 类型面：profiles 依 eda-profiles-deps 只许经 kernel 取 domain 类型（profiles→{domain,protocol,store} 全禁），
+// 故在此转发 EntityRef；单一来源仍是 domain/types.ts（本文件上方 import 同源，零第二定义）。
+export type { EntityRef } from "../domain/types.ts";
+
 /** Intent 消费重试上界（spec 自定裁量：#31 仅"有限重试"未定数值，round-2 备注 → 3 次）。 */
 const MAX_INTENT_ATTEMPTS = 3;
 
