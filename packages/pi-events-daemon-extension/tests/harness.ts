@@ -38,10 +38,10 @@ export interface TestDaemon {
   close(): Promise<void>;
 }
 
-export function startTestDaemon(socketPath?: string): TestDaemon {
+export function startTestDaemon(opts: { store?: Store; socketPath?: string } = {}): TestDaemon {
   const dir = mkdtempSync(join(tmpdir(), "pi-ext-daemon-"));
-  const path = socketPath ?? join(dir, "d.sock");
-  const store = createMemoryStore();
+  const path = opts.socketPath ?? join(dir, "d.sock");
+  const store = opts.store ?? createMemoryStore();
   const exec = new FakeExec();
   let handle: TransportHandle | null = null;
 

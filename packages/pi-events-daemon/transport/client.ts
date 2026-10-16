@@ -19,6 +19,8 @@ export interface EventsClient {
   startSession(sessionId: string): void;
   /** daemon 推送行监听。 */
   onNotification(handler: (method: string, params: unknown) => void): void;
+  /** 断连回调（连接关闭即触发一次；wake 重连循环消费，票 36）。 */
+  onClose(handler: () => void): void;
   /** 未决（已发未答）请求数：诊断面，pending 生命周期可观测。 */
   pendingCount(): number;
   close(): Promise<void>;
@@ -28,6 +30,7 @@ export function connectEvents(path: string, opts: { epoch: number }): Promise<Ev
   const pending = new Map<RequestId, { resolve: (v: unknown) => void; reject: (e: RpcError) => void }>();
   let nextId = 0;
   let notificationHandler: ((method: string, params: unknown) => void) | null = null;
+  let closeHandler: (() => void) | null = null;
   let closed: Promise<void> | null = null;
   const socket = net.connect(path);
   socket.setEncoding("utf8");
@@ -57,6 +60,7 @@ export function connectEvents(path: string, opts: { epoch: number }): Promise<Ev
     const error: RpcError = { code: -32000, message: "connection closed" };
     for (const p of pending.values()) p.reject(error);
     pending.clear();
+    closeHandler?.();
   });
 
   const client: EventsClient = {
@@ -79,6 +83,9 @@ export function connectEvents(path: string, opts: { epoch: number }): Promise<Ev
     },
     onNotification(handler) {
       notificationHandler = handler;
+    },
+    onClose(handler) {
+      closeHandler = handler;
     },
     pendingCount: () => pending.size,
     close() {

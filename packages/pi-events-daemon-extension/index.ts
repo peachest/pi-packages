@@ -18,6 +18,7 @@ import {
   loadTemplates,
   readEventsJson,
 } from "./lib/eventsjson.ts";
+import { startWake, type WakeHandle } from "./lib/wake.ts";
 import type { ProfileRegistry } from "pi-events-daemon/profiles.ts";
 
 /** 工厂注入面（测试替身 / 环境覆盖；缺省全走默认实现）。 */
@@ -49,9 +50,21 @@ export default function eventsDaemonExtension(pi: ExtensionAPI, deps: ExtensionD
   }
 
   // 票 35 声明链 + 票 36 wake（SESSION_START：长连接建立 = SESSION_START 信号，#31）。
+  let wake: WakeHandle | null = null;
   pi.on("session_start", (event, ctx) => {
-    if (event.reason === "fork") return; // fork no-inherit：子会话不重新声明（订阅带 sourceSessionId，daemon 侧过滤）
+    if (event.reason === "fork") return; // fork no-inherit：子会话不重声明、不建长连接（零推送）
     void declareFromEventsJson(pi, ctx, { sender, templatesDir: deps.templatesDir, templates: deps.templates });
+    wake?.stop(); // 会话切换：旧长连接退位
+    wake = startWake({
+      sessionId: ctx.sessionManager.getSessionId(),
+      socketPath: deps.socketPath,
+      inject: (message) => pi.sendMessage(message, message.options),
+      notify: (message, type) => ctx.ui.notify(message, type),
+    });
+  });
+  pi.on("session_shutdown", () => {
+    void wake?.stop();
+    wake = null;
   });
 }
 
@@ -97,3 +110,14 @@ export {
   readEventsJson,
 } from "./lib/eventsjson.ts";
 export type { EventsJsonEntry, EventsJsonDoc, DeclareReport } from "./lib/eventsjson.ts";
+export {
+  startWake,
+  wakeBackoffMs,
+  renderWakeBatch,
+  truncateEvidence,
+  WAKE_CUSTOM_TYPE,
+  WAKE_BACKOFF_BASE_MS,
+  WAKE_BACKOFF_MAX_MS,
+  EVIDENCE_INLINE_LIMIT,
+} from "./lib/wake.ts";
+export type { WakeDeps, WakeHandle, WakeEnvelope, WakeEntry, WakeInjection } from "./lib/wake.ts";
