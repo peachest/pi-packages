@@ -121,11 +121,17 @@ export class Prober {
    * 单发同步等待执行（票 40：op validate live-run / subscribe smoke 预检）：不走池不回流，
    * Promise 结算。三态归类与输出掩码与池路径同一套（classify/mask 复用）——语义不二源。
    */
+  /**
+   * 单发同步等待执行（票 40：op validate live-run / subscribe smoke 预检）：不走池不回流，
+   * Promise 结算。三态归类与输出掩码与池路径同一套（classify/mask 复用）——语义不二源。
+   * timeoutMs 同池路径规范化（票 40 评审 F10：0/负/NaN/Infinity 拒，>300s 封顶）。
+   */
   async runOnce(check: string, timeoutMs: number = PROBE_TIMEOUT_DEFAULT_MS): Promise<Omit<ProbeResult, "slotKey">> {
+    const ms = normalizeTimeoutMs(timeoutMs);
     const t0 = this.deps.clock.now();
     let raw: Awaited<ReturnType<Exec["run"]>>;
     try {
-      raw = await this.deps.exec.run(check, { timeoutMs, env: this.envFor() });
+      raw = await this.deps.exec.run(check, { timeoutMs: ms, env: this.envFor() });
     } catch (err) {
       return {
         verdict: "waiting",
@@ -134,7 +140,7 @@ export class Prober {
         durationMs: this.deps.clock.now() - t0,
       };
     }
-    return { ...classify(raw, timeoutMs), evidence: this.mask(raw), durationMs: this.deps.clock.now() - t0 };
+    return { ...classify(raw, ms), evidence: this.mask(raw), durationMs: this.deps.clock.now() - t0 };
   }
 
   /** poll 立即执行与 watch 事件触发共用的入池路径：seq 分配、池 ≤8、第 9 个起排队。 */
