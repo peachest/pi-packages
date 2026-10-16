@@ -18,6 +18,8 @@ import {
   type RpcError,
 } from "../protocol/index.ts";
 
+export * from "./client.ts";
+
 /** socket 路径正典（#31 数据布局）：PI_EVENTS_SOCK env 优先，默认 .pi 运行时目录。 */
 export function resolveSocketPath(env: NodeJS.ProcessEnv = process.env): string {
   return env.PI_EVENTS_SOCK ?? join(homedir(), ".pi", "run", "pi-events.sock");

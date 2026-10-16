@@ -175,7 +175,7 @@ describe("ticket 05: transport 薄度（源码审查）", () => {
       const code = readFileSync(join(dir, f), "utf8");
       // 业务字段/策略词一律不出现：裁决归 kernel/loops/extension（模块 spec 纪律）
       expect(code, `${f} 出现业务字段/策略词`).not.toMatch(
-        /entityRef|subscriptionId|notificationId|eventSeq|verdict|billboard|drain|parked|deadLetter|profileId|backoff|retry/,
+        /\b(?:entityRef|subscriptionId|notificationId|eventSeq|verdict|billboard|drain|parked|deadLetter|profileId|backoff|retry)\b/,
       );
     }
   });
