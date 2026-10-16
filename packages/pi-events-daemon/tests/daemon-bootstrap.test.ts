@@ -2,7 +2,7 @@
  * Ticket 38 acceptance tests — 组合根 bootstrap 正典顺序 + flock/pidfile 仲裁 + 优雅停机 + epoch 共用 + C1 降级。
  * C 层进程级双启动/SIGTERM 用真子进程（bin 入口）；启动顺序/epoch/降级用进程内 bootstrap（MemoryStore 注入 + 临时目录）。
  */
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -254,6 +254,55 @@ describe("票 38 组 4：epoch 生成 + transport/run_ledger 共用", () => {
     } finally {
       await daemon.stop();
     }
+  });
+});
+
+describe("票 38 评审修复 — Group Lock：FileLock O_EXCL 竞态语义（3H1M）", () => {
+  it("三进程交错（mock 时序）：pidfile 已建未写 pid 的窗口 → 拒取且不回收锁文件；活 pid 拒绝、死 pid 回收重取", () => {
+    const dir = makeDir();
+    dirs.push(dir);
+    const pidPath = join(dir, "d.pid");
+    writeFileSync(pidPath, ""); // 进程 A：open(wx) 已成功、writeSync(pid) 未落——交错窗口形态
+    const b = new FileLock(pidPath, 2147483645);
+    expect(() => b.acquire()).toThrow(/contended|unparseable/); // 空内容无法验证持有者死亡：fail-safe 拒取
+    expect(readFileSync(pidPath, "utf8")).toBe(""); // B 未回收（A 随后写 pid 不受影响）
+
+    writeFileSync(pidPath, `${process.pid}\n`); // A 落笔活 pid（测试进程必活）
+    expect(() => b.acquire()).toThrow(/already running \(pid \d+/); // 活持有者：双启动拒绝
+
+    writeFileSync(pidPath, "2147483646\n"); // A kill -9：死 pid 残留
+    b.acquire(); // 回收重取成功（死 pid 自愈路径不回归）；此刻锁内容 = B 自己的 pid
+    expect(readFileSync(pidPath, "utf8")).toBe("2147483645\n");
+    b.release();
+  });
+
+  it("pidfile 不可读（EACCES I/O 错）≠ stale：原样上抛，不接管不回收", () => {
+    const dir = makeDir();
+    dirs.push(dir);
+    const pidPath = join(dir, "d.pid");
+    writeFileSync(pidPath, "2147483646\n");
+    chmodSync(pidPath, 0o000); // 非 root：读必 EACCES
+    let caught: unknown = null;
+    try {
+      new FileLock(pidPath, 2147483645).acquire();
+    } catch (err) {
+      caught = err;
+    }
+    expect((caught as NodeJS.ErrnoException)?.code).toBe("EACCES"); // 读错误 ≠ stale：不碰锁，原样上抛
+    expect(existsSync(pidPath)).toBe(true); // 锁未被回收
+    chmodSync(pidPath, 0o644); // afterEach rmSync 可清
+  });
+
+  it("release 校验锁内 pid 是自己才删：他人锁不误删、自身锁删除、已释放幂等", () => {
+    const dir = makeDir();
+    dirs.push(dir);
+    const pidPath = join(dir, "d.pid");
+    writeFileSync(pidPath, "111\n");
+    new FileLock(pidPath, 222).release(); // 内容非自己 pid：不删（锁已被他人接管形态）
+    expect(readFileSync(pidPath, "utf8")).toBe("111\n");
+    new FileLock(pidPath, 111).release(); // 自己的锁：删
+    expect(existsSync(pidPath)).toBe(false);
+    expect(() => new FileLock(pidPath, 111).release()).not.toThrow(); // 已释放：幂等
   });
 });
 
