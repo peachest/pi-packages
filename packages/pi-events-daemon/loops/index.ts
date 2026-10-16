@@ -432,8 +432,9 @@ export function startLoops(ctx: LoopsCtx): LoopsHandle {
   scheduleVerifyScan();
 
   // --- L4 Housekeeping（票 28）：保留期清理 / ephemeral retired 清理 / dead-letter 每日提示 /
-  // ttl 关订阅 / run_ledger 对账 / 快照触发。启动惰性首扫（#31 L154）+ 1h 周期；全部簿记/审计
-  // 直写 store（#31 L82：ephemeral 清理是簿记非事件，不经 kernel；缓存一致性由提交回调保全）。
+  // ttl 关订阅 / run_ledger 对账 / 快照触发。启动惰性首扫（#31 L154）+ 1h 周期；簿记/审计直写
+  // store（#31 L82：ephemeral 清理是簿记非事件，不经 kernel；缓存一致性由提交回调保全），
+  // 例外 = ttl 关订阅（kernel 变更，经 L0 队列 submit 唯一写路径）。
   const HOUSEKEEPING_INTERVAL_MS = 3_600_000;
   const DAY_MS = 86_400_000;
   const hk = ctx.housekeeping;
@@ -448,15 +449,18 @@ export function startLoops(ctx: LoopsCtx): LoopsHandle {
     //    verdict join：evidenceRef → 事件终态（outbox 行与事件 1:1 全扫；shortcut: O(outbox)，量大时归 store 接口按 evidenceRef 索引查）。
     const verdictByRef = new Map<string, string>();
     const latestEventMsByEntity = hk?.ephemeral ? new Map<string, number>() : null;
+    const snapshotThreshold = hk?.snapshotThreshold;
+    const eventCountByEntity = snapshotThreshold !== undefined ? new Map<string, number>() : null;
     for (const row of ctx.store.outboxBatch(Number.MAX_SAFE_INTEGER)) {
       const ev = ctx.store.tx((tx) => tx.getEvent(row.notificationId));
       if (!ev) continue;
       if (ev.evidenceRef) verdictByRef.set(ev.evidenceRef, ev.to);
+      const entityKey = `${ev.entityRefType}/${ev.entityRefKey}`;
       if (latestEventMsByEntity) {
-        const k = `${ev.entityRefType}/${ev.entityRefKey}`;
         const t = Date.parse(ev.occurredAt);
-        if (Number.isFinite(t) && t > (latestEventMsByEntity.get(k) ?? -Infinity)) latestEventMsByEntity.set(k, t);
+        if (Number.isFinite(t) && t > (latestEventMsByEntity.get(entityKey) ?? -Infinity)) latestEventMsByEntity.set(entityKey, t);
       }
+      if (eventCountByEntity) eventCountByEntity.set(entityKey, (eventCountByEntity.get(entityKey) ?? 0) + 1);
     }
     const stale = ctx.store.evidenceOlderThan(now - EVIDENCE_RETENTION.passedMs);
     const due = stale.filter((r) => evidenceRetentionExpired(r.recordedAt, verdictByRef.get(r.evidenceRef) ?? "", now));
@@ -486,6 +490,44 @@ export function startLoops(ctx: LoopsCtx): LoopsHandle {
         lastNoticeDay = day;
         ctx.pusher.push(JSON.stringify({ kind: "dead-letter-notice", count: dead.length })).catch((err: unknown) => errors.push(err));
       }
+    }
+    // ④ ttl 到期关订阅（#57 ttl 触发）：判定归 domain ttlExpired（严格过期，与 evidence/retired 边界同法）；
+    //    关闭经 L0 队列（kernel 变更唯一写路径）复用 cancel 幂等（重扫安全）；先于对账——关后槽
+    //    refcount 由 kernel 归算，对账只补残余漂移。
+    for (const s of ctx.store.querySubscriptions({})) {
+      if (s.closedAt !== undefined || s.ttlMs === undefined) continue;
+      if (!ttlExpired({ createdAt: s.createdAt, ttlMs: s.ttlMs }, now)) continue;
+      doSubmit({ kind: "cancel", req: { subscriptionId: s.subscriptionId, reason: "ttl", now } });
+    }
+    // ⑤ run_ledger 对账（A2：槽账本是 runtime 簿记非真相源，订阅表是真相）：逐活跃订阅聚槽计数，
+    //    账本行 refcount 与真相不符即纠正；归零走槽销毁语义（计数/镜像态清零，行保留惰性终结，
+    //    与 kernel.refreshSlotRefCount 归零同形）。惰性 0 行不复活、缺行不重建——重建需
+    //    checker/schedule（subscribe 路径职责），L4 不发明。
+    const openCountBySlot = new Map<string, number>();
+    for (const s of ctx.store.querySubscriptions({})) {
+      if (s.closedAt !== undefined) continue;
+      const k = runnerSlotKey({ type: s.entityRefType, key: s.entityRefKey }, s.template ?? "");
+      openCountBySlot.set(k, (openCountBySlot.get(k) ?? 0) + 1);
+    }
+    for (const row of ctx.store.listRunLedger()) {
+      if (row.refcount <= 0) continue; // 已归零惰性行不复活（B4 陈旧实体停探是正常态）
+      const expected = openCountBySlot.get(row.slotKey) ?? 0;
+      if (expected === row.refcount) continue;
+      ctx.store.putRunLedger(
+        expected === 0
+          ? { ...row, refcount: 0, consecutiveFails: 0, lastVerdict: undefined, nextDueAt: undefined }
+          : { ...row, refcount: expected },
+      );
+    }
+    // ⑥ 快照触发候选（#31 性能条件 MVP 面：单实体事件数阈值；快照机制本体归后票，候选上报
+    //    handle.housekeeping）：计数来自 ① 的 outbox 扫描面；候选 = 存活实体且事件数严格超阈值。
+    if (eventCountByEntity && snapshotThreshold !== undefined) {
+      const alive = new Set(ctx.store.queryEntities({}).map((e) => `${e.type}/${e.key}`));
+      housekeepingView.snapshotNeeded = [...eventCountByEntity]
+        .filter(([k, n]) => n > snapshotThreshold && alive.has(k))
+        .map(([k]) => k);
+    } else {
+      housekeepingView.snapshotNeeded = [];
     }
     housekeepingView.lastSweepAt = now;
   };

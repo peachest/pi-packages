@@ -874,7 +874,8 @@ describe("票 28 — L3 verify 扫描：两段式 ack 收口（accepted→verifi
 });
 
 // =============================================================================
-// 票 28 — L4 Housekeeping：evidence 保留期 / ephemeral retired 清理 / dead-letter 每日提示
+// 票 28 — L4 Housekeeping：evidence 保留期 / ephemeral retired 清理 / dead-letter 每日提示 /
+// ttl 到期关订阅 / run_ledger 对账 / 快照触发（性能条件）
 // A 层：启动惰性首扫（FakeClock step(0)）；周期 1h。
 // =============================================================================
 
@@ -1017,5 +1018,129 @@ describe("票 28 — L4 dead-letter 每日提示（#31 B6③，settings 可关�
     expect(clock.pendingCount).toBe(1); // L4 首扫（票 25 零定时器 pin 随 L4 挂入更新）
     loops.stop();
     expect(clock.pendingCount).toBe(0);
+  });
+});
+
+// =============================================================================
+// 票 28 — L4 剩余面：ttl 到期关订阅 / run_ledger 对账 / 快照触发（性能条件）
+// =============================================================================
+
+describe("票 28 — L4 ttl 到期关订阅（#57 ttl 触发：判定归 domain ttlExpired，关闭经 L0 队列）", () => {
+  it("到期订阅自动关闭（closedReason=ttl）；无 ttl/未到期不动；共享槽 refcount 随关归算；重扫幂等", () => {
+    const store = createMemoryStore();
+    store.putEntity({ type: REF.type, key: REF.key, state: null });
+    const now0 = 100 * DAY;
+    const clock = new FakeClock();
+    clock.step(now0);
+    const loops = startLoops(makeCtx(store, { clock }));
+    const sub = (sessionId: string, template: string, ttl?: number) =>
+      loops.submit({
+        kind: "subscribe",
+        req: {
+          sessionId,
+          entityRef: REF,
+          template,
+          check: "fixture-check",
+          now: now0,
+          ...(ttl !== undefined ? { opts: { ttl } } : {}),
+        },
+      });
+    sub("s-expired", TPL, 5_000); // 1h 周期扫时早已过期
+    sub("s-alive", TPL); // 无 ttl：不动
+    sub("s-young", "tpl-young", 86_400_000); // 1d ttl：1h 扫时未到期
+    clock.step(0); // 首扫：均未到期
+    expect(store.getSubscription("sub-0001")?.closedAt).toBeUndefined();
+
+    clock.step(3_600_000); // 周期扫：s-expired 到期关
+    expect(store.getSubscription("sub-0001")?.closedReason).toBe("ttl");
+    expect(store.getSubscription("sub-0001")?.closedAt).toBe(now0 + 3_600_000);
+    expect(store.getSubscription("sub-0002")?.closedAt).toBeUndefined();
+    expect(store.getSubscription("sub-0003")?.closedAt).toBeUndefined();
+    expect(store.getRunLedger(SLOT_KEY)?.refcount).toBe(1); // 共享槽随关归算（kernel cancel 路径）
+    expect(store.getRunLedger(`slot:${REF.type}:${REF.key}#tpl-young`)?.refcount).toBe(1);
+    expect(loops.errors).toHaveLength(0);
+
+    clock.step(3_600_000); // 重扫幂等：已关不再触，closedAt 不变
+    expect(store.getSubscription("sub-0001")?.closedAt).toBe(now0 + 3_600_000);
+    loops.stop();
+  });
+});
+
+describe("票 28 — L4 run_ledger 对账（A2：订阅表是真相源，账本 refcount 漂移纠正）", () => {
+  it("孤儿活跃行归零走槽销毁语义（计数/镜像态清零，行保留）；计数不符纠正（镜像态保留）；惰性 0 行不复活", () => {
+    const store = createMemoryStore();
+    store.putEntity({ type: REF.type, key: REF.key, state: null });
+    const now0 = 100 * DAY;
+    const clock = new FakeClock();
+    clock.step(now0);
+    const loops = startLoops(makeCtx(store, { clock }));
+    // fs-watch 源：不占到点调度（对账面与探针调度解耦，waiting 回流不扰镜像态断言）
+    const subReq = (sessionId: string, template: string) => ({
+      kind: "subscribe" as const,
+      req: {
+        sessionId,
+        entityRef: REF,
+        template,
+        check: "fixture-check",
+        now: now0,
+        opts: { source: "fs-watch" as const, schedule: { type: "interval" as const, intervalMs: 60_000 } },
+      },
+    });
+    loops.submit(subReq("s", TPL));
+    loops.submit(subReq("s2", "tpl-zero"));
+    // 注入漂移（不经 kernel）：孤儿活跃 / 计数虚高 / 错误归零
+    store.putRunLedger({
+      slotKey: "slot:ghost:external/g#tpl", epoch: 0, refcount: 2, consecutiveFails: 4,
+      lastVerdict: "failed", nextDueAt: now0 + 1, entityRefType: "ghost", entityRefKey: "external/g",
+    });
+    store.putRunLedger({ ...store.getRunLedger(SLOT_KEY)!, refcount: 3, consecutiveFails: 2 });
+    store.putRunLedger({ ...store.getRunLedger(`slot:${REF.type}:${REF.key}#tpl-zero`)!, refcount: 0 });
+    clock.step(0); // 首扫对账
+    const ghost = store.getRunLedger("slot:ghost:external/g#tpl");
+    expect(ghost).toMatchObject({ refcount: 0, consecutiveFails: 0 }); // 槽销毁语义，行保留惰性终结
+    expect(ghost?.lastVerdict).toBeUndefined();
+    expect(ghost?.nextDueAt).toBeUndefined();
+    expect(store.getRunLedger(SLOT_KEY)?.refcount).toBe(1); // 纠正为真相
+    expect(store.getRunLedger(SLOT_KEY)?.consecutiveFails).toBe(2); // 镜像态保留（槽仍活）
+    expect(store.getRunLedger(`slot:${REF.type}:${REF.key}#tpl-zero`)?.refcount).toBe(0); // 不复活：重建归 subscribe 路径
+    clock.step(3_600_000); // 重扫幂等：对账后一致不再写
+    expect(store.getRunLedger(SLOT_KEY)?.refcount).toBe(1);
+    expect(store.getRunLedger(SLOT_KEY)?.consecutiveFails).toBe(2);
+    expect(loops.errors).toHaveLength(0);
+    loops.stop();
+  });
+});
+
+describe("票 28 — L4 快照触发候选（#31 性能条件：单实体事件数阈值；快照机制本体归后票）", () => {
+  it("事件数严格超阈值且实体存活才上报（type/key）；恰等阈值不报；已删/未注册实体不报；未设阈值恒空", () => {
+    const store = createMemoryStore();
+    const now0 = 100 * DAY;
+    store.putEntity({ type: "adhoc", key: "external/a", state: "passed" }); // 4 事件 → 候选
+    store.putEntity({ type: "adhoc", key: "external/b", state: "waiting" }); // 3 事件 → 恰等不报
+    const seed = (key: string, n: number) => {
+      for (let i = 1; i <= n; i++) {
+        store.appendEventIfMissing({
+          eventId: `evt:adhoc:${key}#${i}`, eventSeq: i, entityRefType: "adhoc", entityRefKey: key,
+          from: "waiting", to: "passed", occurredAt: at(1),
+        });
+        store.putOutbox({ notificationId: `evt:adhoc:${key}#${i}`, eventSeq: i });
+      }
+    };
+    seed("external/a", 4);
+    seed("external/b", 3);
+    seed("external/c", 4); // 无实体行（已删/未注册）：事件在，候选不报
+
+    const clock = new FakeClock();
+    clock.step(now0);
+    const loops = startLoops(makeCtx(store, { clock, housekeeping: { snapshotThreshold: 3 } }));
+    clock.step(0); // 首扫
+    expect(loops.housekeeping.snapshotNeeded).toEqual(["adhoc/external/a"]);
+    expect(loops.housekeeping.lastSweepAt).toBe(now0);
+    loops.stop();
+
+    const loose = startLoops(makeCtx(store, { clock, housekeeping: {} })); // 未设阈值：恒空
+    clock.step(0);
+    expect(loose.housekeeping.snapshotNeeded).toEqual([]);
+    loose.stop();
   });
 });
