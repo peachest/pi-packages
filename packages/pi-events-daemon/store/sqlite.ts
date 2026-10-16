@@ -130,7 +130,8 @@ CREATE TABLE IF NOT EXISTS run_ledger (
   last_verdict TEXT,
   next_due_at INTEGER,
   entity_ref_type TEXT,
-  entity_ref_key TEXT
+  entity_ref_key TEXT,
+  generation INTEGER
 );
 -- events append-only（D2）：UPDATE/DELETE 在库层拒绝（事件流永久保留；无 Store delete 路径）
 CREATE TRIGGER IF NOT EXISTS events_append_only_update BEFORE UPDATE ON events
@@ -156,6 +157,7 @@ const MIGRATIONS: ReadonlyArray<{ table: string; column: string; ddl: string }> 
   { table: "subscriptions", column: "phase", ddl: "ALTER TABLE subscriptions ADD COLUMN phase TEXT" },
   { table: "run_ledger", column: "entity_ref_type", ddl: "ALTER TABLE run_ledger ADD COLUMN entity_ref_type TEXT" },
   { table: "run_ledger", column: "entity_ref_key", ddl: "ALTER TABLE run_ledger ADD COLUMN entity_ref_key TEXT" },
+  { table: "run_ledger", column: "generation", ddl: "ALTER TABLE run_ledger ADD COLUMN generation INTEGER" },
 ];
 
 /** node:sqlite 行值域（SQLOutputValue 的本地形状，不依赖类型导出面）。 */
@@ -253,6 +255,7 @@ function rowToRunLedger(r: RawRow): RunLedgerRow {
     ...num(r.next_due_at) !== undefined ? { nextDueAt: num(r.next_due_at) } : {},
     ...str(r.entity_ref_type) !== undefined ? { entityRefType: str(r.entity_ref_type) } : {},
     ...str(r.entity_ref_key) !== undefined ? { entityRefKey: str(r.entity_ref_key) } : {},
+    ...num(r.generation) !== undefined ? { generation: num(r.generation) } : {},
   };
 }
 
@@ -427,9 +430,9 @@ export class SqliteStore implements Store {
         return r && rowToRunLedger(r);
       },
       putRunLedger: (row) => {
-        this.st("INSERT INTO run_ledger (slot_key, epoch, refcount, consecutive_fails, last_verdict, next_due_at, entity_ref_type, entity_ref_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (slot_key) DO UPDATE SET epoch = excluded.epoch, refcount = excluded.refcount, consecutive_fails = excluded.consecutive_fails, last_verdict = excluded.last_verdict, next_due_at = excluded.next_due_at, entity_ref_type = excluded.entity_ref_type, entity_ref_key = excluded.entity_ref_key").run(
+        this.st("INSERT INTO run_ledger (slot_key, epoch, refcount, consecutive_fails, last_verdict, next_due_at, entity_ref_type, entity_ref_key, generation) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (slot_key) DO UPDATE SET epoch = excluded.epoch, refcount = excluded.refcount, consecutive_fails = excluded.consecutive_fails, last_verdict = excluded.last_verdict, next_due_at = excluded.next_due_at, entity_ref_type = excluded.entity_ref_type, entity_ref_key = excluded.entity_ref_key, generation = excluded.generation").run(
           row.slotKey, row.epoch, row.refcount, row.consecutiveFails, row.lastVerdict ?? null, row.nextDueAt ?? null,
-          row.entityRefType ?? null, row.entityRefKey ?? null,
+          row.entityRefType ?? null, row.entityRefKey ?? null, row.generation ?? null,
         );
         mark("run_ledger");
       },

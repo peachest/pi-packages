@@ -103,6 +103,11 @@ export type RunLedgerRow = {
   /** 票 24：槽身份（EntityRef 平铺，kernel 槽创建时落）——completion 回流的 slotKey → ref 反查（票 26 L0 消费）。 */
   entityRefType?: string;
   entityRefKey?: string;
+  /**
+   * 槽 generation（评审 B 组，设计修正）：创建 = 0，销毁重建/换参重建 = +1（共享加入不变）。
+   * loops 用它隔离槽代际：旧代 completion 丢弃（in-flight 标记比对）、阈值计数归零（重建不继承旧计数）。
+   */
+  generation?: number;
 };
 
 /** 查询过滤器（形状最小化，字段语义见票面）。 */

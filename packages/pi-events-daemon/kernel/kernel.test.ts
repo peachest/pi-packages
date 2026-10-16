@@ -798,6 +798,26 @@ describe("票 24 — RunnerSlot 全周期：首订阅创建（阈值从 0 起先
     expect(() => kernel.cancel({ subscriptionId: id, sessionId: "session-9", now: 2_000 })).toThrow(/belongs to session session-1/);
     expect(kernel.cancel({ subscriptionId: id, now: 2_000 })).toEqual({ cancelled: true });
   });
+
+  it("槽 generation 生命周期（评审 B 组核心）：首建 0、共享加入不变、末 cancel 后重建 +1、换参重建再 +1", () => {
+    const store = createMemoryStore();
+    seedEntity(store, "passed");
+    const kernel = new Kernel(store, VERDICT_STATES, 0);
+    const idA = subId(kernel.subscribe(subReq()));
+    expect(store.getRunLedger(SLOT_KEY)?.generation).toBe(0); // 创建 = 0
+    const idB = subId(kernel.subscribe(subReq({ sessionId: "session-2" })));
+    expect(store.getRunLedger(SLOT_KEY)?.generation).toBe(0); // 共享加入不换代
+    expect(kernel.cancel({ subscriptionId: idA, now: 2_000 })).toEqual({ cancelled: true });
+    expect(kernel.cancel({ subscriptionId: idB, now: 2_100 })).toEqual({ cancelled: true });
+    expect(store.getRunLedger(SLOT_KEY)?.refcount).toBe(0); // 槽销毁（行保留）
+    kernel.subscribe(subReq()); // 重建 +1
+    expect(store.getRunLedger(SLOT_KEY)).toMatchObject({ refcount: 1, generation: 1 });
+    const idD = subId(kernel.subscribe(subReq({ sessionId: "session-2" })));
+    expect(store.getRunLedger(SLOT_KEY)?.generation).toBe(1); // 共享加入仍不换代
+    kernel.cancel({ subscriptionId: idD, now: 2_200 });
+    kernel.subscribe(subReq({ check: "fixture-check-b" })); // 换参重建再 +1
+    expect(store.getRunLedger(SLOT_KEY)).toMatchObject({ refcount: 1, generation: 2 });
+  });
 });
 
 describe("票 24 — subscribe 幂等与换参", () => {

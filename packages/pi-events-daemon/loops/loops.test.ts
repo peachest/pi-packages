@@ -450,6 +450,90 @@ describe("票 26 — once 自动关订阅 + 两阶段 readyCheck 切换", () => 
   });
 });
 
+describe("评审修复 — 槽 generation 隔离（B 组：重建/换参后旧计数清零、旧 completion 拒应用）", () => {
+  it("B3 solo 换参重建槽：新 checker 首次失败不触发（旧计数清零、generation+1）", async () => {
+    const store = createMemoryStore();
+    store.putEntity({ type: REF.type, key: REF.key, state: null });
+    const clock = new FakeClock();
+    const exec = new FakeExec();
+    exec.enqueue({ exitCode: 2 });
+    const loops = startLoops(makeCtx(store, { clock, exec }));
+    subVia(loops, {}, { check: "check-a", opts: { failureThreshold: 2, schedule: { type: "interval", intervalMs: 60_000 } } });
+
+    clock.step(0);
+    await micro();
+    expect(store.outboxBatch(10)).toHaveLength(0); // 第 1 次 failed：计数 1 不翻转
+    expect(store.getRunLedger(SLOT_KEY)).toMatchObject({ consecutiveFails: 1, generation: 0 });
+
+    // 换参（checker 替换）→ 槽重建 generation +1，阈值计数归零
+    subVia(loops, {}, { check: "check-b", opts: { failureThreshold: 2, schedule: { type: "interval", intervalMs: 60_000 } } });
+    await micro();
+    expect(store.getRunLedger(SLOT_KEY)).toMatchObject({ consecutiveFails: 0, generation: 1 });
+
+    // 新 checker 首次失败：若旧计数未清则 1+1=2 触发；清零后仅计数 1，不发事件。
+    // 重建 = 新槽语义：首探即时（nextDueAt 归零 → timer due 0），step(0) 即触发；
+    // 若 step(60_000) 会先撞上探针 10s 超时定时器（同步 step 窗口内）→ waiting 回流非本测语义。
+    exec.enqueue({ exitCode: 2 });
+    clock.step(0);
+    await micro();
+    expect(store.outboxBatch(10)).toHaveLength(0);
+    expect(store.getRunLedger(SLOT_KEY)?.consecutiveFails).toBe(1);
+    loops.stop();
+  });
+
+  it("B5 probe pending 中取消末订阅再重订阅（共享槽双订阅）：旧 completion 不串新槽，新 completion 正常应用", async () => {
+    const store = createMemoryStore();
+    store.putEntity({ type: REF.type, key: REF.key, state: null });
+    const clock = new FakeClock();
+    const exec = new DeferredExec();
+    const loops = startLoops(makeCtx(store, { clock, exec: exec as unknown as FakeExec }));
+    subVia(loops, {}, { check: "shared-check" });
+    subVia(loops, {}, { check: "shared-check", sessionId: "session-2" });
+
+    clock.step(0); // 首探 dispatch（in-flight，generation 0）
+    expect(exec.calls).toHaveLength(1);
+
+    // 双订阅全取消（槽销毁 refcount 0）→ 重订阅（同 slotKey 重建 generation 1）
+    const subs = store.querySubscriptions({});
+    for (const s of subs) loops.submit({ kind: "cancel", req: { subscriptionId: s.subscriptionId, now: 1_000 } });
+    await micro();
+    expect(store.getRunLedger(SLOT_KEY)?.refcount).toBe(0);
+    subVia(loops, {}, { check: "shared-check", sessionId: "session-1" });
+    await micro();
+    expect(store.getRunLedger(SLOT_KEY)?.generation).toBe(1);
+
+    exec.resolve(0, { exitCode: 2 }); // 旧 completion（generation 0 dispatch）回流
+    await micro();
+    expect(store.outboxBatch(10)).toHaveLength(0); // 旧 generation verdict 被拒
+
+    clock.step(0); // 旧 completion 结算后 in-flight 清空 → 下一代首探
+    expect(exec.calls).toHaveLength(2);
+    exec.resolve(1, { exitCode: 2 }); // 新 completion（generation 1）
+    await micro();
+    expect(store.getEntity(REF.type, REF.key)?.state).toBe("failed"); // 新 verdict 正常应用
+    expect(store.outboxBatch(10)).toHaveLength(1);
+    loops.stop();
+  });
+
+  it("B4 generation 变化时旧 completion 被拒：probeVerdict 载体带旧 generation → 丢弃，同代正常应用", () => {
+    const store = createMemoryStore();
+    store.putEntity({ type: REF.type, key: REF.key, state: null });
+    store.putProbeSpec({ slotKey: SLOT_KEY, check: "fixture-check", schedule: { type: "interval", intervalMs: 60_000 }, source: "poll" });
+    store.putRunLedger({ slotKey: SLOT_KEY, epoch: 0, refcount: 1, consecutiveFails: 0, entityRefType: REF.type, entityRefKey: REF.key, generation: 1 });
+    store.putSubscription({ subscriptionId: "sub-seed", sessionId: "session-1", entityRefType: REF.type, entityRefKey: REF.key, template: TPL, check: "fixture-check", origin: "session", createdAt: 0 });
+    const clock = new FakeClock();
+    const loops = startLoops(makeCtx(store, { clock }));
+
+    loops.submit({ kind: "probeVerdict", slotKey: SLOT_KEY, verdict: "failed", occurredAt: at(1), generation: 0 });
+    expect(store.outboxBatch(10)).toHaveLength(0); // 旧代 completion 丢弃
+    expect(store.getRunLedger(SLOT_KEY)?.consecutiveFails).toBe(0);
+
+    loops.submit({ kind: "probeVerdict", slotKey: SLOT_KEY, verdict: "failed", occurredAt: at(2), generation: 1 });
+    expect(store.getEntity(REF.type, REF.key)?.state).toBe("failed"); // 同代正常应用
+    loops.stop();
+  });
+});
+
 describe("票 26 — cronNextMs（5 字段 UTC 分钟粒度纯函数）", () => {
   it("步进/每日固定点/列表/周区间/dom+dow 双受限 OR/字段数校验", () => {
     const T0 = Date.UTC(2026, 0, 1, 12, 3); // 2026-01-01（周四）12:03

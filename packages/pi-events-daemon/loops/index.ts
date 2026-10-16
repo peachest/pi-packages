@@ -40,7 +40,9 @@ export type MutationRequest =
   | { kind: "consumeIntent"; intent: TransitionIntent }
   | { kind: "subscribe"; req: SubscribeRequest; deps?: SubscribeDeps }
   | { kind: "cancel"; req: CancelRequest }
-  | { kind: "probeVerdict"; slotKey: string; verdict: Verdict; occurredAt: string };
+  | { kind: "probeVerdict"; slotKey: string; verdict: Verdict; occurredAt: string;
+      /** 评审 B 组：dispatch 时刻的槽 generation——旧代 completion 拒应用；缺省（watch 回流等无 dispatch 来源）不判代。 */
+      generation?: number };
 
 /**
  * cron 表达式下一到点（5 字段 分 时 日 月 周，UTC，分钟粒度；支持星号、星号步进、区间、逗号列表）。
@@ -191,11 +193,14 @@ export function startLoops(ctx: LoopsCtx): LoopsHandle {
 
   // 票 26：verdict 计数评估（domain observeVerdict）在 L0 消费时调用——计数状态是槽 runtime
   // （内存权威，重启归零重探 R1 A5：持久层不承载翻转态，重启后首个 fresh verdict 视为到达）。
-  const thresholdStates = new Map<string, ThresholdState>();
+  // 评审 B 组：值携带槽 generation——generation 变化（槽重建/换参）时评估状态归零，不继承旧计数。
+  const thresholdStates = new Map<string, { generation: number; state: ThresholdState }>();
 
   const applyProbeVerdict = (req: Extract<MutationRequest, { kind: "probeVerdict" }>): void => {
     const ledger = ctx.store.getRunLedger(req.slotKey);
     if (!ledger || ledger.refcount === 0 || !ledger.entityRefType || !ledger.entityRefKey) return; // 槽已销毁/身份缺失：stale completion 丢弃
+    // 评审 B4/B5：旧代 completion 拒应用——槽重建/换参后 generation 已递增，带旧代标记的回流不驱动新槽
+    if (req.generation !== undefined && (ledger.generation ?? 0) !== req.generation) return;
     const ref = { type: ledger.entityRefType, key: ledger.entityRefKey };
     const slotSubs = ctx.store
       .querySubscriptions({ entityRefType: ref.type, entityRefKey: ref.key })
@@ -204,13 +209,16 @@ export function startLoops(ctx: LoopsCtx): LoopsHandle {
           s.closedAt === undefined && runnerSlotKey(ref, s.template ?? "") === req.slotKey,
       );
     if (slotSubs.length === 0) return; // 无活跃订阅：verdict 不再驱动
-    // 阈值评估（槽级）：翻转沿才发事件（计数期内不翻转不发，#31 R2）
+    // 阈值评估（槽级）：翻转沿才发事件（计数期内不翻转不发，#31 R2）；换代归零
     const carried = slotSubs.filter((s) => s.thresholds !== undefined);
     const cfg = restoreSlotThresholds(
       carried.map((s) => ({ createdAt: s.createdAt, thresholds: s.thresholds! })),
     );
-    const step = observeVerdict(thresholdStates.get(req.slotKey) ?? INITIAL_THRESHOLD_STATE, req.verdict, cfg);
-    thresholdStates.set(req.slotKey, step.state);
+    const generation = ledger.generation ?? 0;
+    const prevThreshold = thresholdStates.get(req.slotKey);
+    const baseThreshold = prevThreshold && prevThreshold.generation === generation ? prevThreshold.state : INITIAL_THRESHOLD_STATE;
+    const step = observeVerdict(baseThreshold, req.verdict, cfg);
+    thresholdStates.set(req.slotKey, { generation, state: step.state });
     if (step.flipped) kernel.transition(ref, req.verdict, req.occurredAt);
     // 账本镜像（可观测面；翻转判定以内存 ThresholdState 为准）
     ctx.store.putRunLedger({ ...ledger, consecutiveFails: step.state.consecutiveFails, lastVerdict: req.verdict });
@@ -244,9 +252,15 @@ export function startLoops(ctx: LoopsCtx): LoopsHandle {
 
   // --- L1 Probe（票 26）：prober completion queue 消费 + cron/interval 到点排 probe + missed tick catch_up_one ---
 
+  /** per-slot in-flight 标记：slotKey → dispatch 时刻槽 generation（评审 B 组）。
+   *  一槽至多一在飞（dispatchDue/reshedule 跳过在飞槽，排队上限 1）；完成回流时按标记判代。 */
+  const inflight = new Map<string, number>();
+
   const ingestProbeResult = (result: ProbeResult): void => {
     if (stopped) return; // 停机后迟到 completion 丢弃（重启侧归零重探自愈）
-    doSubmit({ kind: "probeVerdict", slotKey: result.slotKey, verdict: result.verdict, occurredAt: new Date(ctx.clock.now()).toISOString() });
+    const generation = inflight.get(result.slotKey);
+    inflight.delete(result.slotKey);
+    doSubmit({ kind: "probeVerdict", slotKey: result.slotKey, verdict: result.verdict, occurredAt: new Date(ctx.clock.now()).toISOString(), generation });
   };
 
   /** 槽的下一到点；null = 366 天内无匹配或缺 cron → MAX_SAFE_INTEGER 封口（永不触发，不回退为“立即可探”死循环）。 */
@@ -259,15 +273,23 @@ export function startLoops(ctx: LoopsCtx): LoopsHandle {
 
   const prober = new Prober({ exec: ctx.exec, clock: ctx.clock, onResult: ingestProbeResult });
 
-  /** 到点排 probe：refcount 0 槽不调度；非 poll 源不调度（fs-watch/k8s-watch 原生推送回流，watch 执行归 prober watch 票）。 */
+  /** 到点排 probe：refcount 0 槽不调度；非 poll 源不调度（fs-watch/k8s-watch 原生推送回流，watch 执行归 prober watch 票）；
+   *  在飞槽不重排（评审 B5/D12：排队上限 1，慢 checker 快间隔不堆 job）。 */
   const dispatchDue = (now: number): void => {
     for (const row of ctx.store.listRunLedger()) {
       if (row.refcount === 0) continue;
       const spec = ctx.store.getProbeSpec(row.slotKey);
       if (!spec || spec.source !== "poll") continue;
-      if (row.nextDueAt !== undefined && row.nextDueAt > now) continue;
-      prober.probe({ slotKey: row.slotKey, check: spec.check, source: spec.source });
-      ctx.store.putRunLedger({ ...row, nextDueAt: nextFireOf(spec, now) });
+      try {
+        if (inflight.has(row.slotKey)) continue;
+        if (row.nextDueAt !== undefined && row.nextDueAt > now) continue;
+        const nextDue = nextFireOf(spec, now);
+        prober.probe({ slotKey: row.slotKey, check: spec.check, source: spec.source });
+        inflight.set(row.slotKey, row.generation ?? 0);
+        ctx.store.putRunLedger({ ...row, nextDueAt: nextDue });
+      } catch (err) {
+        errors.push(err); // 评审 D11：坏槽（如非法 cron spec）记 error 跳过，不拖垮其余槽 dispatch、不 abort 启动
+      }
     }
   };
 
@@ -284,6 +306,7 @@ export function startLoops(ctx: LoopsCtx): LoopsHandle {
       if (row.refcount === 0) continue;
       const spec = ctx.store.getProbeSpec(row.slotKey);
       if (!spec || spec.source !== "poll") continue;
+      if (inflight.has(row.slotKey)) continue; // 在飞槽的重排由完成回流接管（doSubmit→reschedule）
       const due = row.nextDueAt ?? now;
       if (earliest === null || due < earliest) earliest = due;
     }

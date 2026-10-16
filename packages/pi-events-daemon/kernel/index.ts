@@ -407,7 +407,9 @@ export class Kernel {
         }
         const slotKey = runnerSlotKey(req.entityRef, req.template);
         if (slotOthers.length === 0) {
-          // 槽（重）建：先建者定——ProbeSpec/check 与 RunLedger 计数从 0 起（solo 换参即 checker 替换）
+          // 槽（重）建：先建者定——ProbeSpec/check 与 RunLedger 计数从 0 起（solo 换参即 checker 替换）。
+          // generation 递增（评审 B 组）：销毁重建/换参重建 = 旧代 +1，旧 completion/阈值计数不跨代
+          const prevLedger = tx.getRunLedger(slotKey);
           tx.putProbeSpec({
             slotKey,
             check: req.check,
@@ -421,6 +423,7 @@ export class Kernel {
             consecutiveFails: 0,
             entityRefType: req.entityRef.type,
             entityRefKey: req.entityRef.key,
+            generation: (prevLedger?.generation ?? -1) + 1,
           });
         } else {
           const ledger = tx.getRunLedger(slotKey);
@@ -535,6 +538,7 @@ export class Kernel {
       nextDueAt: refcount === 0 ? undefined : ledger.nextDueAt,
       entityRefType: ledger.entityRefType ?? ref.type,
       entityRefKey: ledger.entityRefKey ?? ref.key,
+      generation: ledger.generation,
     });
   }
 
