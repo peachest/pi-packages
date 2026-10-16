@@ -8,7 +8,7 @@
  *   [--sessions '[{"sessionId":"s1","sessionFile":"/path/s1.jsonl"}]']
  * 环境白名单 = PI_EVENTS_SOCK（#31）；db/pid/sessions 为显式 CLI 面（测试与托管场景用，缺省走正典路径）。
  */
-import { readFileSync, readdirSync, writeFileSync, unlinkSync } from "node:fs";
+import { readFileSync, readdirSync, writeFileSync, renameSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import process from "node:process";
@@ -38,12 +38,16 @@ const daemon = await daemonMain.bootstrap({
   sessionRefs: sessionsJson ? (JSON.parse(sessionsJson) as never[]) : [],
 });
 
-process.stdout.write(`pi-events-daemon ready (pid ${process.pid}, epoch ${daemon.epoch}, sock ${flag("sock") ?? "(canonical)"}, profiles ${templateAssets.length})\n`);
-
 // epoch 旁车文件（<sock>.epoch，extension client 发现约定票 34/38 对齐点；bin 层持有——A 层禁 node IO，
 // 信号生命周期同处）。每次成功启动覆写新世代；停机回收，kill -9 残留旧世代 = 新 daemon 覆写前帧被 epoch 门拒（正确语义）。
+// 票 40 评审 F8：tmp+rename 原子写且先于 ready 宣布——ready 行是 client 发现信号，读到的一刻旁车必须已就绪（无半写无缺失）。
 const sockForEpoch = flag("sock") ?? resolveSocketPath();
-writeFileSync(`${sockForEpoch}.epoch`, String(daemon.epoch));
+const epochPath = `${sockForEpoch}.epoch`;
+const epochTmpPath = `${epochPath}.tmp`;
+writeFileSync(epochTmpPath, String(daemon.epoch));
+renameSync(epochTmpPath, epochPath);
+
+process.stdout.write(`pi-events-daemon ready (pid ${process.pid}, epoch ${daemon.epoch}, sock ${flag("sock") ?? "(canonical)"}, profiles ${templateAssets.length})\n`);
 
 // SIGTERM/SIGINT 优雅退出（票 38 验收面）：drain 在途 L0 事务（同步消费）→ 关 socket → 释锁 → 退出 0。
 const shutdown = (signal: NodeJS.Signals): void => {

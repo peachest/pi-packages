@@ -38,6 +38,7 @@ import {
   Kernel,
   type CancelRequest,
   type ProfileRegistryEntry,
+  type RegisterRequest,
   type SubscribeDeps,
   type SubscribeRequest,
 } from "../kernel/index.ts";
@@ -54,6 +55,8 @@ export type MutationRequest =
   | { kind: "consumeIntent"; intent: TransitionIntent }
   // 票 40：publish op（#31 操作面 agent 断言）——to 为封闭集任意状态，可携带 contentIdentity/payload
   | { kind: "publish"; ref: EntityRef; to: string; contentIdentity?: string | null; payload?: unknown; occurredAt: string }
+  // 票 40 评审 F1/F2：register 经 L0（status/subscribe 的簿记底座；firstTransition 同事务含首转换）
+  | { kind: "register"; req: RegisterRequest }
   | { kind: "subscribe"; req: SubscribeRequest; deps?: SubscribeDeps }
   | { kind: "cancel"; req: CancelRequest }
   | { kind: "probeVerdict"; slotKey: string; verdict: Verdict; occurredAt: string;
@@ -136,10 +139,10 @@ export interface LoopsHandle {
   sessionEnd(sessionId: string): void;
   /** 停机：L0 队列关闭、提交回调脱钩、L1 调度定时器取消（幂等）。 */
   stop(): void;
-  /** 票 40：op 直调面（读侧 query/evidence/templates + status 的 register/transition 底座；validate live-run 归
-   *  组合根 prober）。dispatch 与 L0 消费同为同步原子（单线程不交错），写侧 op 仍唯一经 submit 串行。
-   *  kernel 实例仍由 startLoops 私有构造（票 25 裁定不变）——此处只收窄暴露直调面。 */
-  readonly kernel: Pick<Kernel, "query" | "evidence" | "templates" | "validate" | "register" | "transition">;
+  /** 票 40 评审 F1：op 直调面只余读侧（query/evidence/templates + validate 静态面）——变更类
+   *  （subscribe/transition/register）只经 L0 submit 单一写路径，stopped 后 submit 结算拒绝，
+   *  不再存在绕过队列的活变更方法。kernel 实例仍由 startLoops 私有构造（票 25 裁定不变）。 */
+  readonly kernel: Pick<Kernel, "query" | "evidence" | "templates" | "validate">;
 }
 
 /**
@@ -202,6 +205,9 @@ export function startLoops(ctx: LoopsCtx): LoopsHandle {
           payload: req.payload,
           occurredAt: req.occurredAt,
         });
+      case "register":
+        // 票 40 评审 F1/F2：register（含 firstTransition 同事务）唯一经 L0 串行——直调面不暴露变更方法
+        return kernel.register(req.req);
       case "subscribe":
         return kernel.subscribe(req.req, req.deps);
       case "cancel":
@@ -945,7 +951,14 @@ export function startLoops(ctx: LoopsCtx): LoopsHandle {
     cache: { states },
     housekeeping: housekeepingView,
     errors,
-    kernel,
+    // 票 40 评审 F1：运行期真收窄（非仅类型 Pick）——变更类方法不再可从 handle 直调，
+    // 内部消费用闭包内 kernel 变量不受影响
+    kernel: {
+      query: kernel.query.bind(kernel),
+      evidence: kernel.evidence.bind(kernel),
+      templates: kernel.templates.bind(kernel),
+      validate: kernel.validate.bind(kernel),
+    },
     stop(): void {
       stopped = true;
       // 票 40：未消费请求结算为 stopped 错误（提交方 await 不悬挂；stop 后无重放窗口）

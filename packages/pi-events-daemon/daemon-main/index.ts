@@ -33,6 +33,8 @@ import { startLoops, type LoopsHandle } from "../loops/index.ts";
 import { serve, resolveSocketPath, type TransportHandle } from "../transport/index.ts";
 import { Prober } from "../prober/index.ts";
 import { createOpDispatch } from "./op-dispatch.ts";
+// 票 40：9 op dispatch 接线为 daemon-main 公共面之一（组合根胶水的可测缝）——根入口再导出
+export { createOpDispatch, type OpDispatchDeps } from "./op-dispatch.ts";
 import { SqliteStore, defaultStorePath, type RunLedgerRow, type Store } from "../store.ts"; // 根入口（re-export index+sqlite：SqliteStore 在 sqlite.ts）
 
 /** 启动步骤名（验收观测面；顺序 = 正典顺序）。lock+pidfile 由 O_EXCL 原子一步承载，两步各记其位。 */
