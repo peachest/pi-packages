@@ -37,6 +37,7 @@ import {
   EVIDENCE_INLINE_LIMIT,
   deliveryTargets,
   makeBillboard,
+  onMatches,
   transitionDelivery,
 } from "../domain/delivery.ts";
 import type { EventRow, Store, SubscriptionRow, TxView } from "../store/index.ts";
@@ -137,7 +138,9 @@ function slotThresholdsOf(rows: readonly SubscriptionRow[]): ThresholdConfig | n
 }
 
 /** transition / migrateState 的返回形状（publish 契约同族：{eventSeq, from, to}）。 */
-export type TransitionResult = { eventSeq: number; from: string | null; to: string };
+export type TransitionResult = { eventSeq: number; from: string | null; to: string;
+  /** 确定性事件 id（= notificationId）——loops 关闭路径 fanOut 物化投递目标用（评审 F11）。 */
+  eventId: string };
 
 /** 串行消费结果：appended 附带落库事件（断言面）；skipped = 同 id 同内容幂等重放。 */
 export type ConsumeOutcome = { kind: "appended"; event: Transitioned } | { kind: "skipped" };
@@ -389,8 +392,38 @@ export class Kernel {
         const mine = openAll().filter((s) => s.sessionId === req.sessionId && s.template === req.template);
         const slotOthers = openAll().filter((s) => s.template === req.template && s.sessionId !== req.sessionId);
         const adopted = adoptThresholds(slotThresholdsOf(slotOthers), incoming);
-        // 幂等：同参返回既有（R1）
-        const existing = mine.find((s) => sameSubscribeParams(s, req, opts));
+        const slotKey = runnerSlotKey(req.entityRef, req.template);
+        const slotSpec = tx.getProbeSpec(slotKey);
+        const incomingSchedule = opts.schedule ?? DEFAULT_PROBE_SCHEDULE;
+        const incomingSource = opts.source ?? DEFAULT_PROBE_SOURCE;
+        // 评审 F19：schedule/source 改变实际探测行为，幂等比较必须含槽 ProbeSpec 现值
+        const sameProbeConfig =
+          slotSpec !== undefined &&
+          slotSpec.source === incomingSource &&
+          slotSpec.schedule.type === incomingSchedule.type &&
+          (incomingSchedule.type === "interval"
+            ? slotSpec.schedule.intervalMs === incomingSchedule.intervalMs
+            : slotSpec.schedule.cron === incomingSchedule.cron);
+        if (slotOthers.length > 0 && slotSpec) {
+          // 评审 C9/F19：共享槽 = 单一 ProbeSpec 服务全员（I5）——相位/两阶段形态/schedule 配置不一致
+          // 在入口明确拒绝；静默沿用先建者配置（错探针/漏探针）比拒绝更贵（错误列形态 = 抛错进 errors）。
+          const incomingFlip = opts.flip ?? false;
+          const incomingFlipCheck = opts.readyCheck ?? req.check;
+          for (const other of slotOthers) {
+            if ((other.phase ?? "startup") === "flip")
+              throw new Error(`subscribe rejected: shared slot ${slotKey} 已有 flip 相位订阅（MVP 不支持混合相位订阅）`);
+            if ((other.flip ?? false) !== incomingFlip)
+              throw new Error(
+                `subscribe rejected: shared slot ${slotKey} 两阶段形态不一致（other=${other.flip ? "flip" : "startup"} vs incoming=${incomingFlip ? "flip" : "startup"}）`,
+              );
+            if (incomingFlip && (other.readyCheck ?? other.check) !== incomingFlipCheck)
+              throw new Error(`subscribe rejected: shared slot ${slotKey} flip 相位 checker 不一致（readyCheck 冲突）`);
+          }
+          if (!sameProbeConfig)
+            throw new Error(`subscribe rejected: shared slot ${slotKey} 探测配置（schedule/source）与先建者冲突`);
+        }
+        // 幂等：同参返回既有（R1）；schedule/source 变化探测行为，同参比较含槽配置（评审 F19）
+        const existing = mine.find((s) => sameSubscribeParams(s, req, opts) && sameProbeConfig);
         if (existing) {
           return {
             subscribed: true,
@@ -405,7 +438,6 @@ export class Kernel {
         for (const old of mine) {
           tx.putSubscription({ ...old, closedAt: req.now, closedReason: "replaced" });
         }
-        const slotKey = runnerSlotKey(req.entityRef, req.template);
         if (slotOthers.length === 0) {
           // 槽（重）建：先建者定——ProbeSpec/check 与 RunLedger 计数从 0 起（solo 换参即 checker 替换）。
           // generation 递增（评审 B 组）：销毁重建/换参重建 = 旧代 +1，旧 completion/阈值计数不跨代
@@ -509,8 +541,17 @@ export class Kernel {
               (s) => s.closedAt === undefined && s.template === row.template && s.subscriptionId !== row.subscriptionId,
             );
           const spec = tx.getProbeSpec(slotKey);
-          if (others.length === 0 && spec) {
-            tx.putProbeSpec({ ...spec, check: checkForPhase({ check: row.check, readyCheck: row.readyCheck }, "flip") });
+          if (spec) {
+            // 评审 F12：相位与 checker 一致时统一切换槽 ProbeSpec（solo = 无 others 同路径；
+            // 共享槽全员 flip 且 flip checker 一致才换——不一致配置 subscribe 入口已拒，此处防御性再验）
+            const selfFlipCheck = checkForPhase({ check: row.check, readyCheck: row.readyCheck }, "flip");
+            const othersAllFlip = others.every((s) => (s.phase ?? "startup") === "flip");
+            const othersChecksConsistent = others.every(
+              (s) => checkForPhase({ check: s.check ?? spec.check, readyCheck: s.readyCheck }, "flip") === selfFlipCheck,
+            );
+            if (othersAllFlip && othersChecksConsistent) {
+              tx.putProbeSpec({ ...spec, check: selfFlipCheck });
+            }
           }
         }
         return { advanced: true };
@@ -569,7 +610,7 @@ export class Kernel {
             occurredAt,
           });
           this.consumeTx(tx, intent);
-          return { result: { eventSeq: intent.eventSeq, from: intent.from, to: intent.to }, sequences };
+          return { result: { eventSeq: intent.eventSeq, from: intent.from, to: intent.to, eventId: intent.eventId }, sequences };
         },
       );
       if (planned === null) return null;
@@ -624,7 +665,7 @@ export class Kernel {
             occurredAt,
           });
           this.consumeTx(tx, intent);
-          return { result: { eventSeq: intent.eventSeq, from: intent.from, to: intent.to }, sequences };
+          return { result: { eventSeq: intent.eventSeq, from: intent.from, to: intent.to, eventId: intent.eventId }, sequences };
         },
       );
       if (planned === null) return null;
@@ -650,7 +691,8 @@ export class Kernel {
         const ref = { type: event.entityRefType, key: event.entityRefKey };
         const subs = this.store
           .querySubscriptions({ entityRefType: ref.type, entityRefKey: ref.key })
-          .filter((s) => s.closedAt === undefined); // 已关订阅不收新投递（换参/cancel 后零新行；在途行不撤）
+          // 评审 F18：on 谓词参与事件匹配——按事件终态评估，on="passed" 不再收 failed；缺省收全部
+          .filter((s) => s.closedAt === undefined && onMatches({ to: event.to }, s.on)); // 已关订阅不收新投递（换参/cancel 后零新行；在途行不撤）
         // billboard evidence 内容：事件 evidenceRef → evidence 表（无则空 billboard）
         const evidence = event.evidenceRef
           ? (this.store.evidenceSearch(event.evidenceRef).find((e) => e.evidenceRef === event.evidenceRef)?.content ?? "")

@@ -57,7 +57,7 @@ describe("组 1：kernel.transition 唯一写路径——校验（domain）→ �
     const store = createMemoryStore();
     seedEntity(store, "passed");
     const kernel = new Kernel(store, VERDICT_STATES, 0);
-    expect(kernel.transition(REF, "failed", at(1))).toEqual({ eventSeq: 1, from: "passed", to: "failed" });
+    expect(kernel.transition(REF, "failed", at(1))).toMatchObject({ eventSeq: 1, from: "passed", to: "failed" });
     expect(store.getEntity(REF.type, REF.key)?.state).toBe("failed");
     expect(store.tx((tx) => tx.getEvent(deterministicEventId(REF, 1)))).toMatchObject({
       eventSeq: 1,
@@ -76,7 +76,7 @@ describe("组 1：kernel.transition 唯一写路径——校验（domain）→ �
     seedEntity(store, "passed");
     const kernel = new Kernel(store, VERDICT_STATES, 0);
     expect(kernel.transition(REF, "failed", at(1))).toMatchObject({ eventSeq: 1 });
-    expect(kernel.transition(REF, "waiting", at(2))).toEqual({ eventSeq: 2, from: "failed", to: "waiting" });
+    expect(kernel.transition(REF, "waiting", at(2))).toMatchObject({ eventSeq: 2, from: "failed", to: "waiting" });
     expect(store.tx((tx) => tx.getEvent(deterministicEventId(REF, 2)))).toMatchObject({ eventSeq: 2, to: "waiting" });
   });
 
@@ -93,7 +93,7 @@ describe("组 1：kernel.transition 唯一写路径——校验（domain）→ �
     const store = createMemoryStore();
     seedEntity(store, null);
     const kernel = new Kernel(store, VERDICT_STATES, 0);
-    expect(kernel.transition(REF, "passed", at(1))).toEqual({ eventSeq: 1, from: null, to: "passed" });
+    expect(kernel.transition(REF, "passed", at(1))).toMatchObject({ eventSeq: 1, from: null, to: "passed" });
   });
 
   it("I3 封闭集执法：verdict 不在注入状态集 → 同步拒绝（明确错误，非 waiting）", () => {
@@ -121,7 +121,7 @@ describe("组 3：B7 状态改名 = 显式迁移 TransitionEvent（唯一写路�
     const store = createMemoryStore();
     seedEntity(store, "alpha");
     const kernel = new Kernel(store, RENAME_STATES, 0);
-    expect(kernel.migrateState(REF, { from: "alpha", to: "beta" }, at(1))).toEqual({
+    expect(kernel.migrateState(REF, { from: "alpha", to: "beta" }, at(1))).toMatchObject({
       eventSeq: 1,
       from: "alpha",
       to: "beta",
@@ -187,7 +187,7 @@ describe("组 2：Intent 串行消费——崩溃重放一致（顺序约束）+
     expect(snapshot(crashed)).toEqual(expected);
 
     // 重放后新 transition 续接双轨尾（4 之后 = 5），不重新编号
-    expect(replayKernel.transition(REF, "failed", at(9))).toEqual({ eventSeq: 5, from: "passed", to: "failed" });
+    expect(replayKernel.transition(REF, "failed", at(9))).toMatchObject({ eventSeq: 5, from: "passed", to: "failed" });
     expect(crashed.tx((tx) => tx.getEvent(deterministicEventId(REF, 5)))).toMatchObject({
       eventSeq: 5,
       from: "passed",
@@ -217,7 +217,7 @@ describe("组 2：Intent 串行消费——崩溃重放一致（顺序约束）+
     const kernel = new Kernel(store, VERDICT_STATES, 0);
     store.injectCrash("tx");
     store.injectCrash("tx");
-    expect(kernel.transition(REF, "failed", at(1))).toEqual({ eventSeq: 1, from: "passed", to: "failed" });
+    expect(kernel.transition(REF, "failed", at(1))).toMatchObject({ eventSeq: 1, from: "passed", to: "failed" });
     expect(store.tx((tx) => tx.getEvent(deterministicEventId(REF, 1)))).toBeTruthy(); // 同 decisionOrder=1，未重排
   });
 
@@ -268,12 +268,12 @@ describe("组 4：评审修复回归——提交成功后推进游标（F1）/ �
       },
     });
     const kernel = new Kernel(flaky, VERDICT_STATES, 0);
-    expect(kernel.transition(REF, "failed", at(1))).toEqual({ eventSeq: 1, from: "passed", to: "failed" });
+    expect(kernel.transition(REF, "failed", at(1))).toMatchObject({ eventSeq: 1, from: "passed", to: "failed" });
     // 同 eventId 单事件 + outbox 1:1：重试没有用推进后的序号重排出新事件
     expect(store.tx((tx) => tx.getEvent(deterministicEventId(REF, 1)))).toMatchObject({ eventSeq: 1, to: "failed" });
     expect(store.outboxBatch(10)).toEqual([{ notificationId: deterministicEventId(REF, 1), eventSeq: 1 }]);
     // 游标未被失败烧掉：下一 transition 续接 seq 2
-    expect(kernel.transition(REF, "waiting", at(2))).toEqual({ eventSeq: 2, from: "failed", to: "waiting" });
+    expect(kernel.transition(REF, "waiting", at(2))).toMatchObject({ eventSeq: 2, from: "failed", to: "waiting" });
   });
 
   it("F2 改名后重放历史事件：skipped 豁免封闭集校验；迁移事件重放 + 新追加仍执法", () => {
@@ -305,14 +305,14 @@ describe("组 4：评审修复回归——提交成功后推进游标（F1）/ �
     expect(() => postRename.transition(REF, "failed", at(1))).toThrow(/outside profile closed set/);
     expect(store.outboxBatch(10)).toHaveLength(0);
     // 显式迁移是唯一出口（from 为历史名，不校验封闭集）
-    expect(postRename.migrateState(REF, { from: "waiting", to: "passed" }, at(1))).toEqual({
+    expect(postRename.migrateState(REF, { from: "waiting", to: "passed" }, at(1))).toMatchObject({
       eventSeq: 1,
       from: "waiting",
       to: "passed",
     });
     expect(store.getEntity(REF.type, REF.key)?.state).toBe("passed");
     // 迁移后普通 transition 恢复
-    expect(postRename.transition(REF, "failed", at(2))).toEqual({ eventSeq: 2, from: "passed", to: "failed" });
+    expect(postRename.transition(REF, "failed", at(2))).toMatchObject({ eventSeq: 2, from: "passed", to: "failed" });
   });
 });
 
@@ -836,7 +836,7 @@ describe("票 24 — subscribe 幂等与换参", () => {
     const store = createMemoryStore();
     seedEntity(store, "passed");
     const kernel = new Kernel(store, VERDICT_STATES, 0);
-    const idOld = subId(kernel.subscribe(subReq({ opts: { on: "x" } })));
+    const idOld = subId(kernel.subscribe(subReq({ opts: { on: "failed" } }))); // on 匹配即将到来的 failed 事件（F18 谓词过滤）
     // 在途投递：transition + fanOut 产生 delivery 行（旧订阅编址）
     kernel.transition(REF, "failed", at(1));
     kernel.fanOut(deterministicEventId(REF, 1), { activeSessions: [{ sessionId: "session-1", scope: "project" }] });
@@ -1000,5 +1000,80 @@ describe("评审 A 组 — SqliteStore 真库订阅流程（票 24 新增字段�
     expect(s.getRunLedger(SLOT_KEY)?.refcount).toBe(1);
     expect(s.getProbeSpec(SLOT_KEY)?.check).toBe("fixture-check-b");
     s.close();
+  });
+});
+
+// ==================== 评审修复 — C 组：on 谓词匹配 / 关闭前物化投递 / 共享槽相位统一 / schedule 幂等 ====================
+describe("评审修复 — C 组（kernel 面）", () => {
+  it("C6/F18：on 谓词参与事件匹配——同槽不同谓词分别接收（共享槽 I5 保持），缺省收全部", () => {
+    const store = createMemoryStore();
+    seedEntity(store, "passed");
+    const kernel = new Kernel(store, VERDICT_STATES, 0);
+    kernel.subscribe(subReq({ sessionId: "session-passed", opts: { on: "passed" } }));
+    kernel.subscribe(subReq({ sessionId: "session-failed", opts: { on: "failed" } }));
+    kernel.subscribe(subReq({ sessionId: "session-any" })); // 缺省 on = 收全部事件
+    expect(store.getRunLedger(SLOT_KEY)?.refcount).toBe(3); // I5：谓词不进槽键，三订阅共享同槽
+
+    const res = kernel.transition(REF, "failed", at(2));
+    kernel.fanOut(res!.eventId, { activeSessions: [{ sessionId: "session-failed", scope: "project" }] });
+    expect(store.getDelivery(res!.eventId, "session-failed")).toMatchObject({ state: "pending" });
+    expect(store.getDelivery(res!.eventId, "session-passed")).toBeUndefined(); // on="passed" 不收 failed
+    expect(store.getDelivery(res!.eventId, "session-any")).toMatchObject({ state: "parked" }); // 缺省收全部；会话不活跃 → parked
+
+    // C8：fanOut 产出的 parked 行带本 epoch，drain 重投正常过 I12 epoch fence
+    expect(kernel.drain({ sessionId: "session-any" }).drained).toEqual([
+      { notificationId: res!.eventId, sessionId: "session-any" },
+    ]);
+  });
+
+  it("C9/F12：共享槽两订阅同相位同 checker——先后 advance，全员 flip 时统一切换槽 ProbeSpec", () => {
+    const store = createMemoryStore();
+    seedEntity(store, null);
+    const kernel = new Kernel(store, VERDICT_STATES, 0);
+    const id1 = subId(kernel.subscribe(subReq({ opts: { flip: true, readyCheck: "fixture-ready" } })));
+    const id2 = subId(kernel.subscribe(subReq({ sessionId: "session-2", opts: { flip: true, readyCheck: "fixture-ready" } })));
+    kernel.flipSubscription(id1);
+    expect(store.getProbeSpec(SLOT_KEY)?.check).toBe("fixture-check-a"); // 另一订阅仍 startup：槽保持 startup check
+    kernel.flipSubscription(id2);
+    expect(store.getProbeSpec(SLOT_KEY)?.check).toBe("fixture-ready"); // 全员 flip 且 checker 一致 → 统一切换
+  });
+
+  it("C9：共享槽相位/形态不一致 → subscribe 明确拒绝（错误列形态）", () => {
+    const store = createMemoryStore();
+    seedEntity(store, null);
+    const kernel = new Kernel(store, VERDICT_STATES, 0);
+    kernel.subscribe(subReq({ opts: { flip: true, readyCheck: "fixture-ready" } }));
+    expect(() => kernel.subscribe(subReq({ sessionId: "session-2" }))).toThrow(/两阶段形态不一致/);
+    expect(() =>
+      kernel.subscribe(subReq({ sessionId: "session-2", opts: { flip: true, readyCheck: "other-ready" } })),
+    ).toThrow(/checker 不一致/);
+    const id1 = store.querySubscriptions({ sessionId: "session-1" })[0].subscriptionId;
+    kernel.flipSubscription(id1); // 已推进 flip 相位
+    expect(() =>
+      kernel.subscribe(subReq({ sessionId: "session-3", opts: { flip: true, readyCheck: "fixture-ready" } })),
+    ).toThrow(/混合相位/);
+  });
+
+  it("F19：solo 槽 schedule 变化 = 换参重建（ProbeSpec 更新），幂等请求不再吞配置", () => {
+    const store = createMemoryStore();
+    seedEntity(store, null);
+    const kernel = new Kernel(store, VERDICT_STATES, 0);
+    const id1 = subId(kernel.subscribe(subReq({ opts: { schedule: { type: "interval", intervalMs: 60_000 } } })));
+    const id2 = subId(kernel.subscribe(subReq({ opts: { schedule: { type: "interval", intervalMs: 1_000 } } })));
+    expect(id2).not.toBe(id1); // 配置变化不构成幂等 → 关旧开新
+    const rows = store.querySubscriptions({ sessionId: "session-1" });
+    expect(rows.find((r) => r.subscriptionId === id1)?.closedReason).toBe("replaced");
+    expect(store.getProbeSpec(SLOT_KEY)?.schedule).toEqual({ type: "interval", intervalMs: 1_000 });
+    expect(subId(kernel.subscribe(subReq({ opts: { schedule: { type: "interval", intervalMs: 1_000 } } })))).toBe(id2); // 同参幂等
+  });
+
+  it("F19：共享槽 schedule 冲突 → subscribe 拒绝", () => {
+    const store = createMemoryStore();
+    seedEntity(store, null);
+    const kernel = new Kernel(store, VERDICT_STATES, 0);
+    kernel.subscribe(subReq({ opts: { schedule: { type: "interval", intervalMs: 60_000 } } }));
+    expect(() =>
+      kernel.subscribe(subReq({ sessionId: "session-2", opts: { schedule: { type: "interval", intervalMs: 1_000 } } })),
+    ).toThrow(/探测配置/);
   });
 });

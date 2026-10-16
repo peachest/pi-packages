@@ -16,6 +16,7 @@
 import { type EntityRef, type TransitionIntent, type Verdict, entityRefKeyOf } from "../domain/types.ts";
 import {
   INITIAL_THRESHOLD_STATE,
+  deterministicEventId,
   observeVerdict,
   onVerdict,
   restoreSlotThresholds,
@@ -218,16 +219,49 @@ export function startLoops(ctx: LoopsCtx): LoopsHandle {
     const prevThreshold = thresholdStates.get(req.slotKey);
     const baseThreshold = prevThreshold && prevThreshold.generation === generation ? prevThreshold.state : INITIAL_THRESHOLD_STATE;
     const step = observeVerdict(baseThreshold, req.verdict, cfg);
-    thresholdStates.set(req.slotKey, { generation, state: step.state });
-    if (step.flipped) kernel.transition(ref, req.verdict, req.occurredAt);
-    // 账本镜像（可观测面；翻转判定以内存 ThresholdState 为准）
-    ctx.store.putRunLedger({ ...ledger, consecutiveFails: step.state.consecutiveFails, lastVerdict: req.verdict });
-    // 订阅生命周期（I7 收窄真值表，domain onVerdict）：once 首 passed 转换后关订阅；两阶段 startup passed 切 flip
-    for (const s of slotSubs) {
-      const action = onVerdict({ once: s.once ?? false, twoStage: s.flip ?? false }, s.phase ?? "startup", req.verdict);
-      if (action.action === "close") kernel.cancel({ subscriptionId: s.subscriptionId, reason: action.reason, now: ctx.clock.now() });
-      else if (action.action === "advance") kernel.flipSubscription(s.subscriptionId);
+    // 镜像账本（可观测面；翻转判定以内存 ThresholdState 为准）
+    const mirrorLedger = () =>
+      ctx.store.putRunLedger({ ...ledger, consecutiveFails: step.state.consecutiveFails, lastVerdict: req.verdict });
+    if (!step.flipped) {
+      // 评审 F6：未达标翻转沿不进生命周期真值表——once/两阶段不因未达标观察提前关/换相
+      thresholdStates.set(req.slotKey, { generation, state: step.state });
+      mirrorLedger();
+      return;
     }
+    // 达标翻转沿：先转换提交，提交成功才落 settle（评审 F7——提交失败进 errors，
+    // thresholdStates 保留旧值，下一个同 verdict 重评重试，不因内存先行 settled 而永丢转换）
+    const result = kernel.transition(ref, req.verdict, req.occurredAt);
+    const actions = slotSubs.map((s) => ({
+      sub: s,
+      action: onVerdict({ once: s.once ?? false, twoStage: s.flip ?? false }, s.phase ?? "startup", req.verdict),
+    }));
+    if (actions.some((a) => a.action.action === "close")) {
+      // 评审 F11/C7：关闭前物化该事件投递目标（事件→fanOut→cancel 各自事务；fanOut/cancel 幂等，
+      // 崩溃重放安全）。transition null = 同态重放（崩溃重启后归零重评，事件已在 outbox）——
+      // 按实体+verdict 扫尾补 eventId。loops 无 session runtime：activeSessions 空 → 全部 parked
+      // 走 drain 重投（I12 epoch fence 过滤；transport 票接线后改直投）。
+      const eventId = result ? result.eventId : lastEventIdFor(ref, req.verdict);
+      if (eventId) kernel.fanOut(eventId, { activeSessions: [] });
+    }
+    thresholdStates.set(req.slotKey, { generation, state: step.state });
+    mirrorLedger(); // 镜像先于生命周期：cancel 的 refcount 重算会读本行并保留/清零计数
+    // 订阅生命周期（I7 收窄真值表，domain onVerdict）：仅达标翻转沿消费——once 首 passed 转换后关订阅；两阶段 startup passed 切 flip
+    for (const { sub, action } of actions) {
+      if (action.action === "close") kernel.cancel({ subscriptionId: sub.subscriptionId, reason: action.reason, now: ctx.clock.now() });
+      else if (action.action === "advance") kernel.flipSubscription(sub.subscriptionId);
+    }
+  };
+
+  /** 同态重放补物化用：实体+verdict 的最后事件 id（outbox 行 notificationId = 确定性 event id）。
+   *  shortcut: O(outbox) 全扫逐行点查，仅同态翻转沿触发（崩溃重启后首个 fresh verdict）——
+   *  量大时归 store 接口按实体索引查（票 10「事件流直查归 store 接口后续票精化」同面）。 */
+  const lastEventIdFor = (ref: EntityRef, to: string): string | undefined => {
+    let found: string | undefined;
+    for (const row of ctx.store.outboxBatch(Number.MAX_SAFE_INTEGER)) {
+      const ev = ctx.store.tx((tx) => tx.getEvent(row.notificationId));
+      if (ev && ev.entityRefType === ref.type && ev.entityRefKey === ref.key && ev.to === to) found = row.notificationId;
+    }
+    return found;
   };
 
   // L0 串行消费：队列至空；重入提交（提交回调内再 submit，C2 编排形态）由外层收尾按 FIFO 继续。

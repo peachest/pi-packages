@@ -13,6 +13,7 @@ import { createMemoryStore, type Store } from "../store/index.ts";
 import { FakeClock, FakeExec, FakeFs, FakePusher } from "../fx/index.ts";
 import { deterministicEventId } from "../domain/intent.ts";
 import { entityRefKeyOf } from "../domain/types.ts";
+import { Kernel } from "../kernel/index.ts";
 import { cronNextMs, startLoops, type LoopsCtx } from "./index.ts";
 
 // --- fixture（数据，非 profile；kernel.test.ts 同法）---
@@ -546,5 +547,75 @@ describe("票 26 — cronNextMs（5 字段 UTC 分钟粒度纯函数）", () => 
     // 1/12（周一）00:01 起：1/13 周二 dom 命中先于下周一 1/19
     expect(cronNextMs("0 0 13 * 1", Date.UTC(2026, 0, 12, 0, 1))).toBe(Date.UTC(2026, 0, 13, 0, 0));
     expect(() => cronNextMs("* * * *", 0)).toThrow(/5 字段/);
+  });
+});
+
+// ==================== 评审修复 — C7/F11：达标才关 + 关闭前物化投递（事件→fanOut→cancel） ====================
+describe("评审修复 — C 组（loops 面：关闭路径投递不丢）", () => {
+  it("C7：once+successThreshold=2 未达标不关不投；达标 passed 物化投递（parked，epoch 0）后再关", async () => {
+    const store = createMemoryStore();
+    store.putEntity({ type: REF.type, key: REF.key, state: null });
+    const clock = new FakeClock();
+    const exec = new FakeExec();
+    exec.enqueue({ exitCode: 0 }, { exitCode: 0 });
+    const loops = startLoops(makeCtx(store, { clock, exec }));
+    subVia(loops, {}, { opts: { once: true, successThreshold: 2, schedule: { type: "interval", intervalMs: 60_000 } } });
+
+    clock.step(0);
+    await micro();
+    expect(store.getEntity(REF.type, REF.key)?.state).toBeNull(); // 未达标：不转换
+    expect(store.outboxBatch(10)).toHaveLength(0); // 无事件
+    expect(store.querySubscriptions({ sessionId: "session-1" })[0].closedAt).toBeUndefined(); // 不关（F6 旧缺陷在此提前关）
+    loops.stop();
+  });
+
+  it("C7：达标 passed → 事件→fanOut（parked 投递行）→cancel 关订阅，顺序可观测", async () => {
+    const store = createMemoryStore();
+    store.putEntity({ type: REF.type, key: REF.key, state: null });
+    const clock = new FakeClock();
+    const exec = new FakeExec();
+    exec.enqueue({ exitCode: 0 }, { exitCode: 0 });
+    const loops = startLoops(makeCtx(store, { clock, exec }));
+    subVia(loops, {}, { opts: { once: true, successThreshold: 2, schedule: { type: "interval", intervalMs: 60_000 } } });
+
+    clock.step(0);
+    await micro();
+    clock.step(60_000); // 第二次 passed：达标翻转沿
+    await micro();
+
+    const eventId = deterministicEventId(REF, 1);
+    expect(store.getEntity(REF.type, REF.key)?.state).toBe("passed"); // 转换已提交
+    expect(store.outboxBatch(10)).toHaveLength(1);
+    const delivery = store.getDelivery(eventId, "session-1");
+    expect(delivery).toMatchObject({ state: "parked" }); // 关闭前已物化投递目标（loops 无 session runtime → parked 走 drain）
+    expect(delivery?.recordEpoch).toBe(0); // I12：本 epoch 产出，drain fence 可重投
+    const row = store.querySubscriptions({ sessionId: "session-1" })[0];
+    expect(row.closedReason).toBe("once-passed");
+    expect(store.getRunLedger(SLOT_KEY)?.refcount).toBe(0);
+    loops.stop();
+  });
+
+  it("C7 崩溃重放同态：事件已在 outbox、订阅仍开 → 归零重评同态 flip 扫 outbox 补物化再关（无新事件）", async () => {
+    const store = createMemoryStore();
+    store.putEntity({ type: REF.type, key: REF.key, state: null });
+    // 崩溃前缀模拟：transition 已提交（事件在 outbox），fanOut/cancel 未及执行（订阅尚不存在→重启后新订阅，无 delivery）
+    const preKernel = new Kernel(store, STATES, 0);
+    preKernel.transition(REF, "passed", at(1));
+    const eventId = deterministicEventId(REF, 1);
+    expect(store.outboxBatch(10)).toHaveLength(1);
+
+    const clock = new FakeClock();
+    const exec = new FakeExec();
+    exec.enqueue({ exitCode: 0 }); // 重启归零重探：首个 fresh passed
+    const loops = startLoops(makeCtx(store, { clock, exec }));
+    subVia(loops, {}, { opts: { once: true, schedule: { type: "interval", intervalMs: 60_000 } } });
+    clock.step(0);
+    await micro();
+
+    expect(store.outboxBatch(10)).toHaveLength(1); // 同态：不重编号不新增事件
+    expect(store.getDelivery(eventId, "session-1")).toMatchObject({ state: "parked" }); // 补物化（评审 C7「崩溃重放后也成立」）
+    const row = store.querySubscriptions({ sessionId: "session-1" })[0];
+    expect(row.closedReason).toBe("once-passed");
+    loops.stop();
   });
 });
