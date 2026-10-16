@@ -129,6 +129,7 @@ describe("票 03: 三契约 schema 文件随包发版（schemas/）", () => {
       template: true,
       smoke: true,
       sessionId: true,
+      origin: true,
       readyCheck: true,
       ttl: true,
       schedule: true,

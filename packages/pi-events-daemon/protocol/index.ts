@@ -61,6 +61,8 @@ export type SubscribeOpts = {
   template?: string;
   smoke?: boolean;
   sessionId?: string;
+  /** 订阅来源（编址分支输入，票 35 wire 补：缺省 session=agent 交互订阅；auto=events.json 声明链）。 */
+  origin?: "session" | "auto";
   /** 两阶段订阅的 flip 判定（缺省沿用 check）。 */
   readyCheck?: string;
   /** 到期自动关闭（I8）。单位毫秒（milliseconds）。 */
@@ -158,8 +160,8 @@ export type OpResponse<N extends OpName = OpName> = OpContract[N]["res"];
 // JSON-RPC 单行帧编解码
 // ---------------------------------------------------------------------------
 
-/** JSON-RPC error object。错误信息一律列可用选项（#31）。 */
-export type RpcError = { code: number; message: string; data?: unknown };
+/** JSON-RPC error object。错误信息一律列可用选项（#31）；phase:"transport" = 传输本地失败标记（socket close/error 清算 pending 时注入，daemon 业务错误无此字段）——消费方以此区分传输失败与业务错误（重试策略只对传输失败生效，票 37）。 */
+export type RpcError = { code: number; message: string; data?: unknown; phase?: "transport" };
 
 /** op 请求帧（短连接，带请求 id）。 */
 /** op 请求帧可选携带 daemon epoch（I12：帧级所有权校验，transport 执行点；缺省 = 旧 epoch 残留帧被拒）。 */
