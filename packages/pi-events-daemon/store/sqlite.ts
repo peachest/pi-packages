@@ -587,6 +587,13 @@ export class SqliteStore implements Store {
     }));
   }
 
+  getEvidence(evidenceRef: string): EvidenceRow | undefined {
+    const r = this.st("SELECT evidence_ref, content, recorded_at FROM evidence WHERE evidence_ref = ?").get(
+      evidenceRef,
+    ) as RawRow | undefined;
+    return r ? { evidenceRef: String(r.evidence_ref), content: String(r.content), recordedAt: Number(r.recorded_at) } : undefined;
+  }
+
   acceptedDeliveries(filter: DeliveryFilter): DeliveryRowData[] {
     return this.deliveriesByState("accepted", filter);
   }

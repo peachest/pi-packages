@@ -22,7 +22,7 @@ import {
   type Pusher,
 } from "../fx/index.ts";
 import { ProfileRegistry } from "../profiles/index.ts";
-import { validateValue, type OpRequestFrame } from "../protocol/index.ts";
+import { validateValue } from "../protocol/index.ts";
 import {
   createTranscriptAdapter,
   type SelfCheckResult,
@@ -31,6 +31,8 @@ import {
 } from "../transcript-adapter/index.ts";
 import { startLoops, type LoopsHandle } from "../loops/index.ts";
 import { serve, resolveSocketPath, type TransportHandle } from "../transport/index.ts";
+import { Prober } from "../prober/index.ts";
+import { createOpDispatch } from "./op-dispatch.ts";
 import { SqliteStore, defaultStorePath, type RunLedgerRow, type Store } from "../store.ts"; // 根入口（re-export index+sqlite：SqliteStore 在 sqlite.ts）
 
 /** 启动步骤名（验收观测面；顺序 = 正典顺序）。lock+pidfile 由 O_EXCL 原子一步承载，两步各记其位。 */
@@ -177,9 +179,14 @@ export async function bootstrap(opts: BootstrapOptions = {}): Promise<DaemonHand
     step("ledger");
 
     // --- 9. startLoops（全部 adapter 装进 ctx；kernel 由 startLoops 私有构造，票 25 裁定）---
+    // 票 40：exec/clock 提升持有——dispatch 的 Prober 单发面（validate live-run / smoke 预检）与
+    // startLoops 共用同一停点（同源时钟/执行器，不二源）。
+    const clock = opts.clock ?? new SystemClock();
+    const exec = opts.exec ?? new ShellExec();
+    const opProber = new Prober({ exec, clock, onResult: () => {} }); // runOnce 专用实例：不参与 completion 回流
     loops = startLoops({
-      clock: opts.clock ?? new SystemClock(),
-      exec: opts.exec ?? new ShellExec(),
+      clock,
+      exec,
       pusher,
       fs,
       store,
@@ -191,11 +198,9 @@ export async function bootstrap(opts: BootstrapOptions = {}): Promise<DaemonHand
     step("loops");
 
     // --- 10. transport serve（listen 失败经 ready promise 透传；epoch 门 getEpoch 共用）---
-    // 票 40 接线点：9 op → kernel 结果面（L0 唯一写者经 submit 无返回值，op 契约结果管道归终票）。
-    // 本票帧必达 epoch 门（I12 已验）；op 面显式报错不静默。
-    const dispatch = (frame: OpRequestFrame): never => {
-      throw { code: -32601, message: `op "${frame.op}" dispatch 未接线（票 40 全链路收口）；长连接 session_start/推送与自愈面已可用` };
-    };
+    // 票 40：9 op dispatch 接线——写侧 subscribe/cancel/publish/drain 经 L0 submit（Promise 结算），
+    // 读侧 query/evidence/status/templates 经 kernel 直调，validate/smoke 经 Prober.runOnce（op-dispatch 适配）。
+    const dispatch = createOpDispatch({ loops: loops!, store: store!, registry, clock, prober: opProber });
     transport = serve(opts.sockPath ?? resolveSocketPath(), {
       dispatch,
       getEpoch: () => epoch,

@@ -169,6 +169,9 @@ export interface Store {
   /** 24h verified-absence 扫描输入面（票 27 评审 H3）：accepted 行读取（与 pendingDeliveries/parkedDeliveries/deadLetters 同构直过滤）。 */
   acceptedDeliveries(filter: DeliveryFilter): DeliveryRowData[];
   evidenceSearch(fts5Query: string): EvidenceRow[];
+  /** evidence op 点查（票 40 enumeration-completion）：ref 精确读——FTS 搜索对含 ":" 的确定性
+   *  event id 形 ref 会解析成 FTS 列过滤器（no such column），点查与搜索是两个语义面。 */
+  getEvidence(evidenceRef: string): EvidenceRow | undefined;
   notifications(filter: NotificationFilter): NotificationRow[];
   deadLetters(filter: DeliveryFilter): DeliveryRowData[];
   // run_ledger（D2 建表裁定）
@@ -417,6 +420,10 @@ export class MemoryStore implements Store {
     return [...this.tables.evidence.values() as IterableIterator<EvidenceRow>].filter((e) =>
       e.content.includes(fts5Query) || e.evidenceRef.includes(fts5Query),
     );
+  }
+
+  getEvidence(evidenceRef: string): EvidenceRow | undefined {
+    return this.tables.evidence.get(evidenceRef) as EvidenceRow | undefined;
   }
 
   acceptedDeliveries(filter: DeliveryFilter): DeliveryRowData[] {

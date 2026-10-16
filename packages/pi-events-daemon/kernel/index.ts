@@ -644,6 +644,48 @@ export class Kernel {
   }
 
   /**
+   * publish（票 40 接线：#31 操作面 publish/SetState 的 kernel 内形）——agent 断言转换。
+   * 与 probe 路径（transition）的差异：to 为封闭集任意状态（非法 to 同步报错）、可携带
+   * contentIdentity/payload（payload 随事务写回实体）；同态且无 contentIdentity = 无事件
+   * （ADR 0003：自转换事件族以 (state, contentIdentity) 为键，返回 null）；retired 拒 publish。
+   * 返回 TransitionResult | null（null = 同态无事件；语义与 transition 的 null 一致）。
+   */
+  publish(
+    ref: EntityRef,
+    to: string,
+    opts: { contentIdentity?: string | null; payload?: unknown; occurredAt: string },
+  ): TransitionResult | null {
+    // F1 同 transition：回调只产出 {业务结果, 待推进游标}，Store.tx 成功返回后才推进——
+    // 回调完成、提交失败的回滚场景下重试重排同序 → 同确定性 eventId（幂等不烧号）
+    const planned = this.withRetry(`publish ${entityRefKeyOf(ref)}/${to}`, () =>
+      this.store.tx(
+        (tx): { result: TransitionResult; sequences: IntentSequences } | null => {
+          const entity = tx.getEntity(ref.type, ref.key);
+          if (!entity) throw new Error(`publish rejected: unknown entity ${entityRefKeyOf(ref)} — register/status first`);
+          if (entity.retired) {
+            throw new Error(`publish rejected: entity ${entityRefKeyOf(ref)} is retired — retired entities never revive`);
+          }
+          requireStateIn(this.states, to);
+          if (entity.state === to && (opts.contentIdentity === undefined || opts.contentIdentity === null)) return null;
+          const { intent, sequences } = planTransition(this.sequences, {
+            entityRef: ref,
+            from: entity.state,
+            to,
+            occurredAt: opts.occurredAt,
+            ...(opts.contentIdentity !== undefined ? { contentIdentity: opts.contentIdentity } : {}),
+            ...(opts.payload !== undefined ? { payload: opts.payload } : {}),
+          });
+          this.consumeTx(tx, intent);
+          return { result: { eventSeq: intent.eventSeq, from: intent.from, to: intent.to, eventId: intent.eventId }, sequences };
+        },
+      ),
+    );
+    if (planned === null) return null;
+    this.sequences = planned.sequences;
+    return planned.result;
+  }
+
+  /**
    * Intent 串行消费（崩溃重放的幂等入口）：按 intent 自带双轨序消费，不重新编号——
    * 同 id 同内容 skipped / 同 id 异内容 corruption / 未达序 appended（I1 原子单元）。
    * 成功后游标推进到已消费尾（max），后续 transition 从重放尾续接。
@@ -894,14 +936,14 @@ export class Kernel {
    * 全文超 2KB 内联上限（EVIDENCE_INLINE_LIMIT，UTF-8 字节）。
    */
   evidence(evidenceRef: string): { content: string; truncated: boolean } {
-    const direct = this.store.evidenceSearch(evidenceRef).find((e) => e.evidenceRef === evidenceRef);
+    // 点查语义（票 40）：双 ref 形态都是 ref 精确读——FTS 搜索面（evidenceSearch）对含 ":" 的
+    // 确定性 event id 形 ref 会解析成 FTS 列过滤器，不承载点查（getEvidence enumeration-completion）。
+    const direct = this.store.getEvidence(evidenceRef);
     const row =
       direct ??
       (() => {
         const event = this.store.tx((tx) => tx.getEvent(evidenceRef));
-        return event?.evidenceRef
-          ? this.store.evidenceSearch(event.evidenceRef).find((e) => e.evidenceRef === event.evidenceRef)
-          : undefined;
+        return event?.evidenceRef ? this.store.getEvidence(event.evidenceRef) : undefined;
       })();
     if (!row) throw new Error(`evidence not found: ${evidenceRef}`);
     return { content: row.content, truncated: Buffer.byteLength(row.content, "utf8") > EVIDENCE_INLINE_LIMIT };
