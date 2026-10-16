@@ -896,3 +896,58 @@ describe("票 27 组 L2-3 — batch 合流 I2：per-session 窗口合流 billboa
     expect(store.getDelivery(NID(2), "s1")?.state).toBe("accepted");
   });
 });
+
+describe("票 27 组 L2-4 — SESSION_START→drain（只投 parked D2a）+ wake snapshot 冲刷；24h verified-absence re-push 独立通道", () => {
+  it("离线期 parked 行：SESSION_START drain 重投 + snapshot 立即冲刷（不等窗口）；dead-letter 零进入（D2a）", async () => {
+    const store = createMemoryStore();
+    store.putEntity({ type: REF.type, key: REF.key, state: null });
+    seedSub(store);
+    const clock = new FakeClock();
+    const pusher = new FakePusher();
+    const loops = startLoops(makeCtx(store, { clock, pusher }));
+    // 无活跃 session：fanOut 会话已关分支 → parked（不重试不超时，只等 drain）
+    loops.submit({ kind: "transition", ref: REF, verdict: "failed", occurredAt: at(1) });
+    await micro();
+    expect(pusher.pushed).toHaveLength(0); // 离线不推（离线不发）
+    expect(store.getDelivery(NID(1), "s1")?.state).toBe("parked");
+    store.putDelivery({ notificationId: "evt:fixture:widget:external/fixture-1#0", sessionId: "s1", state: "dead-letter", recordEpoch: 0 }); // D2a 反例行
+
+    loops.sessionStart("s1"); // drain（parked→accepted）+ snapshot 组装一次性推送冲刷
+    await micro();
+    expect(pusher.pushed).toHaveLength(1); // 立即冲刷：不等 batchMs 窗口
+    const line = lineOf(pusher, 0);
+    expect(line.count).toBe(1); // dead-letter 不入 snapshot
+    expect(line.entries[0]!.notificationId).toBe(NID(1));
+    expect(store.getDelivery(NID(1), "s1")?.state).toBe("accepted"); // drain-redeliver 两段式段一
+    expect(store.getDelivery("evt:fixture:widget:external/fixture-1#0", "s1")?.state).toBe("dead-letter"); // D2a：dead-letter 不经 drain
+  });
+
+  it("24h verified-absence：accepted 行迟到满 24h 恰一次 re-push（不经 drain：无状态迁移无新行）；此后 verified/repushed 恒 hold", async () => {
+    const store = createMemoryStore();
+    store.putEntity({ type: REF.type, key: REF.key, state: null });
+    seedSub(store);
+    const clock = new FakeClock();
+    const pusher = new FakePusher();
+    const loops = startLoops(makeCtx(store, { clock, pusher }));
+    loops.sessionStart("s1");
+    loops.submit({ kind: "transition", ref: REF, verdict: "passed", occurredAt: at(1) });
+    clock.step(2000); // 窗口冲刷 → accepted，pushedAt=2000
+    await micro();
+    expect(pusher.pushed).toHaveLength(1);
+
+    clock.step(24 * 3600_000 - 1); // 满 24h 前 1ms：hold
+    expect(pusher.pushed).toHaveLength(1);
+    clock.step(1); // 恰满 24h：兜底扫触发独立通道
+    await micro();
+    expect(pusher.pushed).toHaveLength(2); // 恰一次 re-push
+    expect(lineOf(pusher, 1).entries[0]!.notificationId).toBe(NID(1));
+    expect(store.getDelivery(NID(1), "s1")?.state).toBe("accepted"); // 不经 drain：状态不迁移
+    expect(store.pendingDeliveries({})).toHaveLength(0); // 不产生新投递行（I10 复用唯一行）
+
+    store.putDelivery({ notificationId: NID(1), sessionId: "s1", state: "verified", recordEpoch: 0 }); // 此后 verified 终态
+    clock.step(48 * 3600_000);
+    await micro();
+    expect(pusher.pushed).toHaveLength(2); // verified 恒 hold；repushed 置位亦恒 hold
+    loops.stop();
+  });
+});
