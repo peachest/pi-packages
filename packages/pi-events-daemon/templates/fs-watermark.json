@@ -1,0 +1,39 @@
+{
+  "id": "fs-watermark",
+  "entityType": "fs:path",
+  "version": 1,
+  "states": ["passed", "failed", "waiting"],
+  "transitions": [
+    { "from": "waiting", "to": "passed", "description": "水位恢复（高于下限）" },
+    { "from": "waiting", "to": "failed", "description": "probe 失败" },
+    { "from": "passed", "to": "failed", "description": "跌破水位（防抖 failureThreshold 由订阅侧阈值承担）" },
+    { "from": "failed", "to": "passed", "description": "回升（防闪断 successThreshold 由订阅侧阈值承担）" },
+    { "from": "passed", "to": "passed", "description": "自转换（contentIdentity 变化，ADR 0003）" },
+    { "from": "failed", "to": "failed", "description": "自转换（contentIdentity 变化）" },
+    { "from": "waiting", "to": "waiting", "description": "探针异常，仍在等待" }
+  ],
+  "payloadSchema": {
+    "type": "object",
+    "properties": {
+      "path": { "type": "string", "description": "被监视目录（绝对路径）" },
+      "threshold_kb": { "type": "string", "description": "水位下限（KB）" }
+    }
+  },
+  "keyGenerator": { "kind": "path", "param": "path" },
+  "schedule": { "type": "interval", "every": "300s" },
+  "onTransition": [],
+  "templates": [
+    {
+      "name": "df-free",
+      "check": "df -Pk {path} | tail -1 | awk -v t={threshold_kb} '{exit ($4 < t) ? 2 : 0}'",
+      "states": ["passed", "failed", "waiting"],
+      "params": {
+        "path": "被监视目录（绝对路径）",
+        "threshold_kb": "水位下限（KB，低于即 failed）"
+      },
+      "usage": "共享存储水位监视（如 beegfs 剩余 < 水位通知训练 agent 决定暂停实验）：exit 2=failed 跌破；建议订阅侧 failureThreshold:3 防边界抖动、successThreshold:2 防恢复信号闪断（非对称迟滞）；审计口径 check 用 df 不用 du（du 跨硬链接重复计算，独占文件验证 find <dir> -links 1）；daemon 只通知不动作（ADR 0004）"
+    }
+  ],
+  "stateMigrations": {},
+  "sideEffectPatterns": ["rm -rf ", "truncate "]
+}
