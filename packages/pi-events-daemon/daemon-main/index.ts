@@ -93,7 +93,8 @@ export interface DaemonHandle {
   readonly transport: TransportHandle;
   readonly store: Store;
   readonly pidPath: string;
-  /** 优雅停机：关 socket → 停循环（L0 队列关闭/定时器取消）→ 关 store → 释锁。幂等。 */
+  /** 优雅停机：关 socket → 停循环（L0 队列关闭/定时器取消）→ 关 store → 释锁。幂等；
+   *  并发调用共享同一 shutdown promise；单阶段异常收集后统一抛（AggregateError）。 */
   stop(): Promise<void>;
 }
 
@@ -112,13 +113,15 @@ export async function bootstrap(opts: BootstrapOptions = {}): Promise<DaemonHand
   const pidPath = opts.pidPath ?? defaultPidPath();
   const lock = opts.lock ?? new FileLock(pidPath);
   lock.acquire();
-  step("lock");
-  step("pidfile");
 
   let store: Store | null = null;
   let loops: LoopsHandle | null = null;
   let transport: TransportHandle | null = null;
   try {
+    // onStep 观测回调在锁保护区内调（评审 M）：回调抛错走下方 catch 逆序回收，锁不泄漏
+    step("lock");
+    step("pidfile");
+
     // --- 3. epoch 生成（每次成功启动新值；transport 帧校验与 run_ledger 共用，getEpoch 单源）---
     const epoch = Date.now();
     step("epoch");
@@ -198,11 +201,39 @@ export async function bootstrap(opts: BootstrapOptions = {}): Promise<DaemonHand
       getEpoch: () => epoch,
       // 长连接建立 = SESSION_START 信号：注册进 L0 队列（drain+snapshot 触发点，票 27/29）
       onSessionStart: (sessionId) => loops!.sessionStart(sessionId),
+      // 断连 = SESSION_END：从活跃面注销（评审 M）——fanOut 编址不再含它，pending 行留待重连 drain
+      onSessionEnd: (sessionId) => loops!.sessionEnd(sessionId),
     });
     await transport.ready;
     step("serve");
 
-    let stopped = false;
+    // 优雅停机（评审 H/M）：并发 stop() 共享同一 shutdown promise（closed ??= doStop，票 29 client 同款）；
+    // 每阶段独立 try/catch（errors 收集）——单阶段异常不跳过后续资源，AggregateError 统一抛。
+    let closed: Promise<void> | null = null;
+    const doStop = async (): Promise<void> => {
+      const errors: unknown[] = [];
+      try {
+        await transport!.close(); // 先关 socket：停新连接/新帧（unlink 在 close 回调内完成）
+      } catch (err) {
+        errors.push(err);
+      }
+      try {
+        loops!.stop(); // L0 队列关闭 + 全部定时器取消（在途 L0 事务同步消费天然完成）
+      } catch (err) {
+        errors.push(err);
+      }
+      try {
+        if ("close" in store!) (store as { close(): void }).close(); // SqliteStore 落盘关闭；MemoryStore 无 close
+      } catch (err) {
+        errors.push(err);
+      }
+      try {
+        lock.release(); // pidfile 移除（重启可立即获锁）
+      } catch (err) {
+        errors.push(err);
+      }
+      if (errors.length > 0) throw new AggregateError(errors, "daemon stop incomplete（各阶段已尽力回收）");
+    };
     return {
       epoch,
       steps,
@@ -212,19 +243,13 @@ export async function bootstrap(opts: BootstrapOptions = {}): Promise<DaemonHand
       transport,
       store,
       pidPath,
-      stop: async (): Promise<void> => {
-        if (stopped) return;
-        stopped = true;
-        await transport!.close(); // 先关 socket：停新连接/新帧
-        loops!.stop(); // L0 队列关闭 + 全部定时器取消（在途 L0 事务同步消费天然完成）
-        if ("close" in store!) (store as { close(): void }).close(); // SqliteStore 落盘关闭；MemoryStore 无 close
-        lock.release(); // pidfile 移除（重启可立即获锁）
-      },
+      stop: (): Promise<void> => (closed ??= doStop()),
     };
   } catch (err) {
-    // 半启动回收：逆序拆已获资源，锁必释（失败重启不留幽灵 pidfile）
+    // 半启动回收：逆序拆已获资源，锁必释（失败重启不留幽灵 pidfile）。
+    // transport.close await 完成（unlink 在异步回调里，评审 H）：防替换 daemon bind 撞旧 unlink
     try {
-      transport?.close();
+      await transport?.close();
     } catch {
       /* 回收尽力而为 */
     }

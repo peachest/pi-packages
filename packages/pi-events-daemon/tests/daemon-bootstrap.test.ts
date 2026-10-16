@@ -257,6 +257,75 @@ describe("票 38 组 4：epoch 生成 + transport/run_ledger 共用", () => {
   });
 });
 
+describe("票 38 评审修复 — Group Stop：stop() 时序（1H2M）", () => {
+  it("并发 stop() 共享同一 shutdown promise（closed ??= doStop，票 29 client 同款）", async () => {
+    const { daemon, pidPath } = await bootInProcess();
+    const first = daemon.stop();
+    expect(daemon.stop()).toBe(first); // 同一 promise：并发调用等待同一清算，不提前返回
+    await first;
+    expect(existsSync(pidPath)).toBe(false);
+  });
+
+  it("单阶段清理异常不跳过后续资源：独立 try/catch 收集，锁仍释放，AggregateError 统一抛", async () => {
+    let released = 0;
+    const lock = { acquire(): void {}, release(): void { released++; } };
+    const badStore = Object.assign(store.createMemoryStore(), {
+      close(): void {
+        throw new Error("store close boom");
+      },
+    });
+    const { daemon } = await bootInProcess({ store: badStore, lock });
+    const err = await daemon.stop().then(
+      () => null,
+      (e: unknown) => e as AggregateError,
+    );
+    expect(err).toBeInstanceOf(AggregateError);
+    expect(err!.errors).toHaveLength(1);
+    expect(String(err!.errors[0])).toMatch(/store close boom/);
+    expect(released).toBe(1); // store 异常未跳过锁释放
+  });
+
+  it("onStep 抛错不泄锁：step 回调在锁保护区（try）内，catch 逆序回收后 pidfile 不泄漏", async () => {
+    const dir = makeDir();
+    dirs.push(dir);
+    const pidPath = join(dir, "d.pid");
+    await expect(
+      daemonMain.bootstrap({
+        sockPath: join(dir, "d.sock"),
+        pidPath,
+        store: store.createMemoryStore(),
+        exec: new FakeExec(),
+        pusher: new FakePusher(),
+        fs: new FakeFs(),
+        onStep: (s) => {
+          if (s === "pidfile") throw new Error("observer boom");
+        },
+      }),
+    ).rejects.toThrow("observer boom");
+    expect(existsSync(pidPath)).toBe(false); // 锁已回收：可重新获锁
+  });
+
+  it("bootstrap 失败先 await transport.close()（unlink 在 reject 前完成）：替换 daemon bind 不撞旧 socket 残留", async () => {
+    const dir = makeDir();
+    dirs.push(dir);
+    const sockPath = join(dir, "d.sock");
+    await expect(
+      daemonMain.bootstrap({
+        sockPath,
+        pidPath: join(dir, "d.pid"),
+        store: store.createMemoryStore(),
+        exec: new FakeExec(),
+        pusher: new FakePusher(),
+        fs: new FakeFs(),
+        onStep: (s) => {
+          if (s === "serve") throw new Error("halt after serve");
+        },
+      }),
+    ).rejects.toThrow("halt after serve");
+    expect(existsSync(sockPath)).toBe(false); // socket 已 unlink：紧接的重新 bind 不会 EADDRINUSE
+  });
+});
+
 describe("票 38 评审修复 — Group Lock：FileLock O_EXCL 竞态语义（3H1M）", () => {
   it("三进程交错（mock 时序）：pidfile 已建未写 pid 的窗口 → 拒取且不回收锁文件；活 pid 拒绝、死 pid 回收重取", () => {
     const dir = makeDir();
