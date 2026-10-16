@@ -787,6 +787,27 @@ export class Kernel {
   }
 
   /**
+   * verify（票 28 L3 收口）：两段式 ack 终点——accepted → verified（正典边，domain 迁移表执法）。
+   * 调用前提 = I9 点查命中（transcript-adapter 是唯一权威点，本方法不做判定只做收口写）。
+   * 出参：{verified:true} 本次收口 / {verified:false, reason:"not-accepted" | "unknown-delivery"}
+   * —— 已 verified/终态行再 verify 归 not-accepted（迁移表拒绝，无第二写，幂等面）。
+   * I12 无 epoch fence（与 drain 相反）：verified 判定来自 transcript 全局真相（adapter 点查），
+   * 异 epoch 行同收口——fence 只挡重投不挡对账，留 Accepted 不收口的异 epoch 行将无人收口。
+   */
+  verify(notificationId: string, sessionId: string): { verified: boolean; reason?: "not-accepted" | "unknown-delivery" } {
+    return this.withRetry(`verify ${notificationId}/${sessionId}`, () =>
+      this.store.tx((tx) => {
+        const row = tx.getDelivery(notificationId, sessionId);
+        if (!row) return { verified: false, reason: "unknown-delivery" as const };
+        const edge = transitionDelivery(row.state, "verified");
+        if (!edge.ok) return { verified: false, reason: "not-accepted" as const };
+        tx.putDelivery({ ...row, state: edge.to });
+        return { verified: true };
+      }),
+    );
+  }
+
+  /**
    * query（票 11，读侧归一）：实体清单（state/payload 摘要/eventSeq/lastProbedAt/backlog）
    * + listChildren 单层展开 + per-entity backlog + deadLetters 清单 + B4 懒重探标记。
    * backlog/deadLetters/eventSeq 归属：delivery/notificationId 经事件 join（tx 批量点查）。
