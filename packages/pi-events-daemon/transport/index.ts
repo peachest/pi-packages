@@ -47,9 +47,14 @@ export interface TransportHandle {
   broadcastWake(method: string, params: unknown): void;
   /** I12 计数：epoch 不匹配被静默拒的帧数。 */
   epochMismatches(): number;
+  /** 慢消费者计数：推送时单连接写积压超限被丢的推送条数。 */
+  slowConsumers(): number;
   /** 超长未换行残留被丢弃的次数（接收缓冲上限守卫）。 */
   oversizeLines(): number;
 }
+
+/** 单连接推送写积压高水位：超过即丢该条推送并计数（推送尽力而为语义允许丢弃，防单慢客户端拖累 daemon 内存）。 */
+const MAX_WRITE_BUFFER = 1024 * 1024;
 
 /** 断连后迟到写（EPIPE）不得炸进程：socket 已死即丢（尽力投递语义归上层）。 */
 function writeLine(socket: net.Socket, line: string): void {
@@ -74,10 +79,23 @@ export function serve(path: string, handlers: TransportHandlers): TransportHandl
   }
 
   let mismatches = 0;
+  /** 推送丢弃计数：单连接写积压超限（慢消费者）被丢的推送条数。 */
+  let slowConsumerDrops = 0;
   /** 未终结超长行丢弃计数：接收缓冲上限守卫（decodeLine 上限只覆盖已换行的行）。 */
   let oversizeDrops = 0;
   /** 全部连接（含未注册会话的短连接）：value = 已注册 sessionId | null。 */
   const connections = new Map<net.Socket, string | null>();
+
+  /** 推送行下发（区别于 op 响应的 writeLine）：对端不读导致写积压超高水位 → 丢本条并计数；
+   *  对端追上后 writableLength 回落自动恢复，无需显式恢复监听。 */
+  const pushLine = (socket: net.Socket, line: string): void => {
+    if (socket.destroyed) return;
+    if (socket.writableLength > MAX_WRITE_BUFFER) {
+      slowConsumerDrops++;
+      return;
+    }
+    socket.write(line + "\n");
+  };
 
   const server = net.createServer((socket) => {
     connections.set(socket, null);
@@ -114,7 +132,7 @@ export function serve(path: string, handlers: TransportHandlers): TransportHandl
           sessionId = frame.sessionId;
           connections.set(socket, frame.sessionId);
           handlers.onSessionStart?.(frame.sessionId, (method, params) =>
-            writeLine(socket, encodeNotification(method, params)),
+            pushLine(socket, encodeNotification(method, params)),
           );
           return;
         }
@@ -169,10 +187,11 @@ export function serve(path: string, handlers: TransportHandlers): TransportHandl
     broadcastWake: (method, params) => {
       const line = encodeNotification(method, params);
       for (const [socket, sid] of connections) {
-        if (sid !== null) writeLine(socket, line); // 显式注册才收推送（fork no-inherit 对偶）
+        if (sid !== null) pushLine(socket, line); // 显式注册才收推送（fork no-inherit 对偶）
       }
     },
     epochMismatches: () => mismatches,
+    slowConsumers: () => slowConsumerDrops,
     oversizeLines: () => oversizeDrops,
   };
 }

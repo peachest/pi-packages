@@ -19,6 +19,8 @@ export interface EventsClient {
   startSession(sessionId: string): void;
   /** daemon 推送行监听。 */
   onNotification(handler: (method: string, params: unknown) => void): void;
+  /** 未决（已发未答）请求数：诊断面，pending 生命周期可观测。 */
+  pendingCount(): number;
   close(): Promise<void>;
 }
 
@@ -26,6 +28,7 @@ export function connectEvents(path: string, opts: { epoch: number }): Promise<Ev
   const pending = new Map<RequestId, { resolve: (v: unknown) => void; reject: (e: RpcError) => void }>();
   let nextId = 0;
   let notificationHandler: ((method: string, params: unknown) => void) | null = null;
+  let closed: Promise<void> | null = null;
   const socket = net.connect(path);
   socket.setEncoding("utf8");
 
@@ -49,12 +52,26 @@ export function connectEvents(path: string, opts: { epoch: number }): Promise<Ev
     }
   });
 
+  // close 即终态：正常断连（对端 destroy）没有 error 事件——pending 必须清算，否则永久悬挂
+  socket.on("close", () => {
+    const error: RpcError = { code: -32000, message: "connection closed" };
+    for (const p of pending.values()) p.reject(error);
+    pending.clear();
+  });
+
   const client: EventsClient = {
     request(op, params) {
       const id = ++nextId;
       return new Promise((resolve, reject) => {
+        let line: string;
+        try {
+          line = encodeRequest(id, op, params, opts.epoch); // 先序列化：失败时 reject 且不入 pending（不残留泄漏）
+        } catch (err) {
+          reject(err);
+          return;
+        }
         pending.set(id, { resolve, reject });
-        socket.write(encodeRequest(id, op, params, opts.epoch) + "\n");
+        socket.write(line + "\n");
       });
     },
     startSession(sessionId) {
@@ -63,11 +80,15 @@ export function connectEvents(path: string, opts: { epoch: number }): Promise<Ev
     onNotification(handler) {
       notificationHandler = handler;
     },
+    pendingCount: () => pending.size,
     close() {
-      return new Promise((resolve) => {
-        socket.once("close", () => resolve());
-        socket.destroy();
-      });
+      // 复用同一 shutdown promise：二次调用/对端已断连（close 已过，once 永不触发）都不得悬挂
+      return (closed ??= socket.destroyed
+        ? Promise.resolve()
+        : new Promise<void>((resolve) => {
+            socket.once("close", () => resolve());
+            socket.destroy();
+          }));
     },
   };
   return new Promise((resolve, reject) => {

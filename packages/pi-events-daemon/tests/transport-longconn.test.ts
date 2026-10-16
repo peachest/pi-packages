@@ -4,10 +4,11 @@
  * 驱动 transport serve 的 session 钩子；两段式 ack 全链路属票 30，此处不涉及。
  */
 import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import * as net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { transport } from "../index.ts";
+import { protocol, transport } from "../index.ts";
 
 const EPOCH = 7;
 
@@ -17,7 +18,7 @@ let handle: transport.TransportHandle | null = null;
 
 type Push = (method: string, params: unknown) => void;
 
-const startServer = (hooks: { onSessionStart?: (sid: string, push: Push) => void; onSessionEnd?: (sid: string) => void }) => {
+const startServer = (hooks: Partial<transport.TransportHandlers> = {}) => {
   dir = mkdtempSync(join(tmpdir(), "pi-events-t29-"));
   path = join(dir, "t.sock");
   handle = transport.serve(path, {
@@ -109,6 +110,61 @@ describe("ticket 29: 多连接并发互不串扰", () => {
 
     await a.close();
     await b.close();
+  });
+});
+
+describe("ticket 29 fix: 慢消费者有界推送（评审 F1）", () => {
+  it("不读数据的注册连接持续 push → 写积压超限即丢 + slowConsumers 计数增长（缓冲有界不拖垮内存）", async () => {
+    const registry = new Map<string, Push>();
+    const p = startServer({ onSessionStart: (sid, push) => registry.set(sid, push) });
+    const socket = net.connect(p);
+    socket.setEncoding("utf8");
+    socket.pause(); // 慢消费者：不读数据 → 服务端写积压
+    socket.write(protocol.encodeSessionStart("slow") + "\n");
+    await waitFor(() => registry.has("slow"), "slow registration");
+    const push = registry.get("slow")!;
+    for (let i = 0; i < 256; i++) push("push", { blob: "x".repeat(128 * 1024) }); // ~32MB 涌向不读的对端
+    expect(handle!.slowConsumers()).toBeGreaterThan(0);
+    socket.resume();
+    socket.destroy();
+  });
+});
+
+describe("ticket 29 fix: client 终态（评审 F6/F7/F8）", () => {
+  it("服务端正常断连（无 error 事件）→ pending 请求 reject（close 即终态）", async () => {
+    const p = startServer({ dispatch: () => new Promise(() => {}) }); // 永不完成 → 清算依赖断连
+    const c = await transport.connectEvents(p, { epoch: EPOCH });
+    const pendingReq = c.request("status", {});
+    await new Promise((r) => setTimeout(r, 60));
+    await handle!.close(); // 服务端正常断连
+    await expect(pendingReq).rejects.toMatchObject({ code: -32000 });
+    await c.close();
+  });
+
+  it("连续两次 await close() → 第二次复用同一 shutdown promise，不悬挂", async () => {
+    const p = startServer({});
+    const c = await transport.connectEvents(p, { epoch: EPOCH });
+    await c.close();
+    await c.close();
+  });
+
+  it("对端已断连后 close() → 立即 resolve（destroyed 短路）", async () => {
+    const p = startServer({});
+    const c = await transport.connectEvents(p, { epoch: EPOCH });
+    await handle!.close();
+    await new Promise((r) => setTimeout(r, 60)); // 让对端断连的 close 事件先送达，再调 close()
+    await c.close();
+  });
+
+  it("encodeRequest 失败（循环引用参数）→ reject 且 pending 不残留，后续请求不受影响", async () => {
+    const p = startServer({});
+    const c = await transport.connectEvents(p, { epoch: EPOCH });
+    const evil: Record<string, unknown> = {};
+    evil.self = evil; // 循环引用：encodeRequest 的 JSON.stringify 必抛
+    await expect(c.request("status", evil)).rejects.toThrow();
+    expect(c.pendingCount()).toBe(0);
+    await expect(c.request("status", {})).resolves.toMatchObject({ echoed: "status" });
+    await c.close();
   });
 });
 
