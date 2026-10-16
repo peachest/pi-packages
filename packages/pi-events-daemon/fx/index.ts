@@ -12,4 +12,5 @@ export { SystemClock } from "./lib/clock.ts";
 export { ShellExec } from "./lib/exec.ts";
 export { SocketPusher } from "./lib/pusher.ts";
 export { NodeFs } from "./lib/node-fs.ts";
+export { FileLock, defaultPidPath } from "./lib/lockfile.ts"; // 票 38：单活仲裁真壳（A 层禁 node IO，锁原语归 fx）
 export { FakeClock, FakeExec, FakeFs, FakePusher } from "./lib/fakes.ts";

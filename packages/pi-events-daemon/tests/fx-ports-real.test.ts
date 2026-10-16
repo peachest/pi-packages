@@ -139,9 +139,9 @@ describe("fx 真壳存在性证明（票 12 断言 1）", () => {
 });
 
 describe("fx 端口契约（票 12 断言 2：端口类型零业务泄漏 + Fs 只读收窄）", () => {
-  it("公共面 = 真壳四件套（票 12）+ 四端口 fake（票 13，逐步到位）", () => {
+  it("公共面 = 真壳五件套（票 12 四件 + 票 38 FileLock 单活仲裁）+ 四端口 fake（票 13，逐步到位）", () => {
     expect(Object.keys(fx).sort()).toEqual(
-      ["FakeClock", "FakeExec", "FakeFs", "FakePusher", "NodeFs", "ShellExec", "SocketPusher", "SystemClock"],
+      ["FakeClock", "FakeExec", "FakeFs", "FakePusher", "FileLock", "NodeFs", "ShellExec", "SocketPusher", "SystemClock", "defaultPidPath"],
     );
   });
 
@@ -150,7 +150,7 @@ describe("fx 端口契约（票 12 断言 2：端口类型零业务泄漏 + Fs �
       readFile(path: string): Promise<string>;
       watch(path: string, onEvent: () => void, onError?: (err: unknown) => void): { close(): void };
     }>();
-    expectTypeOf<fx.Pusher>().toEqualTypeOf<{ push(line: string): Promise<void> }>();
+    expectTypeOf<fx.Pusher>().toEqualTypeOf<{ push(line: string): Promise<number> }>();
     expectTypeOf<fx.Clock["now"]>().toEqualTypeOf<() => number>();
     expectTypeOf<fx.Clock["setTimeout"]>().toEqualTypeOf<
       (fn: () => void, ms: number) => { cancel(): void }

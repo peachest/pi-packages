@@ -43,8 +43,9 @@ export interface TransportHandle {
   /** listen 生命周期：listening 时 resolve，listen 失败（ENOENT/EACCES 等）reject——启动失败可观测。 */
   ready: Promise<void>;
   close(): Promise<void>;
-  /** daemon 推送行：广播给全部已注册（SESSION_START）长连接。 */
-  broadcastWake(method: string, params: unknown): void;
+  /** daemon 推送行：广播给全部已注册（SESSION_START）长连接；返回实际送达数（成功写的已注册连接数）——
+   *  票 38 评审 H：0 = 无人收到，上层不得迁移投递状态（零客户端不假成功）。 */
+  broadcastWake(method: string, params: unknown): number;
   /** I12 计数：epoch 不匹配被静默拒的帧数。 */
   epochMismatches(): number;
   /** 慢消费者计数：推送时单连接写积压超限被丢的推送条数。 */
@@ -87,14 +88,15 @@ export function serve(path: string, handlers: TransportHandlers): TransportHandl
   const connections = new Map<net.Socket, string | null>();
 
   /** 推送行下发（区别于 op 响应的 writeLine）：对端不读导致写积压超高水位 → 丢本条并计数；
-   *  对端追上后 writableLength 回落自动恢复，无需显式恢复监听。 */
-  const pushLine = (socket: net.Socket, line: string): void => {
-    if (socket.destroyed) return;
+   *  对端追上后 writableLength 回落自动恢复，无需显式恢复监听。返回是否实际写出（送达计数的原子判定）。 */
+  const pushLine = (socket: net.Socket, line: string): boolean => {
+    if (socket.destroyed) return false;
     if (socket.writableLength > MAX_WRITE_BUFFER) {
       slowConsumerDrops++;
-      return;
+      return false;
     }
     socket.write(line + "\n");
+    return true;
   };
 
   const server = net.createServer((socket) => {
@@ -186,9 +188,11 @@ export function serve(path: string, handlers: TransportHandlers): TransportHandl
       }),
     broadcastWake: (method, params) => {
       const line = encodeNotification(method, params);
+      let delivered = 0;
       for (const [socket, sid] of connections) {
-        if (sid !== null) pushLine(socket, line); // 显式注册才收推送（fork no-inherit 对偶）
+        if (sid !== null && pushLine(socket, line)) delivered++; // 显式注册才收推送（fork no-inherit 对偶）
       }
+      return delivered;
     },
     epochMismatches: () => mismatches,
     slowConsumers: () => slowConsumerDrops,

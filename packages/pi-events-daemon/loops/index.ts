@@ -59,6 +59,7 @@ export type MutationRequest =
       generation?: number }
   | { kind: "fanOut"; notificationId: string }
   | { kind: "sessionStart"; sessionId: string; scope?: SubscriptionScope }
+  | { kind: "sessionEnd"; sessionId: string }
   // 票 28：L3 verify 收口（I9 点查命中后经唯一写路径落账）+ drain 触发载体（L2/transport 接线前的队列面）
   | { kind: "verify"; notificationId: string; sessionId: string }
   | { kind: "drain"; sessionId?: string };
@@ -122,6 +123,9 @@ export interface LoopsHandle {
   /** 票 27 L2 入口：SESSION_START 注册（transport 连接回调接线）——登记活跃 session（fanOut auto 编址消费面）
    *  + 对该 session 执行 drain（只投 parked，D2a）+ wake snapshot 组装一次性推送并冲刷。stopped 后抛错。 */
   sessionStart(sessionId: string, scope?: SubscriptionScope): void;
+  /** 票 38 评审 M：断连注销（transport onSessionEnd 接线）——从活跃面删除，fanOut 编址不再含该
+   *  session（后续事件 parked，重连 drain 照常送达）。幂等；stopped 后抛错。 */
+  sessionEnd(sessionId: string): void;
   /** 停机：L0 队列关闭、提交回调脱钩、L1 调度定时器取消（幂等）。 */
   stop(): void;
 }
@@ -203,6 +207,10 @@ export function startLoops(ctx: LoopsCtx): LoopsHandle {
       }
       case "sessionStart":
         applySessionStart(req.sessionId, req.scope ?? "project");
+        return;
+      case "sessionEnd":
+        // 票 38 评审 M：断连注销——fanOut 编址不再含它，pending 行留待重连 drain（不丢）
+        activeSessions.delete(req.sessionId);
         return;
       case "verify":
         // 出参 outcome 由 store 真相承载（level-trigger 下一扫自愈）；reason 面契约已由 kernel.verify 钉死
@@ -448,6 +456,9 @@ export function startLoops(ctx: LoopsCtx): LoopsHandle {
   const sessionStart = (sessionId: string, scope?: SubscriptionScope): void =>
     doSubmit({ kind: "sessionStart", sessionId, scope });
 
+  /** 票 38 评审 M：断连注销（transport onSessionEnd 接线）——从活跃面删除，fanOut 编址不再含它。 */
+  const sessionEnd = (sessionId: string): void => doSubmit({ kind: "sessionEnd", sessionId });
+
   /** 活跃 session 消费面（fanOut deps 形状）。 */
   const fanOutSessions = (): { sessionId: string; scope: SubscriptionScope }[] =>
     [...activeSessions].map(([sessionId, scope]) => ({ sessionId, scope }));
@@ -560,9 +571,16 @@ export function startLoops(ctx: LoopsCtx): LoopsHandle {
       return;
     }
     void ctx.pusher.push(line).then(
-      () => {
+      (delivered: number) => {
         sessionPushInflight.delete(sessionId);
         if (stopped) return;
+        if (delivered <= 0) {
+          // 票 38 评审 H：0 送达（零客户端/写全败）= 无人收到，不迁移——行留批内重开窗，
+          // 下个窗口/兑底 tick 重试（尽力唤醒：不进退避，客户端随时可连 snapshot 即达）
+          batch.mode = "window";
+          batch.timer = ctx.clock.setTimeout(() => flushBatch(sessionId), DELIVER_BATCH_MS);
+          return;
+        }
         try {
           markPushed(live);
           for (const r of live) batch.rows.delete(r.notificationId);
@@ -831,10 +849,10 @@ export function startLoops(ctx: LoopsCtx): LoopsHandle {
     if (dead.length > 0 && (hk?.deadLetterNotice ?? true)) {
       const day = Math.floor(now / DAY_MS);
       if (lastNoticeDay !== day) {
-        // 门在推送成功后置位（ocr M）：断连失败不抑制当天余时重试
+        // 门在送达后置位（ocr M；票 38 评审：送达数 > 0 才算送达）：断连失败不抑制当天余时重试
         void ctx.pusher.push(JSON.stringify({ kind: "dead-letter-notice", count: dead.length })).then(
-          () => {
-            lastNoticeDay = day;
+          (delivered: number) => {
+            if (delivered > 0) lastNoticeDay = day;
           },
           (err: unknown) => errors.push(err),
         );
@@ -902,6 +920,7 @@ export function startLoops(ctx: LoopsCtx): LoopsHandle {
     submit: doSubmit,
     ingestProbeResult,
     sessionStart,
+    sessionEnd,
     cache: { states },
     housekeeping: housekeepingView,
     errors,
