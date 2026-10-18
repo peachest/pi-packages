@@ -57,6 +57,8 @@ export type MutationRequest =
   | { kind: "publish"; ref: EntityRef; to: string; contentIdentity?: string | null; payload?: unknown; occurredAt: string }
   // 票 40 评审 F1/F2：register 经 L0（status/subscribe 的簿记底座；firstTransition 同事务含首转换）
   | { kind: "register"; req: RegisterRequest }
+  // 终审裁定②：unregister（retired 标记）经 L0——L4 ephemeral 清理的写路径收归 kernel 唯一写法
+  | { kind: "unregister"; ref: EntityRef }
   | { kind: "subscribe"; req: SubscribeRequest; deps?: SubscribeDeps }
   | { kind: "cancel"; req: CancelRequest }
   | { kind: "probeVerdict"; slotKey: string; verdict: Verdict; occurredAt: string;
@@ -208,6 +210,9 @@ export function startLoops(ctx: LoopsCtx): LoopsHandle {
       case "register":
         // 票 40 评审 F1/F2：register（含 firstTransition 同事务）唯一经 L0 串行——直调面不暴露变更方法
         return kernel.register(req.req);
+      case "unregister":
+        // 终审裁定②：retired 标记唯一写路径（L4 ephemeral 清理消费方，7d 到期判定留在 L4）
+        return kernel.unregister(req.ref);
       case "subscribe":
         return kernel.subscribe(req.req, req.deps);
       case "cancel":
@@ -818,7 +823,7 @@ export function startLoops(ctx: LoopsCtx): LoopsHandle {
   // --- L4 Housekeeping（票 28）：保留期清理 / ephemeral retired 清理 / dead-letter 每日提示 /
   // ttl 关订阅 / run_ledger 对账 / 快照触发。启动惰性首扫（#31 L154）+ 1h 周期；簿记/审计直写
   // store（#31 L82：ephemeral 清理是簿记非事件，不经 kernel；缓存一致性由提交回调保全），
-  // 例外 = ttl 关订阅（kernel 变更，经 L0 队列 submit 唯一写路径）。
+  // 例外 = ttl 关订阅 + retired 标记（终审裁定②：写路径归 kernel.unregister，经 L0 队列 submit）。
   const HOUSEKEEPING_INTERVAL_MS = 3_600_000;
   const DAY_MS = 86_400_000;
   const hk = ctx.housekeeping;
@@ -862,7 +867,7 @@ export function startLoops(ctx: LoopsCtx): LoopsHandle {
       for (const e of ctx.store.queryEntities({})) {
         if (!e.profileId || !eph.profileIds.has(e.profileId)) continue;
         if (e.state === null || !eph.terminalStates.has(e.state)) continue;
-        if (!e.retired) ctx.store.putEntity({ ...e, retired: true });
+        if (!e.retired) void doSubmit({ kind: "unregister", ref: { type: e.type, key: e.key } }); // 终审裁定②：写路径归 kernel（L0 队列，timer 上下文同步消费）
         const anchor = latestEventMsByEntity?.get(`${e.type}/${e.key}`);
         if (anchor !== undefined && retiredCleanupDue(anchor, now)) {
           ctx.store.deleteEventsBefore(e.type, e.key, now); // 派生投递残留（events/outbox 永久，见 store 契约注）

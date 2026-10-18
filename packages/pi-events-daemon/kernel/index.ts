@@ -576,6 +576,23 @@ export class Kernel {
   }
 
   /**
+   * unregister（终审裁定②）：实体 retired 标记的唯一写路径（#31：ad-hoc terminal → retired，
+   * 不复活——publish/transition/migrate 对 retired 的拒绝由 domain/kernel 既有执法承担，本方法只标记）。
+   * 消费方 = loops L4 ephemeral 清理（7d 到期判定留在 L4，标记写路径归此）。幂等契约对齐 cancel：
+   * 未知/已 retired → {unregistered:false} 不抛；既有快照字段（state/payload/profile/parent）不动。
+   */
+  unregister(ref: EntityRef): { unregistered: boolean } {
+    return this.withRetry(`unregister ${entityRefKeyOf(ref)}`, () =>
+      this.store.tx((tx) => {
+        const entity = tx.getEntity(ref.type, ref.key);
+        if (!entity || entity.retired) return { unregistered: false };
+        tx.putEntity({ ...entity, retired: true });
+        return { unregistered: true };
+      }),
+    );
+  }
+
+  /**
    * 两阶段订阅推进（票 26 L0 消费路径调用）：startup passed → phase=flip（仅一跳，幂等）。
    * solo 槽（无其他活跃订阅）同步替换 ProbeSpec.check = readyCheck ?? check（flip 判定第二 check，
    * 缺省沿用 check）；共享槽不换——first-creator fetch 共享（I5），混合相位 MVP 不支持。

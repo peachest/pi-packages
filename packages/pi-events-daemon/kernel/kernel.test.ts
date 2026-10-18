@@ -114,6 +114,22 @@ describe("组 1：kernel.transition 唯一写路径——校验（domain）→ �
     const orphan = new Kernel(empty, VERDICT_STATES, 0);
     expect(() => orphan.transition(REF, "failed", at(1))).toThrow(/unknown entity/);
   });
+
+  it("unregister：retired 标记后 publish 拒绝（domain 执法）；重复/未知幂等 {unregistered:false} 不抛", () => {
+    const store = createMemoryStore();
+    seedEntity(store, "passed", { payload: { keep: true } });
+    const kernel = new Kernel(store, VERDICT_STATES, 0);
+    expect(kernel.unregister(REF)).toEqual({ unregistered: true });
+    // 标记保留既有快照字段（state/payload 不动，只置 retired）
+    expect(store.getEntity(REF.type, REF.key)).toMatchObject({ state: "passed", payload: { keep: true }, retired: true });
+    // 终审裁定②验收面：unregister 后 publish 拒绝（retired 拒 publish 已在 domain publish 执法）
+    expect(() => kernel.publish(REF, "failed", { occurredAt: at(1) })).toThrow(/retired/);
+    expect(() => kernel.transition(REF, "failed", at(2))).toThrow(/retired/);
+    expect(store.outboxBatch(10)).toHaveLength(0); // 拒绝路径零事件零烧号
+    // 幂等：重复 unregister 不抛不双写（对齐 cancel 契约：已终态 → false）；未知实体同面
+    expect(kernel.unregister(REF)).toEqual({ unregistered: false });
+    expect(kernel.unregister({ type: "fixture:ghost", key: "external/none" })).toEqual({ unregistered: false });
+  });
 });
 
 describe("组 3：B7 状态改名 = 显式迁移 TransitionEvent（唯一写路径，禁原地改名）", () => {

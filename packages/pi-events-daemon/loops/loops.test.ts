@@ -1433,3 +1433,33 @@ describe("票 40 评审 F1 — register 经 L0 submit（变更类只经单一写
     loops.stop();
   });
 });
+
+// ==================== 终审修复批 1（2026-10-18 用户五项裁定落地） ====================
+
+describe("终审修复② — L4 ephemeral retired 标记经 kernel.unregister（L0 唯一写路径）", () => {
+  it("ephemeral 终态实体：扫后 retired 标记（写路径归 kernel，经 L0）；7d 到期同扫清理实体与派生残留", () => {
+    const store = createMemoryStore();
+    store.putEntity({ type: REF.type, key: REF.key, state: "passed", profileId: "p-eph", payload: { snap: 1 } });
+    // 到期锚 = 终态转换事件 occurredAt；锚 0（epoch 原点）+ clock 推进 8d > 7d 保留窗 → 到期
+    store.appendEventIfMissing({
+      eventId: NID(1), eventSeq: 1, entityRefType: REF.type, entityRefKey: REF.key,
+      from: "failed", to: "passed", occurredAt: new Date(0).toISOString(),
+    });
+    store.putOutbox({ notificationId: NID(1), eventSeq: 1 });
+    store.putNotification({ notificationId: NID(1), eventSeq: 1, billboardJson: "{}" });
+    const clock = new FakeClock();
+    const loops = startLoops(makeCtx(store, {
+      clock,
+      housekeeping: { ephemeral: { profileIds: new Set(["p-eph"]), terminalStates: new Set(["passed"]) } },
+    }));
+    clock.step(0); // 启动惰性首扫：标记 + 8d 未到只标记
+    expect(store.getEntity(REF.type, REF.key)).toMatchObject({ retired: true, payload: { snap: 1 } }); // 快照字段不动
+    expect(store.getEntity(REF.type, REF.key)?.state).toBe("passed");
+    clock.step(8 * 86_400_000); // 7d 保留窗到期：同扫清理（deleteEventsBefore + deleteEntity）
+    expect(store.getEntity(REF.type, REF.key)).toBeUndefined();
+    expect(store.notifications({})).toHaveLength(0); // 派生投递残留（billboard 物化行）清零
+    expect(store.tx((tx) => tx.getEvent(NID(1)))).toBeDefined(); // events 本体不删（D2 append-only 正典）
+    expect(store.outboxBatch(10)).toHaveLength(1); // outbox 行永久（decisionOrder 恢复真相源）
+    loops.stop();
+  });
+});
