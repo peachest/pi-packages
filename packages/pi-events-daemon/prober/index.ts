@@ -4,8 +4,8 @@
  *
  * 执行面（#31 B3 清单）本模块全部拥有：checker 池 ≤8 并发（第 9 个排队）、超时缺省 10s
  * 上限 300s（fx Clock 计时 + Exec timeoutMs 双停点）、三态映射（0=passed / 2=failed 断言 /
- * 其他=waiting；verdict 一律语义名，退出码只进 reason 文本）、no_proxy 全局注入（B2②）、
- * token 脱敏（B2③）、fs-watch 原生推送（票 18：监听建立/关闭归执行引擎，推送事件触发 check
+ * 其他=waiting；verdict 一律语义名，退出码只进 reason 文本）、env 白名单注入（B2②，不继承
+ * 全环境——终审 Gap 1 落地）、token 脱敏（B2③）、fs-watch 原生推送（票 18：监听建立/关闭归执行引擎，推送事件触发 check
  * 执行、结果经同一 completion queue 回流）。checker 本体是 shell 命令字符串，来自 profile
  * 模板资产 / ad-hoc 声明（shell 是唯一判定原语，HTTP 经 curl -sf 包装）——本模块只含执行
  * 引擎，不含 checker 实现。
@@ -261,9 +261,24 @@ export class Prober {
     }
   }
 
-  /** B2② env 注入面：只叠 no_proxy 策略（fx ExecOptions.env 是叠加语义；白名单沙箱待 fx env-replace 语义）。 */
-  private envFor(): Record<string, string> | undefined {
-    return this.deps.noProxy === undefined ? undefined : { no_proxy: this.deps.noProxy, NO_PROXY: this.deps.noProxy };
+  /**
+   * B2② env 白名单（终审 prober Gap 1 落地，2026-10-18 裁定）：probe 执行不继承全环境
+   * （spec prober.md「脱敏 token、no_proxy、必要 PATH」）。白名单 = PATH + HOME（必要运行项：
+   * glab 自取 token 需 ~/.config、kubectl 需 ~/.kube——HOME 非 credential 载体，与 PATH 同类
+   * 「必要」）+ no_proxy/NO_PROXY（配置时）；token 不入白名单（脱敏承诺的 env 侧执行点，输出侧
+   * maskText 兜底）。fx ExecOptions.env 为替换语义：此处返回值即 checker 的整环境。
+   */
+  private envFor(): Record<string, string> {
+    const env: Record<string, string> = {};
+    for (const key of ["PATH", "HOME"] as const) {
+      const value = process.env[key];
+      if (value !== undefined) env[key] = value;
+    }
+    if (this.deps.noProxy !== undefined) {
+      env.no_proxy = this.deps.noProxy;
+      env.NO_PROXY = this.deps.noProxy;
+    }
+    return env;
   }
 
   /** B2③ 掩码公共面：任意文本（evidence 与错误 reason）逐 pattern 掩码（命中即 ***，明文不出模块）。 */
