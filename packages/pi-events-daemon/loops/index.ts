@@ -194,22 +194,86 @@ export function startLoops(ctx: LoopsCtx): LoopsHandle {
   const errors: unknown[] = [];
   let draining = false;
 
+  /** C2 onTransition.on 匹配：状态名/状态集命中 to；"from>to" 转换全等（空 from 侧 = 首转换 from=null）。 */
+  const onTransitionMatches = (on: string | string[], from: string | null, to: string): boolean =>
+    (Array.isArray(on) ? on : [on]).some((p) => {
+      const gt = p.indexOf(">");
+      if (gt === -1) return p === to;
+      return (gt === 0 ? from === null : p.slice(0, gt) === from) && p.slice(gt + 1) === to;
+    });
+
+  /**
+   * C2 on-transition 编排（终审裁定⑥）：transition 消费成功后查该实体 profile 的 onTransition 规则
+   * （数据 = ctx.registry 注入 ProfileRegistryEntry.onTransition）→ 匹配 from/to → 经 L0 队列执行
+   * subscribe/close。防递归（结构不可达）：编排只产 subscribe/cancel 请求，两者 apply 不再查 onTransition；
+   * 规则链的后续转换由真实 probe 翻转沿驱动（edge-trigger 终止）。坏规则记 errors 不死队列。
+   */
+  const orchestrateOnTransition = (ref: EntityRef, from: string | null, to: string): void => {
+    const entity = ctx.store.getEntity(ref.type, ref.key);
+    if (!entity?.profileId) return;
+    const entry = (ctx.registry ?? []).find((r) => r.profileId === entity.profileId);
+    for (const rule of entry?.onTransition ?? []) {
+      if (!onTransitionMatches(rule.on, from, to)) continue;
+      if (rule.action === "close") {
+        const template = (rule.params as { template?: unknown } | undefined)?.template;
+        const open = ctx.store
+          .querySubscriptions({ entityRefType: ref.type, entityRefKey: ref.key })
+          .filter((s) => s.closedAt === undefined && (template === undefined || s.template === template));
+        for (const s of open) {
+          void doSubmit({ kind: "cancel", req: { subscriptionId: s.subscriptionId, reason: "cancelled", now: ctx.clock.now() } });
+        }
+      } else if (rule.action === "subscribe") {
+        const p = (rule.params ?? {}) as Record<string, unknown>;
+        if (typeof p.sessionId !== "string" || typeof p.template !== "string" || typeof p.check !== "string") {
+          errors.push(new Error(`onTransition subscribe rejected: params 需 sessionId/template/check（profile ${entity.profileId}）`));
+          continue;
+        }
+        void doSubmit({
+          kind: "subscribe",
+          req: {
+            sessionId: p.sessionId,
+            entityRef: ref,
+            template: p.template,
+            check: p.check,
+            profileId: entity.profileId,
+            now: ctx.clock.now(),
+            opts: { origin: "auto" }, // 编排订阅非会话动作：auto origin（投递编址走 scope 活跃 session 面）
+          },
+        });
+      } else {
+        errors.push(new Error(`onTransition 未知 action "${rule.action}"（profile ${entity.profileId}）——规则跳过`));
+      }
+    }
+  };
+
   const apply = (req: MutationRequest): unknown => {
     switch (req.kind) {
-      case "transition":
-        return kernel.transition(req.ref, req.verdict, req.occurredAt);
-      case "consumeIntent":
-        return kernel.consumeIntent(req.intent);
-      case "publish":
+      case "transition": {
+        const r = kernel.transition(req.ref, req.verdict, req.occurredAt);
+        if (r) orchestrateOnTransition(req.ref, r.from, r.to);
+        return r;
+      }
+      case "consumeIntent": {
+        const o = kernel.consumeIntent(req.intent);
+        if (o.kind === "appended") orchestrateOnTransition(req.intent.entityRef, o.event.from, o.event.to);
+        return o;
+      }
+      case "publish": {
         // 票 40：publish op 消费终点（kernel.publish = #31 agent 断言路径；同态无身份变化 = null 无事件）
-        return kernel.publish(req.ref, req.to, {
+        const r = kernel.publish(req.ref, req.to, {
           contentIdentity: req.contentIdentity,
           payload: req.payload,
           occurredAt: req.occurredAt,
         });
-      case "register":
+        if (r) orchestrateOnTransition(req.ref, r.from, r.to);
+        return r;
+      }
+      case "register": {
         // 票 40 评审 F1/F2：register（含 firstTransition 同事务）唯一经 L0 串行——直调面不暴露变更方法
-        return kernel.register(req.req);
+        const r = kernel.register(req.req);
+        if (r.event) orchestrateOnTransition(req.req.entityRef, r.event.from, r.event.to); // status op 首转换/状态变更同链
+        return r;
+      }
       case "unregister":
         // 终审裁定②：retired 标记唯一写路径（L4 ephemeral 清理消费方，7d 到期判定留在 L4）
         return kernel.unregister(req.ref);
@@ -289,6 +353,7 @@ export function startLoops(ctx: LoopsCtx): LoopsHandle {
     // 达标翻转沿：先转换提交，提交成功才落 settle（评审 F7——提交失败进 errors，
     // thresholdStates 保留旧值，下一个同 verdict 重评重试，不因内存先行 settled 而永丢转换）
     const result = kernel.transition(ref, req.verdict, req.occurredAt);
+    if (result) orchestrateOnTransition(ref, result.from, result.to); // C2：probe 翻转沿转换同链编排
     const actions = slotSubs.map((s) => ({
       sub: s,
       action: onVerdict({ once: s.once ?? false, twoStage: s.flip ?? false }, s.phase ?? "startup", req.verdict),

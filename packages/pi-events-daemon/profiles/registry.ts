@@ -93,6 +93,7 @@ export class ProfileRegistry {
         usage: t.usage,
       })),
       sideEffectPatterns: def.sideEffectPatterns,
+      onTransition: def.onTransition,
     }));
   }
 

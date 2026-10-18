@@ -1463,3 +1463,71 @@ describe("终审修复② — L4 ephemeral retired 标记经 kernel.unregister�
     loops.stop();
   });
 });
+
+describe("终审修复⑥ — C2 on-transition 编排（transition 消费成功后查 profile 规则 → 经 L0 执行 subscribe/close）", () => {
+  const ORCH_RULES = [{ on: "passed", action: "close" }] as const;
+  const orchRegistry = (rules: ReadonlyArray<{ on: string | string[]; action: string; params?: Record<string, unknown> }>) => [
+    { profileId: "p-orch", templates: [], onTransition: rules },
+  ];
+
+  it("fixture profile onTransition {on:passed, action:close}：transition passed 后该实体开放订阅自动关闭（非 once——不走 onVerdict 关闭面）", () => {
+    const store = createMemoryStore();
+    store.putEntity({ type: REF.type, key: REF.key, state: "waiting", profileId: "p-orch" });
+    const loops = startLoops(makeCtx(store, { registry: orchRegistry(ORCH_RULES as unknown as Parameters<typeof orchRegistry>[0]) }));
+    subVia(loops);
+    expect(store.querySubscriptions({})[0].closedAt).toBeUndefined();
+    loops.submit({ kind: "transition", ref: REF, verdict: "passed", occurredAt: at(1) });
+    const sub = store.querySubscriptions({})[0];
+    expect(sub.closedAt).toBeDefined();
+    expect(sub.closedReason).toBe("cancelled"); // 编排关闭 = op 侧语义（封闭集 reason）
+    expect(loops.errors).toHaveLength(0);
+    loops.stop();
+  });
+
+  it("probe passed 翻转同链生效（US-13 自动链 stub 全链）：probeVerdict 翻转沿转换后订阅自动关闭；waiting 中性不触发", () => {
+    const store = createMemoryStore();
+    store.putEntity({ type: REF.type, key: REF.key, state: "waiting", profileId: "p-orch" });
+    const loops = startLoops(makeCtx(store, { registry: orchRegistry(ORCH_RULES as unknown as Parameters<typeof orchRegistry>[0]) }));
+    subVia(loops, {}, { opts: { schedule: { type: "interval", intervalMs: 60_000 } } });
+    loops.ingestProbeResult({ slotKey: SLOT_KEY, verdict: "waiting", reason: "exit 1", evidence: "", durationMs: 1 });
+    expect(store.querySubscriptions({})[0].closedAt).toBeUndefined(); // waiting 中性：无转换无编排
+    loops.ingestProbeResult({ slotKey: SLOT_KEY, verdict: "passed", reason: "exit 0", evidence: "", durationMs: 1 });
+    const sub = store.querySubscriptions({})[0];
+    expect(sub.closedAt).toBeDefined();
+    expect(sub.closedReason).toBe("cancelled");
+    loops.stop();
+  });
+
+  it("action:subscribe 经 params 编排新订阅（origin auto）；参数缺失记 errors 不死队列；无规则 profile 不受影响", () => {
+    const store = createMemoryStore();
+    store.putEntity({ type: REF.type, key: REF.key, state: "waiting", profileId: "p-orch" });
+    const loops = startLoops(makeCtx(store, {
+      registry: orchRegistry([
+        { on: "failed", action: "subscribe", params: { sessionId: "s-orch", template: TPL, check: "orch-check" } },
+        { on: "passed", action: "close" },
+      ]),
+    }));
+    subVia(loops); // session-1 的订阅：passed 时被编排关闭，failed 时新增编排订阅
+    loops.submit({ kind: "transition", ref: REF, verdict: "failed", occurredAt: at(1) });
+    const open = store.querySubscriptions({}).filter((s) => s.closedAt === undefined);
+    expect(open).toHaveLength(2);
+    const orch = open.find((s) => s.sessionId === "s-orch");
+    expect(orch).toMatchObject({ check: "orch-check", origin: "auto", template: TPL });
+    loops.submit({ kind: "transition", ref: REF, verdict: "passed", occurredAt: at(2) });
+    // 编排 close 关的是该实体全部开放订阅（含编排自产的 auto 订阅——同实体规则集一致语义）
+    expect(store.querySubscriptions({}).every((s) => s.closedAt !== undefined)).toBe(true);
+    loops.stop();
+  });
+
+  it("防递归：编排只产 subscribe/cancel 请求，两者 apply 不再查 onTransition（结构不可达）；未知 action 记 errors 跳过", () => {
+    const store = createMemoryStore();
+    store.putEntity({ type: REF.type, key: REF.key, state: "waiting", profileId: "p-orch" });
+    const loops = startLoops(makeCtx(store, {
+      registry: orchRegistry([{ on: ["passed", "failed"], action: "explode" }]),
+    }));
+    loops.submit({ kind: "transition", ref: REF, verdict: "passed", occurredAt: at(1) });
+    expect(loops.errors).toHaveLength(1); // 未知 action 不死队列，规则跳过
+    expect(loops.errors[0]).toBeInstanceOf(Error);
+    loops.stop();
+  });
+});

@@ -185,6 +185,7 @@ describe("组 3：I-01 状态集传值——注入 kernel 后闭集校验查注�
             usage: "监视文件判定器",
           },
         ],
+        onTransition: [],
       },
     ]);
   });

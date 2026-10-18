@@ -184,6 +184,9 @@ export interface ProfileRegistryEntry {
   }>;
   /** 已知副作用 pattern（子串匹配）：validate 命中出 warning 不阻断（ADR 0004 checks-are-probes）。 */
   sideEffectPatterns?: readonly string[];
+  /** C2 on-transition 编排规则（数据声明；schema profile.onTransition 投影）：消费归 loops L0——
+   *  transition 消费成功后匹配 from/to，编排动作（subscribe/close）经 L0 队列执行。 */
+  onTransition?: ReadonlyArray<{ on: string | string[]; action: string; params?: Record<string, unknown> }>;
 }
 
 /** fanOut 运行时 deps：活跃 session 是 socket runtime（transport 持有），经调用注入（kernel 不碰 socket）。 */
