@@ -236,6 +236,28 @@ function dualSuite(label: string, make: () => Store & { close?(): void }): void 
       s.close?.();
     });
 
+    it("notifications 实体/会话过滤（spec 定死三维）：billboard entityRef 两维 + sessionId 经 delivery 行 + 组合", () => {
+      const s = make();
+      const bb = (type: string, key: string): string =>
+        JSON.stringify({ entityRef: { type, key }, verdict: "passed", count: 1, evidence: "" });
+      s.tx((tx) => {
+        tx.putNotification({ notificationId: "n1", eventSeq: 1, billboardJson: bb("a", "1") });
+        tx.putNotification({ notificationId: "n2", eventSeq: 5, billboardJson: bb("a", "2") });
+        tx.putNotification({ notificationId: "n3", eventSeq: 9, billboardJson: bb("b", "1") });
+        // sessionId 维度载体 = delivery 行（notifications 行无会话列——半连接语义）
+        tx.putDelivery({ notificationId: "n1", sessionId: "sess1", state: "pending", recordEpoch: 1 });
+        tx.putDelivery({ notificationId: "n2", sessionId: "sess2", state: "pending", recordEpoch: 1 });
+      });
+      expect(s.notifications({ entityRefType: "a" }).map((n) => n.notificationId)).toEqual(["n1", "n2"]);
+      expect(s.notifications({ entityRefKey: "1" }).map((n) => n.notificationId)).toEqual(["n1", "n3"]);
+      expect(s.notifications({ sessionId: "sess1" }).map((n) => n.notificationId)).toEqual(["n1"]);
+      // 组合：实体两维 + 会话同时收口；实体+时间窗；实体+会话零命中
+      expect(s.notifications({ entityRefType: "a", entityRefKey: "2", sessionId: "sess2" }).map((n) => n.notificationId)).toEqual(["n2"]);
+      expect(s.notifications({ entityRefType: "a", sinceEventSeq: 3 }).map((n) => n.notificationId)).toEqual(["n2"]);
+      expect(s.notifications({ entityRefType: "b", sessionId: "sess1" })).toHaveLength(0);
+      s.close?.();
+    });
+
     it("onWrite 返回取消订阅：解除后不再触发、重复解除幂等（票 25 Finding 2：stop 不累积监听器）", () => {
       const s = make();
       const log: string[] = [];

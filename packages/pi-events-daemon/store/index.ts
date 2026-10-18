@@ -116,6 +116,8 @@ export type RunLedgerRow = {
 /** 查询过滤器（形状最小化，字段语义见票面）。 */
 export type EntityFilter = { type?: string; parentType?: string; parentKey?: string; retired?: boolean };
 export type SubscriptionFilter = { entityRefType?: string; entityRefKey?: string; sessionId?: string; origin?: SubscriptionRow["origin"] };
+/** notifications 三维过滤（spec store.md：按实体/会话/时间窗）：entityRef 两维比对 billboard JSON 内
+ *  entityRef；sessionId 载体在 deliveries 行（notifications 行无会话列）= 半连接（该会话存在投递行）。 */
 export type NotificationFilter = { entityRefType?: string; entityRefKey?: string; sessionId?: string; sinceEventSeq?: number };
 export type DeliveryFilter = { sessionId?: string; state?: DeliveryRowData["state"] | readonly DeliveryRowData["state"][] };
 
@@ -175,6 +177,9 @@ export interface Store {
   /** evidence op 点查（票 40 enumeration-completion）：ref 精确读——FTS 搜索对含 ":" 的确定性
    *  event id 形 ref 会解析成 FTS 列过滤器（no such column），点查与搜索是两个语义面。 */
   getEvidence(evidenceRef: string): EvidenceRow | undefined;
+  /** notifications 三维过滤（spec store.md：按实体/会话/时间窗，L3 Verify 扫描与 query op 共用）：
+   *  entityRefType/entityRefKey 比对 billboard JSON 内 entityRef；sessionId = 该会话存在 delivery 行；
+   *  sinceEventSeq 严格大于（增量下推）。 */
   notifications(filter: NotificationFilter): NotificationRow[];
   deadLetters(filter: DeliveryFilter): DeliveryRowData[];
   // run_ledger（D2 建表裁定）
@@ -460,9 +465,21 @@ export class MemoryStore implements Store {
   }
 
   notifications(filter: NotificationFilter): NotificationRow[] {
-    return [...this.tables.notifications.values() as IterableIterator<NotificationRow>].filter((n) =>
-      (filter.sinceEventSeq === undefined || n.eventSeq > filter.sinceEventSeq),
-    );
+    return [...this.tables.notifications.values() as IterableIterator<NotificationRow>].filter((n) => {
+      if (filter.sinceEventSeq !== undefined && n.eventSeq <= filter.sinceEventSeq) return false;
+      if (filter.entityRefType !== undefined || filter.entityRefKey !== undefined) {
+        const ref = billboardRefOf(n.billboardJson);
+        if (filter.entityRefType !== undefined && ref.type !== filter.entityRefType) return false;
+        if (filter.entityRefKey !== undefined && ref.key !== filter.entityRefKey) return false;
+      }
+      if (filter.sessionId !== undefined) {
+        const delivered = [...this.tables.deliveries.values() as IterableIterator<DeliveryRowData>].some(
+          (d) => d.notificationId === n.notificationId && d.sessionId === filter.sessionId,
+        );
+        if (!delivered) return false;
+      }
+      return true;
+    });
   }
 
   private matchDelivery(d: DeliveryRowData, filter: DeliveryFilter): boolean {
@@ -472,6 +489,15 @@ export class MemoryStore implements Store {
       if (!states.includes(d.state)) return false;
     }
     return true;
+  }
+}
+
+/** billboard JSON → entityRef（缺损/畸形 = 空对象——fanOut 是唯一写者恒带 entityRef，缺损行在实体过滤下不命中）。 */
+function billboardRefOf(json: string): { type?: string; key?: string } {
+  try {
+    return (JSON.parse(json) as { entityRef?: { type?: string; key?: string } }).entityRef ?? {};
+  } catch {
+    return {};
   }
 }
 

@@ -630,12 +630,27 @@ export class SqliteStore implements Store {
   }
 
   notifications(filter: NotificationFilter): NotificationRow[] {
-    if (filter.sinceEventSeq === undefined) {
-      return (this.st("SELECT * FROM notifications ORDER BY rowid").all() as RawRow[]).map(rowToNotification);
+    // 三维 WHERE（spec store.md：按实体/会话/时间窗）：实体两维下推 json_extract(billboard_json)；
+    // sessionId 载体在 deliveries 行 = EXISTS 半连接；event_seq 下推 idx_notifications_event_seq。
+    const where: string[] = [];
+    const params: Array<string | number> = [];
+    if (filter.sinceEventSeq !== undefined) {
+      where.push("event_seq > ?");
+      params.push(filter.sinceEventSeq);
     }
-    // 增量下推 SQL：WHERE event_seq 走 idx_notifications_event_seq，不搬全表进内存；
-    // 索引扫描按 event_seq 序返回，JS 按 rowid 重排保持 fake 插入序（结果集已收敛，排序代价可忽略）
-    const rows = this.st("SELECT rowid, * FROM notifications WHERE event_seq > ?").all(filter.sinceEventSeq) as RawRow[];
-    return rows.sort((a, b) => Number(a.rowid) - Number(b.rowid)).map(rowToNotification);
+    if (filter.entityRefType !== undefined) {
+      where.push("json_extract(billboard_json, '$.entityRef.type') = ?");
+      params.push(filter.entityRefType);
+    }
+    if (filter.entityRefKey !== undefined) {
+      where.push("json_extract(billboard_json, '$.entityRef.key') = ?");
+      params.push(filter.entityRefKey);
+    }
+    if (filter.sessionId !== undefined) {
+      where.push("EXISTS (SELECT 1 FROM deliveries d WHERE d.notification_id = notifications.notification_id AND d.session_id = ?)");
+      params.push(filter.sessionId);
+    }
+    const sql = `SELECT rowid, * FROM notifications${where.length ? ` WHERE ${where.join(" AND ")}` : ""} ORDER BY rowid`;
+    return (this.st(sql).all(...params) as RawRow[]).map(rowToNotification);
   }
 }
