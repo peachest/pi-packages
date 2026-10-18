@@ -222,6 +222,45 @@ describe("票 40 组 1：两段式 ack 双路径 e2e + extension→daemon 全链
     await stopGracefully(child);
   });
 
+  it("B1 必测①：status 登记→自动发事件全链（US-13/25）：status op 写入 → Transitioned 事件 → fanOut → delivery 行", { timeout: 40_000 }, async () => {
+    const rt = makeRuntime();
+    const SESSION = "s1";
+    const sessionFile = makeSessionFile(rt.dir, SESSION);
+    const child = await bootDaemon(rt, JSON.stringify([{ sessionId: SESSION, sessionFile }]));
+    const client = await connect(rt);
+    const pushes: Array<{ method: string; params: unknown }> = [];
+    client.onNotification((method, params) => pushes.push({ method, params }));
+    client.startSession(SESSION); // 先活跃：status 驱动的自动事件可直投
+
+    // 前半链：status op 登记 → Transitioned 事件自动发（from=null 首转换）
+    const reg = (await client.request("status", { type: "fixture:widget", key: "external/9", state: "waiting" })) as {
+      event?: { eventId: string; from: string | null; to: string };
+    };
+    expect(reg.event).toMatchObject({ eventId: "evt:fixture:widget:external/9#1", from: null, to: "waiting" });
+
+    // 后半链显式认领：订阅在场 + status 状态变更（waiting→failed）→ 自动发事件 → fanOut → delivery 行
+    (await client.request("subscribe", {
+      entityRef: "fixture:widget:external/9",
+      check: "exit 1", // 恒 waiting：探针不产生事件，链路由 status 驱动（与 publish 驱动同管道）
+      opts: { template: "watch", sessionId: SESSION, on: "failed", schedule: { type: "interval", every: 60_000 } },
+    })) as unknown;
+    const change = (await client.request("status", { type: "fixture:widget", key: "external/9", state: "failed" })) as {
+      event?: { eventId: string; from: string | null; to: string };
+    };
+    expect(change.event).toMatchObject({ eventId: "evt:fixture:widget:external/9#2", from: "waiting", to: "failed" });
+    // fanOut → delivery 行：status 自动事件与 publish 事件同投递管道；failed 绕行（I2）立即推，
+    // 推送成功后两段式段一簿记 pending→accepted（在线 session）
+    await waitFor(() => rt.db.getDelivery("evt:fixture:widget:external/9#2", SESSION) !== undefined, "status 自动事件 delivery 行物化（fanOut）");
+    await waitFor(() => pushes.some((p) => p.method === "wake"), "status 自动事件 wake push（failed 绕行立即推）");
+    await waitFor(() => rt.db.getDelivery("evt:fixture:widget:external/9#2", SESSION)?.state === "accepted", "两段式段一簿记");
+    expect(pushes[0]).toMatchObject({
+      method: "wake",
+      params: { sessionId: SESSION, entries: [{ notificationId: "evt:fixture:widget:external/9#2", verdict: "failed" }] },
+    });
+
+    await stopGracefully(child);
+  });
+
   it("parked→drain→verified：离线事件 parked→SESSION_START drain→wake→transcript 收口", { timeout: 40_000 }, async () => {
     const rt = makeRuntime();
     const SESSION = "s1";
@@ -309,6 +348,13 @@ describe("票 40 组 2：五条顺序约束端到端断言", () => {
     // eventSeq 全局单调无缺口（双轨写入轨单写者；e1 链先行消费 1-2）
     const seqs = e2Events.map((e) => e.event!.eventSeq);
     expect(seqs).toEqual(seqs.map((_, i) => seqs[0] + i));
+    // B1 必测②：seq 双轨单调——eventSeq（store 写入轨）与 decisionOrder（mutation line 决策轨，
+    // 内嵌确定性 event id `#N` 尾段）各自严格递增无重复、独立推进（两轨各从自己的真相源断言，互不替代）
+    const orders = e2Events.map((e) => {
+      const id = e.event!.eventId;
+      return Number(id.slice(id.lastIndexOf("#") + 1));
+    });
+    expect(orders).toEqual(orders.map((_, i) => orders[0] + i)); // decisionOrder 严格递增无重复
 
     // --- 缓存提交序：publish 全部落账后 query 立即可见已提交终态（缓存投影与提交同步） ---
     const q = (await client.request("query", { entityRef: "fixture:order:external/e2" })) as {
