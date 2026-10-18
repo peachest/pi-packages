@@ -216,20 +216,44 @@ describe("票 16 — completion queue 回流顺序与提交序一致", () => {
   });
 });
 
-describe("票 16 — B2② no_proxy 全局注入 / B2③ token 脱敏", () => {
-  it("noProxy 注入 exec env（no_proxy + NO_PROXY 大小写双形，内网 checker 免代理）", () => {
+describe("票 16 — B2② env 白名单 / B2③ token 脱敏", () => {
+  it("noProxy 注入白名单 env（no_proxy + NO_PROXY 大小写双形 + PATH/HOME 必要项，内网 checker 免代理）", () => {
     const exec = new DeferredExec();
     new prober.Prober({ exec, clock: new fx.FakeClock(), onResult: () => undefined, noProxy: "gl.corp,.internal" }).probe({
       slotKey: "s",
       check: "curl -sf http://gl.corp/api/health",
     });
-    expect(exec.calls[0].opts?.env).toEqual({ no_proxy: "gl.corp,.internal", NO_PROXY: "gl.corp,.internal" });
+    const env = exec.calls[0].opts?.env!;
+    expect(env.no_proxy).toBe("gl.corp,.internal");
+    expect(env.NO_PROXY).toBe("gl.corp,.internal");
+    expect(env.PATH).toBeTruthy();
+    expect(env.HOME).toBeTruthy();
   });
 
-  it("未配 noProxy → 不传 env（fx 叠加语义不空转）", () => {
+  it("未配 noProxy → env 仍为白名单全量（PATH/HOME 必要项恒在，无 no_proxy 键）", () => {
     const exec = new DeferredExec();
     new prober.Prober({ exec, clock: new fx.FakeClock(), onResult: () => undefined }).probe({ slotKey: "s", check: "true" });
-    expect(exec.calls[0].opts?.env).toBeUndefined();
+    const env = exec.calls[0].opts?.env!;
+    expect(env.PATH).toBeTruthy();
+    expect(env.HOME).toBeTruthy();
+    expect(env.no_proxy).toBeUndefined();
+    expect(env.NO_PROXY).toBeUndefined();
+  });
+
+  it("env 白名单不继承全环境（ambient 变量不入 checker env——终审 prober Gap 1 回归）", () => {
+    process.env.PROBER_AMBIENT_SECRET = "leak-me-not";
+    try {
+      const exec = new DeferredExec();
+      new prober.Prober({ exec, clock: new fx.FakeClock(), onResult: () => undefined, noProxy: "gl.corp" }).probe({
+        slotKey: "s",
+        check: "true",
+      });
+      const env = exec.calls[0].opts?.env!;
+      expect(env).not.toHaveProperty("PROBER_AMBIENT_SECRET");
+      expect(env.PATH).toBeTruthy(); // 白名单形状成立（非 undefined 全量继承）
+    } finally {
+      delete process.env.PROBER_AMBIENT_SECRET;
+    }
   });
 
   it("stdout 命中 glpat token → 掩码 ***，明文不出模块（B2③ 执行点）", async () => {

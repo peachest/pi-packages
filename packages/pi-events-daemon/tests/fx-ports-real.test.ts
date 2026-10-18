@@ -59,6 +59,21 @@ describe("fx 真壳存在性证明（票 12 断言 1）", () => {
     expect(failed.stderr).toBe("boom\n");
   });
 
+  it("ShellExec: env 给出=整环境替换（白名单沙箱面），缺省=继承 process.env", async () => {
+    const prev = process.env.FX_AMBIENT_VAR;
+    process.env.FX_AMBIENT_VAR = "ambient";
+    try {
+      const exec: fx.Exec = new fx.ShellExec();
+      const replaced = await exec.run("echo X=$FX_AMBIENT_VAR F=$FROM_WHITELIST", { env: { FROM_WHITELIST: "1" } });
+      expect(replaced.stdout).toBe("X= F=1\n"); // ambient 变量不继承（替换语义）
+      const inherited = await exec.run("echo X=$FX_AMBIENT_VAR");
+      expect(inherited.stdout).toBe("X=ambient\n"); // 缺省继承
+    } finally {
+      if (prev === undefined) delete process.env.FX_AMBIENT_VAR;
+      else process.env.FX_AMBIENT_VAR = prev;
+    }
+  });
+
   it("ShellExec: timeoutMs 到点杀进程并标记 timedOut", async () => {
     const exec: fx.Exec = new fx.ShellExec();
     const res = await exec.run("sleep 2", { timeoutMs: 50 });

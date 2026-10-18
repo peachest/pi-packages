@@ -16,7 +16,7 @@ export class ShellExec implements Exec {
         shell: true,
         // detached:true → sh 为新进程组长：超时杀形经 kill(-pid) 覆盖整组，sh 的子进程（curl/sleep…）无从豁免
         detached: true,
-        env: opts?.env ? { ...process.env, ...opts.env } : undefined,
+        env: opts?.env ? { ...opts.env } : undefined,
       });
       let stdout = "";
       let stderr = "";
