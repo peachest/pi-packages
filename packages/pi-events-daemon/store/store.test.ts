@@ -202,6 +202,35 @@ function dualSuite(label: string, make: () => Store & { close?(): void }): void 
       s.close?.();
     });
 
+    it("票 42 评审 F2/F3/F4：outboxSeqByRef 聚合源=events.eventSeq（outbox 行序号独立可分叉）+ 无歧义对键（ref 串可含 '/'）", () => {
+      const s = make();
+      s.tx((tx) => {
+        // 碰撞对：`${type}/${key}` 模板拼接下 (a, external/external/x) 与 (a/external, external/x) 同串
+        tx.putEvent(ev(7, { eventId: "evt:a:external/external/x#7", entityRefType: "a", entityRefKey: "external/external/x" }));
+        tx.putOutbox({ notificationId: "evt:a:external/external/x#7", eventSeq: 9 });
+        tx.putEvent(ev(8, { eventId: "evt:a/external:external/x#8", entityRefType: "a/external", entityRefKey: "external/x" }));
+        tx.putOutbox({ notificationId: "evt:a/external:external/x#8", eventSeq: 8 });
+      });
+      // F2：聚合源 = events.eventSeq（SQLite MAX(e.event_seq) 同源）；F3/F4：两对各自成组不互相吞
+      expect(s.outboxSeqByRef().sort((x, y) => x.eventSeq - y.eventSeq)).toEqual([
+        { entityRefType: "a", entityRefKey: "external/external/x", eventSeq: 7 },
+        { entityRefType: "a/external", entityRefKey: "external/x", eventSeq: 8 },
+      ]);
+      s.close?.();
+    });
+
+    it("票 42 评审 F1：outboxMaxDecisionOrder = notificationId `#N` 尾段 max（valid integer；与写入轨独立恢复）", () => {
+      const s = make();
+      expect(s.outboxMaxDecisionOrder()).toBe(0);
+      s.tx((tx) => {
+        tx.putEvent(ev(7));
+        tx.putOutbox({ notificationId: ev(7).eventId, eventSeq: 9 }); // 双轨分叉：决策轨 7 / 写入轨 9
+        tx.putOutbox({ notificationId: "evt:gitlab:mr-1#no-suffix", eventSeq: 11 }); // 无有效尾段：不计决策轨
+      });
+      expect(s.outboxMaxDecisionOrder()).toBe(7); // 非 outboxMaxEventSeq（9/11）——锁步分配 ≠ 位点相等
+      s.close?.();
+    });
+
     it("run_ledger：get/put/list + epoch 字段结构落位（D2）", () => {
       const s = make();
       s.putRunLedger({ slotKey: "gitlab:mr/external/1|gitlab-pipeline", epoch: 3, refcount: 2, consecutiveFails: 1 });
@@ -218,7 +247,7 @@ function dualSuite(label: string, make: () => Store & { close?(): void }): void 
         "tx", "appendEventIfMissing",
         "getEntity", "putEntity", "getSubscription", "putSubscription",
         "getDelivery", "putDelivery", "getProbeSpec", "putProbeSpec",
-        "queryEntities", "outboxBatch", "outboxSeqByRef", "outboxMaxEventSeq", "pendingDeliveries", "evidenceSearch",
+        "queryEntities", "outboxBatch", "outboxSeqByRef", "outboxMaxEventSeq", "outboxMaxDecisionOrder", "pendingDeliveries", "evidenceSearch",
         "notifications", "deadLetters",
         "getRunLedger", "putRunLedger", "listRunLedger",
         "onWrite",

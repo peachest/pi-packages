@@ -572,6 +572,17 @@ export class SqliteStore implements Store {
     return Number(r?.m ?? 0);
   }
 
+  outboxMaxDecisionOrder(): number {
+    // `#N` 尾段解析无 SQL rindex（'#' 可出现于 ref 串）：单列拉回 JS 取 valid max（与 MemoryStore 同语义）
+    let max = 0;
+    for (const r of this.st("SELECT notification_id FROM outbox").all() as RawRow[]) {
+      const id = String(r.notification_id);
+      const order = Number(id.slice(id.lastIndexOf("#") + 1));
+      if (Number.isInteger(order) && order > max) max = order;
+    }
+    return max;
+  }
+
   pendingDeliveries(filter: DeliveryFilter): DeliveryRowData[] {
     return this.deliveriesByState("pending", filter);
   }

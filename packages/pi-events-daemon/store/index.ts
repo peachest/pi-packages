@@ -181,8 +181,14 @@ export interface TxView extends TxOps {
   outboxBatch(limit: number): OutboxRow[];
   /** 票 42 下推：outbox⨝events 每实体最新 eventSeq（kernel query latestSeq join 专用，替代 MAX_SAFE_INTEGER 全表拉）。 */
   outboxSeqByRef(): OutboxSeqByRefRow[];
-  /** 票 42 下推：outbox eventSeq 全局尾迹（max，空库 = 0）——eventSeq/decisionOrder 双轨同锁步分配，kernel/loops 位点恢复共用。 */
+  /** 票 42 下推：outbox eventSeq 全局尾迹（max，空库 = 0）——写入轨（eventSeq）位点恢复专用
+   *  （Kernel 内部消费）；决策轨见 outboxMaxDecisionOrder（票 42 评审 F1：双轨独立推进，
+   *  consumeIntent 可持久分叉 decisionOrder=7/eventSeq=9，锁步分配 ≠ 位点相等，不可互推）。 */
   outboxMaxEventSeq(): number;
+  /** 票 42 评审 F1：决策轨位点恢复——outbox notificationId `#N` 尾段 max（valid integer，
+   *  无有效尾段行跳过；空库 = 0）。mutation line 持久形态 = 事件流（票 10/25 落地语义），
+   *  重放不重新编号；与写入轨 outboxMaxEventSeq 各自独立恢复。 */
+  outboxMaxDecisionOrder(): number;
   pendingDeliveries(filter: DeliveryFilter): DeliveryRowData[];
   /** drain D2a 输入面：parked 行读取（与 pendingDeliveries/deadLetters 同构直过滤；票 11 最小增补）。 */
   parkedDeliveries(filter: DeliveryFilter): DeliveryRowData[];
@@ -424,10 +430,12 @@ export class MemoryStore implements Store {
     for (const o of this.tables.outbox.values() as IterableIterator<OutboxRow>) {
       const ev = this.tables.events.get(o.notificationId) as EventRow | undefined;
       if (!ev) continue;
-      const k = `${ev.entityRefType}/${ev.entityRefKey}`;
+      // 对键 JSON 对组（票 42 评审 F3/F4：ref 串可含 '/'，模板拼接有歧义碰撞）；
+      // 聚合源 = events.eventSeq（票 42 评审 F2：SQLite MAX(e.event_seq) 同源，outbox 行序号可独立写）
+      const k = JSON.stringify([ev.entityRefType, ev.entityRefKey]);
       const cur = latest.get(k);
-      if (cur === undefined || o.eventSeq > cur.eventSeq) {
-        latest.set(k, { entityRefType: ev.entityRefType, entityRefKey: ev.entityRefKey, eventSeq: o.eventSeq });
+      if (cur === undefined || ev.eventSeq > cur.eventSeq) {
+        latest.set(k, { entityRefType: ev.entityRefType, entityRefKey: ev.entityRefKey, eventSeq: ev.eventSeq });
       }
     }
     return [...latest.values()];
@@ -437,6 +445,16 @@ export class MemoryStore implements Store {
     let max = 0;
     for (const o of this.tables.outbox.values() as IterableIterator<OutboxRow>) {
       if (o.eventSeq > max) max = o.eventSeq;
+    }
+    return max;
+  }
+
+  outboxMaxDecisionOrder(): number {
+    // `#N` 尾段 = deterministicEventId 内嵌 decisionOrder（票 10/25）；'#' 可出现于 ref 串 → lastIndexOf
+    let max = 0;
+    for (const o of this.tables.outbox.values() as IterableIterator<OutboxRow>) {
+      const order = Number(o.notificationId.slice(o.notificationId.lastIndexOf("#") + 1));
+      if (Number.isInteger(order) && order > max) max = order;
     }
     return max;
   }
