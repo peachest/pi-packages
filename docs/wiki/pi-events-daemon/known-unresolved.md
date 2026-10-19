@@ -16,8 +16,10 @@
    loops 落盘铸造 evidenceRef（ProbeResult.evidenceRef 由 loops 落盘后铸造的 D4 分工，最后一公里未接）。
 2. **ad-hoc ephemeral L4 retired 清理域未注入**：ephemeral 实体 terminal→retired 标记与 7d 到期清残留
    （票 28 L4）只覆盖 profile 形态；ad-hoc 声明的 ephemeral 清理域未在组合根注入。
-3. **subscribe url 多参数 keyGenerator**：url 路由的 keyGenerator 需 extension instantiate 随帧补齐
-   （票 32 路由 × 票 34 extension 接缝）。
+3. ~~**subscribe url 多参数 keyGenerator**~~ → **已收口（票 49/GitHub #114，2026-10-19）**：resolve 命中时
+   urlPattern 命名捕获组随帧提取为参数字典，op-dispatch 并入 instantiate——多参数 URL 模板
+   （如 gitlab mr 双参数 project+mr_id）的 check 代入与 fields keyGenerator 消费均经此面。
+   多余参数 load 即拒（urlPattern 捕获组 ⊄ params → 拒载）；缺失参数 instantiate invalid-params 拒绝。
 4. ~~**query scope/session 过滤部分接入**~~ → **已收口（票 44/GitHub #109，2026-10-19）**：query op
    返回体补订阅行明细（`subscriptions` 数组：subscriptionId/sessionId/entityRef/实体现值/check/on/
    schedule(probe spec join)/thresholds/phase/backlog(session×实体 join)/createdAt），过滤面

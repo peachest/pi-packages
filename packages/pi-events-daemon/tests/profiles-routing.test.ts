@@ -70,7 +70,33 @@ describe("组 1：resolve URL 路由——唯一命中绑定 / 多命中列候�
     reg.load(makeDef({
       templates: [{ name: "watch", check: "cat {path}", params: {}, usage: "u", urlPattern: "files/\\d+" }],
     }));
-    expect(reg.resolve("https://x.test/files/7")).toEqual({ ok: true, profileId: "fixture-widget", template: "watch" });
+    expect(reg.resolve("https://x.test/files/7")).toEqual({
+      ok: true,
+      profileId: "fixture-widget",
+      template: "watch",
+      params: {},
+    });
+  });
+
+  it("票 49/#114：urlPattern 命名捕获组随命中提取为参数字典（多参数 URL 路由）", () => {
+    const reg = makeRegistry();
+    reg.load(makeDef({
+      keyGenerator: { kind: "fields", fields: ["project", "mr_id"] },
+      templates: [{
+        name: "mr",
+        check: "glab mr view {project} {mr_id}",
+        params: { project: "项目路径", mr_id: "MR 编号" },
+        usage: "u",
+        urlPattern: "(?<project>[^/]+/[^/]+)/-/merge_requests/(?<mr_id>\\d+)",
+      }],
+    }));
+    const r = reg.resolve("https://x.test/grp/proj/-/merge_requests/42");
+    expect(r).toEqual({
+      ok: true,
+      profileId: "fixture-widget",
+      template: "mr",
+      params: { project: "grp/proj", mr_id: "42" },
+    });
   });
 
   it("多命中 → ambiguous 错误列全部候选，要求显式 template", () => {
@@ -113,11 +139,13 @@ describe("组 2：双 GitLab host 显式路由——模板 host 字段精确匹�
       ok: true,
       profileId: "gl-a",
       template: "mr",
+      params: {},
     });
     expect(reg.resolve("https://gitlab.b.com/grp/proj/-/merge_requests/42")).toEqual({
       ok: true,
       profileId: "gl-b",
       template: "mr",
+      params: {},
     });
   });
 

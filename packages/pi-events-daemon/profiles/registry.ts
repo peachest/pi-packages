@@ -177,10 +177,20 @@ export class ProfileRegistry {
       }
       if (t.schedule !== undefined) this.checkSchedule(t.schedule, `templates[${i}].schedule`, fail);
       if (t.urlPattern !== undefined) {
+        let re: RegExp;
         try {
-          new RegExp(t.urlPattern);
+          re = new RegExp(t.urlPattern);
         } catch (err) {
           fail(`templates[${i}].urlPattern 不可编译: ${err instanceof Error ? err.message : String(err)}`);
+        }
+        // 票 49/#114：urlPattern 命名捕获组是 url 订阅的参数来源，必须全都在模板 params 声明——
+        // 未声明的组名 = 多余参数，load 即拒（否则 instantiate 拿到模板不认识的参数字典）
+        const groupNames = [...t.urlPattern.matchAll(/\(\?<([A-Za-z0-9_]+)>/g)].map((m) => m[1]!);
+        const undeclared = groupNames.filter((n) => !(n in t.params));
+        if (undeclared.length > 0) {
+          fail(
+            `templates[${i}].urlPattern 捕获组 [${undeclared.join(", ")}] 未在 params 声明（声明: [${Object.keys(t.params).join(", ")}]）`,
+          );
         }
       }
     });

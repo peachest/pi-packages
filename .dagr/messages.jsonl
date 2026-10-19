@@ -1,0 +1,2 @@
+{"authority":"decide","destination":{"kind":"pane","target":"w3:p1"},"id":"msg-ef7ceddde1466220","queued_at_ms":1792385277556,"revision":"2026-10-19T03:54:30Z","run":"run-eda-arch-split-v01","starter":"use-judgment","task":"T42","text":"Use your best judgment on this and continue within the current scope.\n","type":"message_queued"}
+{"at_ms":1792385277865,"id":"msg-ef7ceddde1466220","run":"run-eda-arch-split-v01","type":"message_delivered"}

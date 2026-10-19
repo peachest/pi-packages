@@ -94,6 +94,26 @@ describe("组 1：load 三路——合法 / 缺字段 / 坏 schema（schema 校�
     expect(reg.profiles()).toHaveLength(0);
   });
 
+  it("票 49/#114：urlPattern 捕获组未在 params 声明（多余参数）→ load 即拒", () => {
+    const reg = makeRegistry();
+    expect(() =>
+      reg.load(
+        makeDef({
+          templates: [
+            {
+              name: "watch",
+              check: "c",
+              params: { path: "p" },
+              usage: "u",
+              urlPattern: "^(?<project>[^/]+)/(?<mr_id>\\d+)$",
+            },
+          ],
+        }),
+      ),
+    ).toThrow(/捕获组 \[project, mr_id\] 未在 params 声明/);
+    expect(reg.profiles()).toHaveLength(0);
+  });
+
   it("cron 语义校验经注入解析器（validateCron）——坏表达式 load 即拒", () => {
     const reg = new ProfileRegistry({
       validate: validateValue,

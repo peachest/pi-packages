@@ -179,7 +179,12 @@ export function createOpDispatch(deps: OpDispatchDeps): (frame: OpRequestFrame) 
             if (opts.template !== undefined && resolved.template !== String(opts.template)) {
               throw new Error(`subscribe rejected: template "${String(opts.template)}" 与 URL 路由命中 "${resolved.template}" 不一致`);
             }
-            const inst = instantiateProfile(registry.profiles(), resolved.profileId, resolved.template, { url: String(params.url) });
+            // 票 49/#114：urlPattern 命名捕获组随命中提取为参数字典，随帧并入 instantiate——
+            // 多参数 URL 模板（如 gitlab mr 双参数）的 check 代入与 keyGenerator 消费均经此面
+            const inst = instantiateProfile(registry.profiles(), resolved.profileId, resolved.template, {
+              url: String(params.url),
+              ...resolved.params,
+            });
             if (!inst.ok) throw new Error(`subscribe rejected: ${inst.reason}`);
             ref = inst.entityRef;
             check = inst.check;

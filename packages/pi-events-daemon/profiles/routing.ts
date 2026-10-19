@@ -2,6 +2,7 @@
  * profiles — URL 路由 + ephemeral 键 + 订阅侧拒检 + schedule 换算（票 32）。
  *
  * resolve（#31 L107）：url → (profile, template) 唯一命中绑定；多命中报错列候选要求显式 template；
+ * 票 49/#114：urlPattern 命名捕获组随命中提取为参数字典（多参数 URL 模板路由的完整形态）。
  * 零命中报错列可用模板。双 GitLab host：模板 host 字段精确匹配，零 fallback 猜测。
  *
  * ephemeral（I-02 / ADR 0002 例外）：ad-hoc 条件实体 key = sha1(check + schedule + cwd)——
@@ -19,7 +20,7 @@ import type { ProfileDefinition, ScheduleData } from "./types.ts";
 // ---------------------------------------------------------------------------
 
 export type ResolveResult =
-  | { ok: true; profileId: string; template: string }
+  | { ok: true; profileId: string; template: string; params: Record<string, string> }
   | { ok: false; error: "ambiguous" | "no-match"; reason: string };
 
 export function resolveUrl(defs: readonly ProfileDefinition[], url: string): ResolveResult {
@@ -29,7 +30,7 @@ export function resolveUrl(defs: readonly ProfileDefinition[], url: string): Res
   } catch {
     host = null; // 非 URL 输入：host 未知 → 带 host 约束的模板一律不命中（零猜测）
   }
-  const candidates: { profileId: string; template: string }[] = [];
+  const candidates: { profileId: string; template: string; params: Record<string, string> }[] = [];
   for (const def of defs) {
     for (const tpl of def.templates) {
       if (!tpl.urlPattern) continue;
@@ -39,9 +40,15 @@ export function resolveUrl(defs: readonly ProfileDefinition[], url: string): Res
       } catch {
         continue; // load 已拒不可编译 pattern；防御双保险
       }
-      if (!re.test(url)) continue;
+      const m = re.exec(url);
+      if (!m) continue;
       if (tpl.host !== undefined && host !== tpl.host) continue;
-      candidates.push({ profileId: def.id, template: tpl.name });
+      // 命名捕获组 → 参数字典（票 49/#114）；load 已执法组名 ⊆ 模板 params，此处仅收集非 undefined 命中
+      const params: Record<string, string> = {};
+      for (const [name, value] of Object.entries(m.groups ?? {})) {
+        if (value !== undefined) params[name] = value;
+      }
+      candidates.push({ profileId: def.id, template: tpl.name, params });
     }
   }
   if (candidates.length === 1) return { ok: true, ...candidates[0] };

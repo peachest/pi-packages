@@ -64,6 +64,7 @@ interface Rig {
   exec: InstanceType<typeof FakeExec>;
   loops: daemon.loops.LoopsHandle;
   dispatch: ReturnType<typeof createOpDispatch>;
+  registry: InstanceType<typeof ProfileRegistry>;
 }
 
 const makeRig = (): Rig => {
@@ -83,7 +84,7 @@ const makeRig = (): Rig => {
   });
   const prober = new Prober({ exec, clock, onResult: () => undefined }); // runOnce 专用（组合根同构）
   const dispatch = createOpDispatch({ loops, store, registry, clock, prober });
-  return { store, exec, loops, dispatch };
+  return { store, exec, loops, dispatch, registry };
 };
 
 const frame = (op: string, params: Record<string, unknown>) =>
@@ -147,6 +148,65 @@ describe("票 40 评审 F4 — URL 订阅模板名回填（槽身份不裂）", 
     for (const row of rows) expect(row.template).toBe("mr");
     const slot = slotKeyOf(ref, "mr");
     expect(rig.store.getProbeSpec(slot)).toBeDefined();
+  });
+});
+
+describe("票 49/#114 — 多参数 URL subscribe：urlPattern 捕获组随帧入 instantiate（keyGenerator/check 双消费）", () => {
+  const MULTI_DEF = {
+    ...URL_DEF,
+    id: "gl-multi",
+    entityType: "gitlab:mr-multi",
+    // fields keyGenerator 消费 urlPattern 捕获的全部参数（票 32 路由 × 票 34 extension 接缝完整形态）
+    keyGenerator: { kind: "fields", fields: ["project", "mr_id"] },
+    templates: [
+      {
+        name: "mr",
+        check: "glab mr view {project} {mr_id}",
+        params: { project: "项目路径", mr_id: "MR 编号" },
+        usage: "mr 判定",
+        urlPattern: "(?<project>[^/]+/[^/]+)/-/merge_requests/(?<mr_id>\\d+)",
+        host: "gl.multi.com",
+      },
+    ],
+  };
+
+  const makeMultiRig = () => {
+    const rig = makeRig();
+    rig.registry.load(MULTI_DEF);
+    return rig;
+  };
+
+  it("双参数 URL → 实体铸造 key 消费全部参数，check 双占位符代入", async () => {
+    const rig = makeMultiRig();
+    const r = (await rig.dispatch(
+      frame("subscribe", { url: "https://gl.multi.com/grp/proj/-/merge_requests/42", opts: { sessionId: "s1" } }),
+    )) as { subscribed: boolean; entityRef: string; check?: string };
+    expect(r.subscribed).toBe(true);
+    expect(r.entityRef).toBe("gitlab:mr-multi:external/grp/proj/42");
+    const rows = rig.store.querySubscriptions({ sessionId: "s1" });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.check).toBe("glab mr view 'grp/proj' '42'");
+  });
+
+  it("参数缺失：urlPattern 未捕获模板必填参数 → subscribe 拒绝（invalid-params）且无实体残留", async () => {
+    const rig = makeMultiRig();
+    // URL 不匹配命名组形态 → 路由层零命中；改用可命中但组全可选的形态检验缺参拒绝
+    rig.registry.load({
+      ...MULTI_DEF,
+      id: "gl-optional",
+      entityType: "gitlab:mr-opt",
+      templates: [
+        {
+          ...MULTI_DEF.templates[0],
+          urlPattern: "opt/mr(?:/(?<mr_id>\\d+))?",
+          host: "gl.opt.com",
+        },
+      ],
+    });
+    await expect(
+      rig.dispatch(frame("subscribe", { url: "https://gl.opt.com/opt/mr", opts: { sessionId: "s1" } })),
+    ).rejects.toThrow(/缺少必填参数: project/);
+    expect(rig.store.queryEntities({})).toHaveLength(0);
   });
 });
 
