@@ -8,7 +8,7 @@
  *    有限重试（票 37）、kernel Intent 消费重试三者相互独立，不混用。
  *  - G 档：wake 不保证 exactly-once——notificationId 去重兜底（尽力投递 + 幂等注入）。
  *  - fork no-inherit：fork 会话不建立长连接（transport SESSION_START 注册时决定，零推送）。
- *  - 传输失败兜底：socket 通道不可达 → HarnessFault 通道降级（ui.notify 尽力通知，去重：每次断供只通知一次，票 46），
+ *  - 传输失败兜底：socket 通道不可达 → HarnessFault 通道降级（ui.notify 尽力通知，每轮断供一次），
  *    后台退避重试不放弃（daemon 恢复后自愈回升）。
  *  - batch 呈现（#31）：合流条目 billboard = count + 实体 + verdict；evidence 超 2KB 截断标记。
  */
@@ -79,12 +79,14 @@ export interface WakeDeps {
   env?: NodeJS.ProcessEnv;
   /** session 内提示注入（index.ts 绑 pi.sendMessage）。 */
   inject: (message: WakeInjection) => void;
-  /** HarnessFault 降级通知面（index.ts 绑 ctx.ui.notify）。去重：每次断供只通知一次（票 46）。 */
+  /** HarnessFault 降级通知面（index.ts 绑 ctx.ui.notify）。 */
   notify: (message: string, type?: "info" | "warning" | "error") => void;
-  /** 连接沿回调（票 46）：建立 true / 断连或连接失败 false——footer 状态位消费。 */
-  onEdge?: (connected: boolean) => void;
   /** 退避等待（缺省真延时；测试注入即时返回并记录节拍）。 */
   sleep?: (ms: number) => Promise<void>;
+  /** 票 45：daemon "transitioned" 沿广播旁路回调（wake.ts 只消费 "wake" 信封，沿原样上抛）。 */
+  onTransitioned?: (params: unknown) => void;
+  /** 连接沿回调（票 46）：建立 true / 断连或连接失败 false——footer 状态位消费。 */
+  onEdge?: (connected: boolean) => void;
 }
 
 export interface WakeHandle {
@@ -111,7 +113,6 @@ export function startWake(deps: WakeDeps): WakeHandle {
   let stopped = false;
   let attempts = 0;
   let connected = false;
-  let degraded = false; // 降级通知去重位（票 46）
   let client: EventsClient | null = null;
   let closeWait: Promise<void> | null = null;
 
@@ -150,6 +151,7 @@ export function startWake(deps: WakeDeps): WakeHandle {
         deps.onEdge?.(true);
         client.onNotification((method, params) => {
           if (method === "wake") onWake(params);
+          else if (method === "transitioned") deps.onTransitioned?.(params);
         });
         client.startSession(deps.sessionId); // 长连接建立 = SESSION_START（含重连 snapshot 冲刷）
         closeWait = new Promise<void>((resolveClose) => client!.onClose(resolveClose));
@@ -164,13 +166,13 @@ export function startWake(deps: WakeDeps): WakeHandle {
         deps.onEdge?.(false);
         if (stopped) return;
       }
-      // 断连/连接失败：降级提示（票 46 去重：每次断供只通知一次，恢复后复位），退避后重试
+      // 断连/连接失败：降级提示去重（每次断供只通知一次，恢复后复位；票 46）
       if (!degraded) {
-        degraded = true;
         deps.notify(
           `pi-events-daemon: wake 通道降级（socket ${socketPath} 不可达）——推送暂不可达，后台重试中`,
           "warning",
         );
+        degraded = true;
       }
       await sleep(wakeBackoffMs(failures));
       failures++;

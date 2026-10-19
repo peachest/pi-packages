@@ -2,7 +2,7 @@
   "name": "pi-events-daemon-extension",
   "version": "0.0.1",
   "private": true,
-  "description": "pi-events-daemon extension — agent 入口（票 34-37）：9 op 模型可见工具（schema 与 03 同源）+ D1a 完整 JSON Schema 校验客户端先行 + .pi/events.json auto 订阅声明链 + wake 长连接注入 + 惰性拉起/短连接重试/batch 呈现",
+  "description": "pi-events-daemon extension — agent 入口（票 34-37）：9 op 模型可见工具（schema 与 03 同源）+ D1a 完整 JSON Schema 校验客户端先行 + .pi/events.json auto 订阅声明链 + wake 长连接注入 + 惰性拉起/短连接重试/batch 呈现 + 事件 dock（票 45：ctrl+alt+e / /events-dock 面板 + footer 订阅计数 hint，沿驱动刷新）",
   "//": "typescript/vitest 由仓库根 devDependencies 供给（npm workspaces hoist），包内不重复声明；校验走根链 npm run lint:boundaries && tsc --noEmit && vitest run",
   "type": "module",
   "main": "./index.ts",

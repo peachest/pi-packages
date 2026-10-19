@@ -106,6 +106,9 @@ _Avoid_: 订阅列表直读 store
 **Footer status（footer 状态位）**:
 extension 在 pi footer 的常驻状态位 `setStatus("pi-events")`，只显示 daemon 存活，无更多状态（订阅明细归票 45 dock）。三态对齐 herdr indicators 视觉语法：`● pi-events running` / `○ pi-events idle`（socket 不存在=未启动，首操作自动拉起） / `✗ pi-events down`（socket 在但连接失败）。零副作用探测：session_start 只读 socket+一次握手，不 spawn daemon（惰性拉起语义不变）。沿驱动刷新：session_start 探测、op 副作用（成功/业务错误=running，传输失败按 socket 存在性归类）、wake 连接沿；同态不重绘。降级 notify 去重：每次断供只通知一次，恢复复位。（票 46，#111）
 _Avoid_: daemon health check（不是轮询健康检查，是沿驱动状态位）, footer polling
+**事件 dock**:
+票 45：pi TUI 内的 daemon 活动面板（extension 注册快捷键 ctrl+alt+e / 命令 /events-dock → ctx.ui.custom overlay）——本 session 订阅明细（订阅行明细）+ Transitioned 沿最近记录 + parked/dlq 计数 + footer hint（`⏻ N subs · M parked`，setStatus "pi-events-dock" 段）。沿驱动刷新（沿广播旁路），零副作用纪律：本 session 无 daemon 接触前不探测不显段。与 bg dock 不共用骨架只对齐姿势（ADR 0009）。
+_Avoid_: 与 bg dock 共享面板；footer hint 主动探测 socket；轮询刷新
 
 ### 角色
 
