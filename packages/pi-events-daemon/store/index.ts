@@ -122,9 +122,11 @@ export type NotificationFilter = { entityRefType?: string; entityRefKey?: string
 export type DeliveryFilter = { sessionId?: string; state?: DeliveryRowData["state"] | readonly DeliveryRowData["state"][] };
 
 /** 事务句柄：fn 内通过它读写，返回值即提交内容。 */
-export interface TxView {
-  getEvent(eventId: string): EventRow | undefined;
-  putEvent(row: EventRow): void;
+/**
+ * TxOps — 事务内外共享的行读写原语（终审架构深化 41：单点声明，TxView/Store extends）。
+ * 新增方法写这里一次，两接口自动获得——同步成本 5 处 → 4 处（TxView/Store/MemoryStore/SqliteStore，dualSuite 断言自动覆盖）。
+ */
+export interface TxOps {
   getEntity(type: string, key: string): EntityRow | undefined;
   putEntity(row: EntityRow): void;
   getSubscription(subscriptionId: string): SubscriptionRow | undefined;
@@ -142,11 +144,17 @@ export interface TxView {
   // --- 票 28 删除面（enumeration-completion，2026-10-16 派发裁定：票 09 "无 delete" 故意后置在此收口）---
   // staged 删除原语，提交语义（X1 原子/update_hook 等价回调）与 put* 一致。
   deleteEvidence(evidenceRefs: readonly string[]): void;
-  deleteNotification(notificationId: string): boolean;
   deleteEntity(type: string, key: string): boolean;
 }
 
-export interface Store {
+/**
+ * TxView — 事务内读写视图：TxOps 全量 + 事务独有原语（events 表直读/直写、notifications 行删除）。
+ */
+export interface TxView extends TxOps {
+  getEvent(eventId: string): EventRow | undefined;
+  putEvent(row: EventRow): void;
+  deleteNotification(notificationId: string): boolean;
+}export interface Store extends TxOps {
   /** 事务包装：fn 抛错 = 全部回滚（X1 注入点=fn 执行中途）。返回值透传。 */
   tx<T>(fn: (tx: TxView) => T): T;
   /** 事件追加幂等：同 eventId 跳过返回 skipped；异内容（sameEventContent 语义）= corruption 抛错。 */
@@ -188,7 +196,6 @@ export interface Store {
   listRunLedger(): RunLedgerRow[];
   // 票 28 读面：L3 verify 扫描输入 + evidence 按期查询（store spec：清理执行归 loops，store 提供按期查询）
   /** accepted 行读取（pendingDeliveries/parkedDeliveries/deadLetters 同构直过滤）。 */
-  acceptedDeliveries(filter: DeliveryFilter): DeliveryRowData[];
   /** recordedAt < cutoffMs 的 evidence 行（严格小于，期界不含）。 */
   evidenceOlderThan(cutoffMs: number): EvidenceRow[];
   // --- 票 28 删除面（enumeration-completion，同 TxView 注；便捷路径各自单事务）---
