@@ -101,6 +101,12 @@ _Avoid_: edge push 与 wake 混用；轮询刷新
 票 44：query 返回体的 `subscriptions` 数组——开放订阅随过滤面（sessionId/scope/entityRef）返回，携实体现值/probe spec 槽节奏（runnerSlotKey join）/thresholds/phase/backlog（session×实体 join）。订阅读侧归一：面板与脚本不再 store 直读。
 _Avoid_: 订阅列表直读 store
 
+### 呈现
+
+**Footer status（footer 状态位）**:
+extension 在 pi footer 的常驻状态位 `setStatus("pi-events")`，只显示 daemon 存活，无更多状态（订阅明细归票 45 dock）。三态对齐 herdr indicators 视觉语法：`● pi-events running` / `○ pi-events idle`（socket 不存在=未启动，首操作自动拉起） / `✗ pi-events down`（socket 在但连接失败）。零副作用探测：session_start 只读 socket+一次握手，不 spawn daemon（惰性拉起语义不变）。沿驱动刷新：session_start 探测、op 副作用（成功/业务错误=running，传输失败按 socket 存在性归类）、wake 连接沿；同态不重绘。降级 notify 去重：每次断供只通知一次，恢复复位。（票 46，#111）
+_Avoid_: daemon health check（不是轮询健康检查，是沿驱动状态位）, footer polling
+
 ### 角色
 
 **Profile**:
