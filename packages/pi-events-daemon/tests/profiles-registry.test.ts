@@ -162,7 +162,7 @@ describe("组 3：I-01 状态集传值——注入 kernel 后闭集校验查注�
     );
     expect([...reg.states()].sort()).toEqual(["alpha", "beta", "green", "red"]);
 
-    const kernel = new Kernel(createMemoryStore(), reg.states(), 0, { registry: reg.entries() });
+    const kernel = new Kernel(createMemoryStore(), reg.states(), 0);
     expect(kernel.register({ entityRef: REF, profileId: "fixture-widget", state: "green" }).created).toBe(true);
     expect(() =>
       kernel.register({ entityRef: { type: "fixture:widget", key: "external/x" }, profileId: "fixture-widget", state: "purple" }),
@@ -251,5 +251,99 @@ describe("组 4：B7 状态改名迁移——迁移声明产出 + 无映射拒�
         }),
       ),
     ).toThrow(/ghost/);
+  });
+});
+
+// =============================================================================
+// 票 42 — validate/templates 静态面（票 11 组 4 自 kernel.test.ts 迁入：owner 归位 profiles；
+// kernel 面测试受 eda-kernel-deps 禁 import profiles，故经包根 barrel 消费纯函数。
+// 断言不变；调用点 kernel.validate/templates → validateEntry/profileTemplates）。
+
+const { profileTemplates, validateEntry } = daemon.profiles;
+
+// 票 11 fake registry（静态面数据注入，I-01：零 profile import、零具体 profile 名）
+const REGISTRY = [
+  {
+    profileId: "fixture-profile",
+    templates: [
+      {
+        name: "fixture-tpl",
+        entityType: "fixture:widget",
+        states: ["passed", "failed", "waiting"],
+        params: ["target"],
+        usage: "fixture usage",
+      },
+      { name: "fixture-tpl-b", entityType: "fixture:gadget", states: ["passed", "failed"], usage: "b" },
+    ],
+    sideEffectPatterns: ["fixture-destructive"],
+  },
+] as const;
+
+describe("票 11 组 4：validate 三类错误 + templates 注册表清单（票 42 迁 profiles 静态面）", () => {
+  it("validate 三类错误：profile/template 未找到（列可用选项）/缺必填参数/ad-hoc 缺 check 声明", () => {
+    expect(validateEntry(REGISTRY, { profile: "nope", check: "true" })).toMatchObject({
+      ok: false,
+      error: "profile-not-found",
+    });
+    expect((validateEntry(REGISTRY, { profile: "nope", check: "true" }) as { reason: string }).reason).toContain("fixture-profile");
+    expect(validateEntry(REGISTRY, { profile: "fixture-profile", template: "nope-tpl" })).toMatchObject({
+      ok: false,
+      error: "profile-not-found",
+    });
+    expect(validateEntry(REGISTRY, { profile: "fixture-profile", template: "fixture-tpl" })).toMatchObject({
+      ok: false,
+      error: "invalid-params",
+    });
+    expect(validateEntry(REGISTRY, { profile: "fixture-profile" })).toMatchObject({
+      ok: false,
+      error: "checker-declaration",
+    });
+  });
+
+  it("validate ADR 0004：已知副作用 pattern 命中 → warning 不阻断（ok:true）；干净 check 零 warning", () => {
+    expect(validateEntry(REGISTRY, { profile: "fixture-profile", check: "fixture-destructive-cmd --force" })).toEqual({
+      ok: true,
+      warnings: [expect.stringContaining("fixture-destructive")],
+    });
+    expect(validateEntry(REGISTRY, { profile: "fixture-profile", check: "curl -sf http://x/health" })).toEqual({
+      ok: true,
+      warnings: [],
+    });
+  });
+
+  it("templates：注册表注入内容的元数据清单（profileId 附带）+ profile 过滤 + 未知 profile 拒绝", () => {
+    expect(profileTemplates(REGISTRY, )).toEqual({
+      templates: [
+        { profileId: "fixture-profile", name: "fixture-tpl", entityType: "fixture:widget", states: ["passed", "failed", "waiting"], params: ["target"], usage: "fixture usage" },
+        { profileId: "fixture-profile", name: "fixture-tpl-b", entityType: "fixture:gadget", states: ["passed", "failed"], usage: "b" },
+      ],
+    });
+    expect(profileTemplates(REGISTRY, "fixture-profile").templates).toHaveLength(2);
+    expect(() => profileTemplates(REGISTRY, "nope")).toThrow(/fixture-profile/);
+  });
+
+  it("validate 歧义声明拒绝：template 与 check 同时提供 → checker-declaration（二选一，warnings 不再从 check 推导）", () => {
+    const res = validateEntry(REGISTRY, {
+      profile: "fixture-profile",
+      template: "fixture-tpl",
+      params: { target: "x" },
+      check: "fixture-destructive-cmd",
+    });
+    expect(res).toMatchObject({ ok: false, error: "checker-declaration" });
+    expect((res as { reason: string }).reason).toContain("二选一");
+  });
+
+  it("validate 必填参数不吃原型链：params ['constructor'] + {} → invalid-params（own-property 判定，票 04 同修法）", () => {
+    const registry = [
+      {
+        profileId: "proto-profile",
+        templates: [
+          { name: "proto-tpl", entityType: "fixture:widget", states: ["passed", "failed"], params: ["constructor"], usage: "u" },
+        ],
+      },
+    ] as const;
+    const res = validateEntry(registry, { profile: "proto-profile", template: "proto-tpl", params: {} });
+    expect(res).toMatchObject({ ok: false, error: "invalid-params" });
+    expect((res as { reason: string }).reason).toContain("constructor");
   });
 });

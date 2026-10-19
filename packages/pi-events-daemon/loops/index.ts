@@ -37,7 +37,6 @@ export { cronNextMs } from "../domain/intent.ts";
 import {
   Kernel,
   type CancelRequest,
-  type ProfileRegistryEntry,
   type RegisterRequest,
   type SubscribeDeps,
   type SubscribeRequest,
@@ -82,7 +81,7 @@ export interface LoopsCache {
   readonly states: ReadonlyMap<string, string | null>;
 }
 
-/** startLoops 注入面（票 25：fx 四端口 + Store；states/registry/ownerEpoch 是 kernel 构造数据）。 */
+/** startLoops 注入面（票 25：fx 四端口 + Store；states/ownerEpoch 是 kernel 构造数据，registry 是 onTransition 编排注入）。 */
 export interface LoopsCtx {
   clock: Clock;
   exec: Exec;
@@ -92,8 +91,14 @@ export interface LoopsCtx {
   store: Store;
   /** I-01：封闭状态集（数据，profiles 装载产物） */
   states: ReadonlySet<string>;
-  /** I-01：profile 注册表静态面（kernel validate/templates 消费） */
-  registry?: ReadonlyArray<ProfileRegistryEntry>;
+  /** I-01：profile 注册表静态面。票 42 裁定：onTransition 编排消费的结构子集——正典形状 =
+   *  profiles ProfileRegistryEntry（组合根经 entries() 注入）；loops 禁 import profiles
+   *  （eda-loops-deps），经结构类型消费注入数据；kernel validate/templates 消费已随票 42
+   *  迁 profiles 静态面，kernel 构造不再收注册表。 */
+  registry?: ReadonlyArray<{
+    profileId: string;
+    onTransition?: ReadonlyArray<{ on: string | string[]; action: string; params?: Record<string, unknown> }>;
+  }>;
   /** I12：本 daemon 实例世代（缺省 0 = 未接线） */
   ownerEpoch?: number;
   /** 票 28 L3：I9 唯一权威点接线（adapter + session→transcript 解析，transport 注册面在组合根接入）。
@@ -141,10 +146,12 @@ export interface LoopsHandle {
   sessionEnd(sessionId: string): void;
   /** 停机：L0 队列关闭、提交回调脱钩、L1 调度定时器取消（幂等）。 */
   stop(): void;
-  /** 票 40 评审 F1：op 直调面只余读侧（query/evidence/templates + validate 静态面）——变更类
-   *  （subscribe/transition/register）只经 L0 submit 单一写路径，stopped 后 submit 结算拒绝，
-   *  不再存在绕过队列的活变更方法。kernel 实例仍由 startLoops 私有构造（票 25 裁定不变）。 */
-  readonly kernel: Pick<Kernel, "query" | "evidence" | "templates" | "validate">;
+  /** 票 40 评审 F1：op 直调面只余读侧（query/evidence）——变更类（subscribe/transition/register）
+   *  只经 L0 submit 单一写路径，stopped 后 submit 结算拒绝，不再存在绕过队列的活变更方法。
+   *  票 42：读模型实现迁 kernel/query.ts（Pick 收窄至读侧）；templates/validate 静态面迁
+   *  profiles 注册表（组合根/ op-dispatch 直调 ProfileRegistry 面）。
+   *  kernel 实例仍由 startLoops 私有构造（票 25 裁定不变）。 */
+  readonly kernel: Pick<Kernel, "query" | "evidence">;
 }
 
 /** startLoops——loops 模块唯一入口：装配 L0（唯一写者）；L1-L4 后续票在此挂入。 */
@@ -155,7 +162,6 @@ export function startLoops(ctx: LoopsCtx): LoopsHandle {
   // 重放不重新编号（原 recoverDecisionOrderTail 全表拉删除）。
   const kernel = new Kernel(ctx.store, ctx.states, ctx.store.outboxMaxEventSeq(), {
     ownerEpoch: ctx.ownerEpoch,
-    registry: ctx.registry,
   });
 
   // 缓存：唯一写点 = 提交回调（store 契约：提交成功后按提交序同步触发，fake/SQLite 两实现一致）。
@@ -1010,13 +1016,12 @@ export function startLoops(ctx: LoopsCtx): LoopsHandle {
     cache: { states },
     housekeeping: housekeepingView,
     errors,
-    // 票 40 评审 F1：运行期真收窄（非仅类型 Pick）——变更类方法不再可从 handle 直调，
+    // 票 40 评审 F1：运行期真收窄（非仅类型 Pick）——变更类方法不再可从 handle 直调；
+    // 票 42：读模型面收窄至 query/evidence（templates/validate 静态面迁 profiles，组合根直调）。
     // 内部消费用闭包内 kernel 变量不受影响
     kernel: {
       query: kernel.query.bind(kernel),
       evidence: kernel.evidence.bind(kernel),
-      templates: kernel.templates.bind(kernel),
-      validate: kernel.validate.bind(kernel),
     },
     stop(): void {
       stopped = true;

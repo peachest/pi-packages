@@ -11,7 +11,7 @@
  * B7 状态改名迁移数据面：load 产出迁移声明（migrations()）；执行归 kernel.migrateState/loops
  * 唯一写路径（禁原地改名）；版本升级删除状态而无映射 → 拒加载（无映射遇旧状态）。
  */
-import type { ProfileRegistryEntry } from "../kernel/index.ts";
+import type { ValidateRequest, ValidateResult } from "../kernel/index.ts";
 import type { MigrationDeclaration, ProfileDefinition, ProfileValidator } from "./types.ts";
 import { everyToMs, resolveUrl } from "./routing.ts";
 import { instantiateProfile } from "./instantiate.ts";
@@ -31,6 +31,40 @@ export interface ProfileRegistryOpts {
 function claimedTypes(def: ProfileDefinition): string[] {
   return [def.entityType, ...def.templates.map((t) => t.entityType).filter((t): t is string => t !== undefined)];
 }
+
+/**
+ * profile 注册表条目（I-01：profile 静态面作为数据声明注入）。票 42 owner 归位：原
+ * kernel/index.ts 定义迁此，profiles→kernel 反向形状依赖消除；onTransition 编排数据消费归
+ * loops（结构子集注入），状态集仍走构造注入 states。消费面：templates 清单 / validate
+ * 三类错误 + ADR 0004 副作用 pattern。
+ */
+export interface ProfileRegistryEntry {
+  profileId: string;
+  templates: ReadonlyArray<{
+    name: string;
+    entityType: string;
+    states: readonly string[];
+    params?: readonly string[];
+    schedule?: unknown;
+    usage?: string;
+  }>;
+  /** 已知副作用 pattern（子串匹配）：validate 命中出 warning 不阻断（ADR 0004 checks-are-probes）。 */
+  sideEffectPatterns?: readonly string[];
+  /** C2 on-transition 编排规则（数据声明；schema profile.onTransition 投影）：消费归 loops L0——
+   *  transition 消费成功后匹配 from/to，编排动作（subscribe/close）经 L0 队列执行。 */
+  onTransition?: ReadonlyArray<{ on: string | string[]; action: string; params?: Record<string, unknown> }>;
+}
+
+/** 模板元数据清单条目（templates 渐进式披露面；票 42 自 kernel 迁入）。 */
+export type TemplateMeta = {
+  profileId: string;
+  name: string;
+  entityType: string;
+  states: readonly string[];
+  params?: readonly string[];
+  schedule?: unknown;
+  usage?: string;
+};
 
 /** cron every 之外的时长字面量校验在 checkSchedule 内联（schema oneOf D1a 表达不了）。 */
 export class ProfileRegistry {
@@ -80,7 +114,7 @@ export class ProfileRegistry {
     return new Set([...this.defs.values()].flatMap((d) => d.states));
   }
 
-  /** I-01 kernel 注册表静态面（validate/templates 消费；schedule 保持资产形态——op 回显同形）。 */
+  /** I-01 kernel 注册表静态面（schedule 保持资产形态——op 回显同形）。 */
   entries(): ProfileRegistryEntry[] {
     return this.profiles().map((def) => ({
       profileId: def.id,
@@ -95,6 +129,16 @@ export class ProfileRegistry {
       sideEffectPatterns: def.sideEffectPatterns,
       onTransition: def.onTransition,
     }));
+  }
+
+  /** 票 42：静态校验面（validateEntry 消费本注册表 entries；错误分类/ADR 0004 语义同原 kernel.validate）。 */
+  validate(req: ValidateRequest): ValidateResult {
+    return validateEntry(this.entries(), req);
+  }
+
+  /** 票 42：模板元数据清单（profileTemplates 消费本注册表 entries；渐进式披露面）。 */
+  templates(profile?: string): { templates: readonly TemplateMeta[] } {
+    return profileTemplates(this.entries(), profile);
   }
 
   /** B7 迁移声明清单（最新版定义的 stateMigrations 全量）。 */
@@ -206,4 +250,77 @@ export class ProfileRegistry {
       );
     }
   }
+}
+
+/**
+ * 票 42 裁定：validate/templates 静态面自 kernel 迁入——本就只消费注册表 entries 注入（零
+ * store/运行时依赖），属 profile 契约面；eda-profiles-deps 不破坏（唯一 kernel 依赖 =
+ * ValidateRequest/ValidateResult 契约形状 type-only import）。导出纯函数供测试与组合根直呼。
+ */
+
+/** validate（票 11，静态面）：三类错误同步拒（错误信息一律列可用选项）+ ADR 0004 已知
+ *  副作用 pattern 命中出 warning 不阻断。数据全部来自注入 entries（I-01）；live-run
+ *  执行（verdict/durationMs）归 prober，本面不 spawn。 */
+export function validateEntry(
+  entries: ReadonlyArray<ProfileRegistryEntry>,
+  req: ValidateRequest,
+): ValidateResult {
+  const entry = entries.find((r) => r.profileId === req.profile);
+  if (!entry) {
+    return {
+      ok: false,
+      error: "profile-not-found",
+      reason: `profile "${req.profile}" 未找到 — 可用: [${entries.map((r) => r.profileId).sort().join(", ")}]`,
+    };
+  }
+  if (req.template !== undefined && req.check !== undefined) {
+    return {
+      ok: false,
+      error: "checker-declaration",
+      reason: "template 与 check 二选一：模板形态（check 由模板派生）或 ad-hoc 形态（显式声明 check）",
+    };
+  }
+  if (req.template !== undefined) {
+    const tpl = entry.templates.find((t) => t.name === req.template);
+    if (!tpl) {
+      return {
+        ok: false,
+        error: "profile-not-found",
+        reason: `template "${req.template}" 未找到 — 可用: [${entry.templates.map((t) => t.name).join(", ")}]`,
+      };
+    }
+    // own-property 判定（票 04 校验器同修法）：不吃 Object.prototype 原型链（"constructor" 等）；显式 undefined 仍算缺失
+    const provided = req.params ?? {};
+    const missing = (tpl.params ?? []).filter(
+      (p) => !Object.prototype.hasOwnProperty.call(provided, p) || provided[p] === undefined,
+    );
+    if (missing.length > 0) {
+      return { ok: false, error: "invalid-params", reason: `缺少必填参数: ${missing.join(", ")}` };
+    }
+  }
+  const check = req.check;
+  if (check !== undefined && check.trim() === "") {
+    return { ok: false, error: "checker-declaration", reason: "check 声明为空" };
+  }
+  if (check === undefined && req.template === undefined) {
+    return { ok: false, error: "checker-declaration", reason: "ad-hoc 形态必须显式声明 check（模板形态由模板派生）" };
+  }
+  const warnings = (entry.sideEffectPatterns ?? [])
+    .filter((p) => (check ?? "").includes(p))
+    .map((p) => `check 命中已知副作用 pattern "${p}"（ADR 0004：探测零副作用，不阻断）`);
+  return { ok: true, warnings };
+}
+
+/** templates（票 11）：模板元数据清单，全部来自注入 entries（渐进式披露面）。 */
+export function profileTemplates(
+  entries: ReadonlyArray<ProfileRegistryEntry>,
+  profile?: string,
+): { templates: readonly TemplateMeta[] } {
+  if (profile !== undefined && !entries.some((r) => r.profileId === profile)) {
+    throw new Error(`profile "${profile}" 未找到 — 可用: [${entries.map((r) => r.profileId).sort().join(", ")}]`);
+  }
+  const templates = entries
+    .filter((r) => profile === undefined || r.profileId === profile)
+    .flatMap((r) => r.templates.map((t) => ({ profileId: r.profileId, ...t })));
+  return { templates };
 }

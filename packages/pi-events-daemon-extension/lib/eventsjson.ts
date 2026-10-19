@@ -14,7 +14,7 @@ import { createRequire } from "node:module";
 import { readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { instantiateProfile, ProfileRegistry } from "pi-events-daemon/profiles.ts";
-import type { ProfileRegistryEntry } from "pi-events-daemon/kernel.ts";
+import type { ProfileRegistryEntry } from "pi-events-daemon/profiles.ts";
 import type { OpName } from "pi-events-daemon/protocol.ts";
 import { entityRefKeyOf } from "pi-events-daemon/domain.ts";
 import { loadEventsSchema, loadProfileSchema, validateFull, type JsonSchema } from "./schema.ts";

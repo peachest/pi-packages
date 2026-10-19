@@ -594,29 +594,14 @@ describe("票 11 组 3：query——listChildren 单层 + per-entity backlog/dea
   });
 });
 
-// --- 票 11 fake registry（静态面数据注入，I-01：零 profile import、零具体 profile 名）---
-const REGISTRY = [
-  {
-    profileId: "fixture-profile",
-    templates: [
-      {
-        name: "fixture-tpl",
-        entityType: "fixture:widget",
-        states: ["passed", "failed", "waiting"],
-        params: ["target"],
-        usage: "fixture usage",
-      },
-      { name: "fixture-tpl-b", entityType: "fixture:gadget", states: ["passed", "failed"], usage: "b" },
-    ],
-    sideEffectPatterns: ["fixture-destructive"],
-  },
-] as const;
-const kernelWithRegistry = (store: MemStore) => new Kernel(store, VERDICT_STATES, 0, { registry: REGISTRY });
+// --- 票 11 evidence 读侧（票 42：validate/templates 静态面迁 profiles，测试随 owner 迁
+// tests/profiles-registry.test.ts，断言不变）---
+const makeKernel = (store: MemStore) => new Kernel(store, VERDICT_STATES, 0);
 
-describe("票 11 组 4：evidence FTS5 点查 + validate 三类错误 + templates 注册表清单", () => {
+describe("票 11 组 4：evidence FTS5 点查（validate/templates 静态面迁 profiles，票 42）", () => {
   it("evidence 点查：直接 ref 命中（truncated 按 2KB 内联上限判定）；未找到拒绝", () => {
     const store = createMemoryStore();
-    const kernel = kernelWithRegistry(store);
+    const kernel = makeKernel(store);
     store.putEvidence({ evidenceRef: "ev-short", content: "probe ok", recordedAt: 1 });
     store.putEvidence({ evidenceRef: "ev-big", content: "y".repeat(3000), recordedAt: 2 });
     expect(kernel.evidence("ev-short")).toEqual({ content: "probe ok", truncated: false });
@@ -626,7 +611,7 @@ describe("票 11 组 4：evidence FTS5 点查 + validate 三类错误 + template
 
   it("evidence 经 billboard 截断指针解引用：ref=notificationId → 事件 evidenceRef → 全文（指针不被截断吞掉）", () => {
     const store = createMemoryStore();
-    const kernel = kernelWithRegistry(store);
+    const kernel = makeKernel(store);
     store.appendEventIfMissing({
       eventId: EVT1,
       eventSeq: 1,
@@ -639,83 +624,6 @@ describe("票 11 组 4：evidence FTS5 点查 + validate 三类错误 + template
     });
     store.putEvidence({ evidenceRef: "ev-full", content: "z".repeat(3000), recordedAt: 1 });
     expect(kernel.evidence(EVT1)).toEqual({ content: "z".repeat(3000), truncated: true });
-  });
-
-  it("validate 三类错误：profile/template 未找到（列可用选项）/缺必填参数/ad-hoc 缺 check 声明", () => {
-    const store = createMemoryStore();
-    const kernel = kernelWithRegistry(store);
-    expect(kernel.validate({ profile: "nope", check: "true" })).toMatchObject({
-      ok: false,
-      error: "profile-not-found",
-    });
-    expect((kernel.validate({ profile: "nope", check: "true" }) as { reason: string }).reason).toContain("fixture-profile");
-    expect(kernel.validate({ profile: "fixture-profile", template: "nope-tpl" })).toMatchObject({
-      ok: false,
-      error: "profile-not-found",
-    });
-    expect(kernel.validate({ profile: "fixture-profile", template: "fixture-tpl" })).toMatchObject({
-      ok: false,
-      error: "invalid-params",
-    });
-    expect(kernel.validate({ profile: "fixture-profile" })).toMatchObject({
-      ok: false,
-      error: "checker-declaration",
-    });
-  });
-
-  it("validate ADR 0004：已知副作用 pattern 命中 → warning 不阻断（ok:true）；干净 check 零 warning", () => {
-    const store = createMemoryStore();
-    const kernel = kernelWithRegistry(store);
-    expect(kernel.validate({ profile: "fixture-profile", check: "fixture-destructive-cmd --force" })).toEqual({
-      ok: true,
-      warnings: [expect.stringContaining("fixture-destructive")],
-    });
-    expect(kernel.validate({ profile: "fixture-profile", check: "curl -sf http://x/health" })).toEqual({
-      ok: true,
-      warnings: [],
-    });
-  });
-
-  it("templates：注册表注入内容的元数据清单（profileId 附带）+ profile 过滤 + 未知 profile 拒绝", () => {
-    const store = createMemoryStore();
-    const kernel = kernelWithRegistry(store);
-    expect(kernel.templates()).toEqual({
-      templates: [
-        { profileId: "fixture-profile", name: "fixture-tpl", entityType: "fixture:widget", states: ["passed", "failed", "waiting"], params: ["target"], usage: "fixture usage" },
-        { profileId: "fixture-profile", name: "fixture-tpl-b", entityType: "fixture:gadget", states: ["passed", "failed"], usage: "b" },
-      ],
-    });
-    expect(kernel.templates("fixture-profile").templates).toHaveLength(2);
-    expect(() => kernel.templates("nope")).toThrow(/fixture-profile/);
-  });
-
-  it("validate 歧义声明拒绝：template 与 check 同时提供 → checker-declaration（二选一，warnings 不再从 check 推导）", () => {
-    const store = createMemoryStore();
-    const kernel = kernelWithRegistry(store);
-    const res = kernel.validate({
-      profile: "fixture-profile",
-      template: "fixture-tpl",
-      params: { target: "x" },
-      check: "fixture-destructive-cmd",
-    });
-    expect(res).toMatchObject({ ok: false, error: "checker-declaration" });
-    expect((res as { reason: string }).reason).toContain("二选一");
-  });
-
-  it("validate 必填参数不吃原型链：params ['constructor'] + {} → invalid-params（own-property 判定，票 04 同修法）", () => {
-    const store = createMemoryStore();
-    const registry = [
-      {
-        profileId: "proto-profile",
-        templates: [
-          { name: "proto-tpl", entityType: "fixture:widget", states: ["passed", "failed"], params: ["constructor"], usage: "u" },
-        ],
-      },
-    ] as const;
-    const kernel = new Kernel(store, VERDICT_STATES, 0, { registry });
-    const res = kernel.validate({ profile: "proto-profile", template: "proto-tpl", params: {} });
-    expect(res).toMatchObject({ ok: false, error: "invalid-params" });
-    expect((res as { reason: string }).reason).toContain("constructor");
   });
 });
 

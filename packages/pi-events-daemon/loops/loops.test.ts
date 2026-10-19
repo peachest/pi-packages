@@ -1422,12 +1422,12 @@ describe("票 40 评审 F1 — register 经 L0 submit（变更类只经单一写
     ).toThrow(/loops stopped/);
   });
 
-  it("handle.kernel 收窄：直调面只余读方法（变更类 register/transition 不再暴露）", () => {
+  it("handle.kernel 收窄：直调面只余读方法 query/evidence（变更类不暴露；票 42 templates/validate 迁 profiles 静态面）", () => {
     const store = createMemoryStore();
     const loops = startLoops(makeCtx(store));
     expect("register" in loops.kernel).toBe(false);
     expect("transition" in loops.kernel).toBe(false);
-    for (const m of ["query", "evidence", "templates", "validate"] as const) {
+    for (const m of ["query", "evidence"] as const) {
       expect(typeof loops.kernel[m]).toBe("function");
     }
     loops.stop();

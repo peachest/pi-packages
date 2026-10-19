@@ -166,27 +166,6 @@ export class IntentCorruption extends Error {
   }
 }
 
-/**
- * profile 注册表条目（I-01：profile 静态面作为数据声明注入，kernel 零 profile import）。
- * 票 11 消费面：templates 清单 / validate 三类错误 + ADR 0004 副作用 pattern；状态集仍走构造注入 states。
- */
-export interface ProfileRegistryEntry {
-  profileId: string;
-  templates: ReadonlyArray<{
-    name: string;
-    entityType: string;
-    states: readonly string[];
-    params?: readonly string[];
-    schedule?: unknown;
-    usage?: string;
-  }>;
-  /** 已知副作用 pattern（子串匹配）：validate 命中出 warning 不阻断（ADR 0004 checks-are-probes）。 */
-  sideEffectPatterns?: readonly string[];
-  /** C2 on-transition 编排规则（数据声明；schema profile.onTransition 投影）：消费归 loops L0——
-   *  transition 消费成功后匹配 from/to，编排动作（subscribe/close）经 L0 队列执行。 */
-  onTransition?: ReadonlyArray<{ on: string | string[]; action: string; params?: Record<string, unknown> }>;
-}
-
 /** fanOut 运行时 deps：活跃 session 是 socket runtime（transport 持有），经调用注入（kernel 不碰 socket）。 */
 export type FanOutDeps = {
   activeSessions: ReadonlyArray<{ sessionId: string; scope: SubscriptionScope }>;
@@ -224,15 +203,6 @@ export type ValidateResult =
   | { ok: false; error: "profile-not-found" | "invalid-params" | "checker-declaration"; reason: string }
   | { ok: true; warnings: readonly string[] };
 
-export type TemplateMeta = {
-  profileId: string;
-  name: string;
-  entityType: string;
-  states: readonly string[];
-  params?: readonly string[];
-  schedule?: unknown;
-  usage?: string;
-};
 
 /** D3 映射层：domain Transitioned → store EventRow（entityRef 平铺；contentIdentity null 归一 undefined——EventRow 无 null 槽位，存储侧同形）。 */
 function toEventRow(e: Transitioned): EventRow {
@@ -276,8 +246,6 @@ export class Kernel {
   private readonly readFace: QueryFace;
   /** I12：本 daemon 实例世代（daemon-main 组合根传入；0 = 未接线）。 */
   private readonly ownerEpoch: number;
-  /** I-01 profile 注册表（静态面数据；票 11 消费于 validate/templates）。 */
-  private readonly registry: ReadonlyArray<ProfileRegistryEntry>;
   /** 订阅 id 序（sub-NNNN）：从既有行恢复 max——重启后新订阅不撞旧 id。 */
   private subSeq: number;
 
@@ -287,12 +255,11 @@ export class Kernel {
     private readonly states: ReadonlySet<string>,
     /** decisionOrder 起点双轨之决策轨：mutation line 尾位点（重放不得重新编号）。 */
     decisionOrder: number,
-    opts: { ownerEpoch?: number; registry?: ReadonlyArray<ProfileRegistryEntry> } = {},
+    opts: { ownerEpoch?: number } = {},
   ) {
     this.readFace = createQueryFace(store);
     this.sequences = { decisionOrder, eventSeq: store.outboxMaxEventSeq() };
     this.ownerEpoch = opts.ownerEpoch ?? 0;
-    this.registry = opts.registry ?? [];
     this.subSeq = 0;
     for (const s of store.querySubscriptions({})) {
       const m = /^sub-(\d+)$/.exec(s.subscriptionId);
@@ -928,68 +895,8 @@ export class Kernel {
     return this.readFace.evidence(evidenceRef);
   }
 
-  /**
-   * validate（票 11，静态面）：三类错误同步拒（错误信息一律列可用选项）+ ADR 0004 已知
-   * 副作用 pattern 命中出 warning 不阻断。数据全部来自构造注入注册表（I-01）；live-run
-   * 执行（verdict/durationMs）归 prober 后续票，kernel 不 spawn。
-   */
-  validate(req: ValidateRequest): ValidateResult {
-    const entry = this.registry.find((r) => r.profileId === req.profile);
-    if (!entry) {
-      return {
-        ok: false,
-        error: "profile-not-found",
-        reason: `profile "${req.profile}" 未找到 — 可用: [${this.registry.map((r) => r.profileId).sort().join(", ")}]`,
-      };
-    }
-    if (req.template !== undefined && req.check !== undefined) {
-      return {
-        ok: false,
-        error: "checker-declaration",
-        reason: "template 与 check 二选一：模板形态（check 由模板派生）或 ad-hoc 形态（显式声明 check）",
-      };
-    }
-    if (req.template !== undefined) {
-      const tpl = entry.templates.find((t) => t.name === req.template);
-      if (!tpl) {
-        return {
-          ok: false,
-          error: "profile-not-found",
-          reason: `template "${req.template}" 未找到 — 可用: [${entry.templates.map((t) => t.name).join(", ")}]`,
-        };
-      }
-      // own-property 判定（票 04 校验器同修法）：不吃 Object.prototype 原型链（"constructor" 等）；显式 undefined 仍算缺失
-      const provided = req.params ?? {};
-      const missing = (tpl.params ?? []).filter(
-        (p) => !Object.prototype.hasOwnProperty.call(provided, p) || provided[p] === undefined,
-      );
-      if (missing.length > 0) {
-        return { ok: false, error: "invalid-params", reason: `缺少必填参数: ${missing.join(", ")}` };
-      }
-    }
-    const check = req.check;
-    if (check !== undefined && check.trim() === "") {
-      return { ok: false, error: "checker-declaration", reason: "check 声明为空" };
-    }
-    if (check === undefined && req.template === undefined) {
-      return { ok: false, error: "checker-declaration", reason: "ad-hoc 形态必须显式声明 check（模板形态由模板派生）" };
-    }
-    const warnings = (entry.sideEffectPatterns ?? [])
-      .filter((p) => (check ?? "").includes(p))
-      .map((p) => `check 命中已知副作用 pattern "${p}"（ADR 0004：探测零副作用，不阻断）`);
-    return { ok: true, warnings };
-  }
-
-  /** templates（票 11）：模板元数据清单，全部来自注册表注入内容（渐进式披露面）。 */
-  templates(profile?: string): { templates: readonly TemplateMeta[] } {
-    if (profile !== undefined && !this.registry.some((r) => r.profileId === profile)) {
-      throw new Error(`profile "${profile}" 未找到 — 可用: [${this.registry.map((r) => r.profileId).sort().join(", ")}]`);
-    }
-    const templates = this.registry
-      .filter((r) => profile === undefined || r.profileId === profile)
-      .flatMap((r) => r.templates.map((t) => ({ profileId: r.profileId, ...t })));
-    return { templates };
-  }
+  // 票 42：validate/templates 静态面迁 profiles（ProfileRegistry.validate/templates +
+  // validateEntry/profileTemplates 纯函数）；注册表注入随消费面同步删除。
 
   /**
    * 串行消费的事务内形态（I1：事件 + 实体状态 + outbox 行同事务原子）。
