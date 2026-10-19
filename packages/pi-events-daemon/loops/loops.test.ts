@@ -204,7 +204,8 @@ describe("组 3：startLoops 假时钟/假 store 启动 + 双轨重启恢复", (
     life1.stop();
     expect(store.outboxBatch(10).map((r) => r.eventSeq)).toEqual([1, 2]);
 
-    // 双轨分叉的意图（决策轨 7 / 写入轨 9）：经 consumeIntent 消费终点落库
+    // 双轨分叉的意图（决策轨 7 / 写入轨 9）：经 consumeIntent 消费终点落库后重启——
+    // 锁步分配 ≠ 位点相等（票 42 评审 F1）：重启后下一条 transition 必须同时接对两轨
     const life2 = startLoops(makeCtx(store));
     life2.submit({
       kind: "consumeIntent",
@@ -218,7 +219,10 @@ describe("组 3：startLoops 假时钟/假 store 启动 + 双轨重启恢复", (
         occurredAt: at(3),
       },
     });
-    life2.submit({ kind: "transition", ref: REF, verdict: "waiting", occurredAt: at(4) });
+    life2.stop();
+
+    const life3 = startLoops(makeCtx(store));
+    life3.submit({ kind: "transition", ref: REF, verdict: "waiting", occurredAt: at(4) });
 
     const outbox = store.outboxBatch(Number.MAX_SAFE_INTEGER).sort((a, b) => a.eventSeq - b.eventSeq);
     expect(outbox.map((r) => r.eventSeq)).toEqual([1, 2, 9, 10]); // 写入轨接 9 → 10（事件流尾恢复）
@@ -227,10 +231,11 @@ describe("组 3：startLoops 假时钟/假 store 启动 + 双轨重启恢复", (
       deterministicEventId(REF, 1),
       deterministicEventId(REF, 2),
       deterministicEventId(REF, 7),
-      deterministicEventId(REF, 8), // 决策轨接 7 → 8（mutation line 位点恢复）
+      deterministicEventId(REF, 8), // 决策轨接 7 → 8（mutation line 位点恢复，非 outboxMaxEventSeq=9→#10）
     ]);
     expect(events[3].to).toBe("waiting");
     expect(life2.errors).toHaveLength(0); // 无 corruption：编号未重置
+    expect(life3.errors).toHaveLength(0);
   });
 });
 

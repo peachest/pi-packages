@@ -890,7 +890,7 @@ export class Kernel {
     return this.readFace.query(filter, probe);
   }
 
-  /** evidence（票 11）：FTS5 点查（B 层，双 ref 形态精礁读）。票 42：实现迁 kernel/query.ts（本类委托）。 */
+  /** evidence（票 11）：双 ref 形态精确读。票 42：实现迁 kernel/query.ts（本类委托）。 */
   evidence(evidenceRef: string): { content: string; truncated: boolean } {
     return this.readFace.evidence(evidenceRef);
   }

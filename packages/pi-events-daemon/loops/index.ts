@@ -156,11 +156,12 @@ export interface LoopsHandle {
 
 /** startLoops——loops 模块唯一入口：装配 L0（唯一写者）；L1-L4 后续票在此挂入。 */
 export function startLoops(ctx: LoopsCtx): LoopsHandle {
-  // 决策轨位点（R1 双轨前提，票 42 下推收编）：mutation line 的持久形态 = 事件流，单写者纪律下
-  // 每个已提交决策恰一事件（I1），decisionOrder 内嵌于确定性 event id 尾段 #N（deterministicEventId）
-  // 且与 eventSeq 同锁步分配（domain nextSequences 双轨 +1）——store 聚合 max(eventSeq) 即位点，
-  // 重放不重新编号（原 recoverDecisionOrderTail 全表拉删除）。
-  const kernel = new Kernel(ctx.store, ctx.states, ctx.store.outboxMaxEventSeq(), {
+  // 决策轨位点（R1 双轨前提）：mutation line 的持久形态 = 事件流，单写者纪律下每个已提交决策
+  // 恰一事件（I1），decisionOrder 内嵌于确定性 event id 尾段 #N（deterministicEventId）——store
+  // 聚合尾段 max 恢复（票 42 评审 F1：锁步分配 ≠ 位点相等，consumeIntent 可持久分叉
+  // decisionOrder=7/eventSeq=9，两轨各自恢复，重放不重新编号；写入轨 eventSeq 由 Kernel 内部
+  // outboxMaxEventSeq 恢复，原 loops 侧 recoverDecisionOrderTail 全表拉已下推进 store 聚合）。
+  const kernel = new Kernel(ctx.store, ctx.states, ctx.store.outboxMaxDecisionOrder(), {
     ownerEpoch: ctx.ownerEpoch,
   });
 
