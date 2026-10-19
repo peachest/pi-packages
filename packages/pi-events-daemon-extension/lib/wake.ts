@@ -83,6 +83,10 @@ export interface WakeDeps {
   notify: (message: string, type?: "info" | "warning" | "error") => void;
   /** 退避等待（缺省真延时；测试注入即时返回并记录节拍）。 */
   sleep?: (ms: number) => Promise<void>;
+  /** 票 45：daemon "transitioned" 沿广播旁路回调（wake.ts 只消费 "wake" 信封，沿原样上抛）。 */
+  onTransitioned?: (params: unknown) => void;
+  /** 票 45：连接状态沿回调（建连成功 true / 断连或连接失败 false），footer 状态位借沿刷新。 */
+  onConnectChange?: (connected: boolean) => void;
 }
 
 export interface WakeHandle {
@@ -143,18 +147,22 @@ export function startWake(deps: WakeDeps): WakeHandle {
         }
         connected = true;
         failures = 0; // 传输恢复：退避归位
+        deps.onConnectChange?.(true);
         client.onNotification((method, params) => {
           if (method === "wake") onWake(params);
+          else if (method === "transitioned") deps.onTransitioned?.(params);
         });
         client.startSession(deps.sessionId); // 长连接建立 = SESSION_START（含重连 snapshot 冲刷）
         closeWait = new Promise<void>((resolveClose) => client!.onClose(resolveClose));
         await closeWait;
         connected = false;
         client = null;
+        deps.onConnectChange?.(false);
         if (stopped) return;
       } catch {
         connected = false;
         client = null;
+        deps.onConnectChange?.(false);
         if (stopped) return;
       }
       // 断连/连接失败：先降级提示（每轮断供一次），退避后重试

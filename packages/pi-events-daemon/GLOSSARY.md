@@ -101,6 +101,10 @@ _Avoid_: edge push 与 wake 混用；轮询刷新
 票 44：query 返回体的 `subscriptions` 数组——开放订阅随过滤面（sessionId/scope/entityRef）返回，携实体现值/probe spec 槽节奏（runnerSlotKey join）/thresholds/phase/backlog（session×实体 join）。订阅读侧归一：面板与脚本不再 store 直读。
 _Avoid_: 订阅列表直读 store
 
+**事件 dock**:
+票 45：pi TUI 内的 daemon 活动面板（extension 注册快捷键 ctrl+alt+e / 命令 /events-dock → ctx.ui.custom overlay）——本 session 订阅明细（订阅行明细）+ Transitioned 沿最近记录 + parked/dlq 计数 + footer hint（`⏻ N subs · M parked`，setStatus "pi-events-dock" 段）。沿驱动刷新（沿广播旁路），零副作用纪律：本 session 无 daemon 接触前不探测不显段。与 bg dock 不共用骨架只对齐姿势（ADR 0009）。
+_Avoid_: 与 bg dock 共享面板；footer hint 主动探测 socket；轮询刷新
+
 ### 角色
 
 **Profile**:

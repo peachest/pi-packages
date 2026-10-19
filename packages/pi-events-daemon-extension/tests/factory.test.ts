@@ -11,12 +11,31 @@ import { startTestDaemon, waitFor, type TestDaemon } from "./harness.ts";
 describe("票 34：pi install 结构面——包 manifest 指向的工厂注册 9 工具", () => {
   it("工厂注册 9 op 工具（fake pi 捕获）", () => {
     const registered: Array<{ name: string }> = [];
+    const commands: string[] = [];
+    const shortcuts: string[] = [];
     const pi = {
       registerTool: (tool: { name: string }) => registered.push(tool),
       on: () => () => {},
+      registerCommand: (name: string) => commands.push(name),
+      registerShortcut: (key: string) => shortcuts.push(key),
     } as unknown as Parameters<typeof eventsDaemonExtension>[0];
     eventsDaemonExtension(pi, { opSchema: loadOpSchema(), sender: async () => ({}) });
     expect(registered.map((t) => t.name).sort()).toEqual([...OP_NAMES].sort());
+    // 票 45：dock 入口结构面（默认 ctrl+alt+e——bg dock 占 shift+down，让位换键）
+    expect(commands).toEqual(["events-dock"]);
+    expect(shortcuts).toEqual(["ctrl+alt+e"]);
+  });
+
+  it("dockShortcut: null 关闭快捷键注册（命令入口常驻）", () => {
+    const shortcuts: string[] = [];
+    const pi = {
+      registerTool: () => {},
+      on: () => () => {},
+      registerCommand: () => {},
+      registerShortcut: (key: string) => shortcuts.push(key),
+    } as unknown as Parameters<typeof eventsDaemonExtension>[0];
+    eventsDaemonExtension(pi, { opSchema: loadOpSchema(), sender: async () => ({}), dockShortcut: null });
+    expect(shortcuts).toEqual([]);
   });
 });
 
@@ -32,10 +51,12 @@ describe("评审 H：session_start fork——检查前退位旧 wake handle（�
           (handlers[event] ??= []).push(handler);
         },
         sendMessage: (m: unknown) => injections.push(m),
+        registerCommand: () => {},
+        registerShortcut: () => {},
       } as unknown as Parameters<typeof eventsDaemonExtension>[0];
       const ctx = {
         cwd: tmpdir(), // 无 .pi/events.json → 声明链空转
-        ui: { notify: () => {} },
+        ui: { notify: () => {}, setStatus: () => {} }, // 票 45：dock hint 刷新沿（wake 建连）需要 setStatus 面
         sessionManager: { getSessionId: () => "s1" },
       };
       eventsDaemonExtension(pi, { socketPath: daemon.socketPath, sender: async () => ({}) });

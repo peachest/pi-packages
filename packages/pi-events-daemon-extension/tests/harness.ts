@@ -59,6 +59,7 @@ export function startTestDaemon(opts: { store?: Store; socketPath?: string } = {
     pusher: {
       push: async (line: string) => {
         handle?.broadcastWake("wake", JSON.parse(line));
+        return 1; // Pusher 契约 resolve = 送达数（票 44 沿广播后类型收紧；测试桩恒 1 送达）
       },
     } as Pusher,
     fs: {
