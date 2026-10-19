@@ -1,0 +1,38 @@
+# herdr-plugin.toml — pi-events-daemon 订阅面板插件（票 44）。
+#
+# open-dagr 同模式：[[actions]] 召唤 [[panes]] 入口，pane 渲染本机 daemon 的
+# 订阅清单（session 分组，全量/自己两视图，Transitioned 沿驱动刷新）。
+# 面板是只读观察者：以合成 session 声明长连接，不产生投递行、不改任何状态。
+#
+# pane 命令经 node 直接运行 TS 源（node 24 原生 type-stripping，pack-leader
+# 插件先例），二进制零构建；HERDR_PLUGIN_ROOT 由 herdr 注入 pane 进程。
+
+id = "herdr-pi-events"
+name = "pi-events subscriptions"
+version = "0.1.0"
+description = "pi-events-daemon 订阅面板：session 分组的订阅行明细，open-subscriptions 在 split pane 打开。"
+min_herdr_version = "0.8.0"
+platforms = ["linux", "macos"]
+
+[[panes]]
+id = "subscriptions"
+title = "pi-events subscriptions"
+platforms = ["linux", "macos"]
+placement = "split"
+command = ["/bin/sh", "-c", "exec node --no-warnings \"${HERDR_PLUGIN_ROOT:?not launched by herdr}/bin/subscriptions-pane.ts\""]
+
+[[actions]]
+id = "open-subscriptions"
+platforms = ["linux", "macos"]
+title = "Open pi-events subscriptions"
+description = "在右侧 split pane 打开 daemon 订阅面板（焦点 pane 的 session 为初始 self 视图锚）。"
+contexts = ["workspace"]
+command = ["bash", "scripts/open-subscriptions.sh", "right"]
+
+[[actions]]
+id = "open-subscriptions-down"
+platforms = ["linux", "macos"]
+title = "Open pi-events subscriptions (below)"
+description = "在下方 split pane 打开 daemon 订阅面板。"
+contexts = ["workspace"]
+command = ["bash", "scripts/open-subscriptions.sh", "down"]

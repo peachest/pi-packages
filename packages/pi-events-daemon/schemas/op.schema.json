@@ -1,0 +1,461 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "pi-events-daemon 线协议 op 契约（9 op，#31 操作面表 A1 终裁）",
+  "description": "根对象按 op 名索引，每个 op 给 request（JSON-RPC params）与 response（result）两侧契约；ack 是 extension↔daemon 长连接上的内部传输确认行，不是 op。校验分层 D1a（#31 Schema 策略）：daemon 侧 protocol/validate.ts 只跑 required/enum/type/正则 子集，本文件供 extension / reckon / 运维脚本用标准 JSON Schema 校验器完整校验；随包 schemas/ 发版（与 templates/ 同级）。subscribe opts 全部显式可枚举且扁平（pi-fabric 教训）；错误信息一律列可用选项（多命中要求显式 template、零命中列出可用模板）。",
+  "definitions": {
+    "entityRef": {
+      "type": "string",
+      "pattern": "^[a-z0-9:_-]+:(external|project|user)/.+$",
+      "description": "实体线引用单串 = `${type}:${nativeKey}`（如 gitlab:mr:project/https://...；两段结构 type:nativeKey——type 段 [a-z0-9:_-] 可含冒号如 gitlab:mr，key 以 external/|project/|user/ 前缀开；domain entityRefKeyOf 正典串行化同形零映射，agent 不铸造不解析，ADR 0002；protocol 侧类型名 EntityRefId）。"
+    },
+    "validateReport": {
+      "type": "object",
+      "description": "判定器 agent 可见面：verdict 一律语义名，退出码不外泄。",
+      "required": ["syntaxOk", "verdict", "reason", "evidence", "durationMs", "warnings"],
+      "additionalProperties": false,
+      "properties": {
+        "syntaxOk": { "type": "boolean" },
+        "verdict": { "enum": ["passed", "failed", "waiting"] },
+        "reason": { "type": "string" },
+        "evidence": { "type": "string" },
+        "durationMs": { "type": "integer" },
+        "warnings": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "scheduleSpec": {
+      "type": "object",
+      "description": "{type:\"interval\", every} | {type:\"cron\", expr, tz?}（crontab 5 字段，缺省本地时区）；oneOf 两分支按 type 收紧（票 02 ScheduleSpec：interval 需 every，cron 需 expr），新增节奏形态 = 加分支。",
+      "oneOf": [
+        {
+          "type": "object",
+          "description": "interval 形态。",
+          "required": ["type", "every"],
+          "properties": {
+            "type": { "enum": ["interval"] },
+            "every": { "type": "string", "description": "如 \"60s\"。" }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "description": "cron 形态。",
+          "required": ["type", "expr"],
+          "properties": {
+            "type": { "enum": ["cron"] },
+            "expr": { "type": "string", "description": "5 字段表达式。" },
+            "tz": { "type": "string", "description": "时区（缺省本地）。" }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "adhocSchedule": {
+      "type": "object",
+      "description": "ad-hoc 订阅节奏（opts.schedule 专用，#31 L105）：{type:\"interval\", every} | {type:\"cron\", expr, tz?}；与模板侧 definitions/scheduleSpec 同构（oneOf 两分支按 type 收紧），但 every 为 number 毫秒（ttl 同口径；模板资产沿用票 03 的 \"60s\" 字符串形态）。缺省 60s interval（60000）由 daemon 内置缺省承载。",
+      "oneOf": [
+        {
+          "type": "object",
+          "description": "interval 形态。",
+          "required": ["type", "every"],
+          "properties": {
+            "type": { "enum": ["interval"] },
+            "every": { "type": "number", "description": "间隔毫秒（60000 = 60s）。" }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "description": "cron 形态。",
+          "required": ["type", "expr"],
+          "properties": {
+            "type": { "enum": ["cron"] },
+            "expr": { "type": "string", "description": "5 字段表达式。" },
+            "tz": { "type": "string", "description": "时区（缺省本地）。" }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "queryEntity": {
+      "type": "object",
+      "description": "query 实体行：观测态摘要（payload 摘要非全量）。",
+      "required": ["entityRef", "state"],
+      "additionalProperties": false,
+      "properties": {
+        "entityRef": { "$ref": "#/definitions/entityRef" },
+        "state": { "type": ["string", "null"], "description": "null = 尚未探测。" },
+        "payloadSummary": { "description": "payload 摘要。" },
+        "lastProbedAt": { "type": "string", "description": "懒重探记录（US-31）。" },
+        "backlog": { "type": "integer", "description": "待投递数。" },
+        "children": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/queryEntity" },
+          "description": "子实体（listChildren 吸收）。"
+        }
+      }
+    },
+    "querySubscription": {
+      "type": "object",
+      "description": "query 订阅行明细（票 44）：开放订阅 + 实体现值/槽节奏/backlog join。",
+      "required": ["subscriptionId", "sessionId", "entityRef", "state", "origin", "createdAt"],
+      "additionalProperties": false,
+      "properties": {
+        "subscriptionId": { "type": "string" },
+        "sessionId": { "type": "string" },
+        "entityRef": { "$ref": "#/definitions/entityRef" },
+        "state": { "type": ["string", "null"], "description": "实体现值（无实体 = null）。" },
+        "origin": { "type": "string", "enum": ["session", "auto"] },
+        "template": { "type": "string" },
+        "check": { "type": "string" },
+        "on": { "type": ["string", "array"], "items": { "type": "string" } },
+        "once": { "type": "boolean" },
+        "flip": { "type": "boolean" },
+        "readyCheck": { "type": "string" },
+        "thresholds": {
+          "type": "object",
+          "properties": { "failureThreshold": { "type": "integer" }, "successThreshold": { "type": "integer" } }
+        },
+        "phase": { "type": "string", "enum": ["startup", "flip"] },
+        "schedule": {
+          "description": "槽探测节奏（probe spec join；无槽订阅缺省）：interval 携 intervalMs，cron 携 cron/tz。",
+          "type": "object",
+          "required": ["type"],
+          "properties": {
+            "type": { "type": "string", "enum": ["interval", "cron"] },
+            "intervalMs": { "type": "integer" },
+            "cron": { "type": "string" },
+            "tz": { "type": "string" }
+          },
+          "additionalProperties": false
+        },
+        "lastProbedAt": { "type": "string" },
+        "backlog": { "type": "integer", "description": "该订阅（session×实体）pending 投递行数。" },
+        "createdAt": { "type": "string" }
+      }
+    },
+    "templateInfo": {
+      "type": "object",
+      "description": "probe 模板条目（templates op 渐进披露；实体参数由 key generator 分解，agent 只填意图不碰 shell）。",
+      "required": ["name", "entityType", "states", "schedule", "params", "usage"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string" },
+        "entityType": { "type": "string", "description": "源系统判别符（domain EntityRef.type）。" },
+        "states": { "type": "array", "items": { "type": "string" }, "description": "profile 闭集状态集回显。" },
+        "schedule": { "$ref": "#/definitions/scheduleSpec" },
+        "params": {
+          "type": "object",
+          "description": "参数名 → 说明。",
+          "additionalProperties": { "type": "string" }
+        },
+        "usage": { "type": "string" }
+      }
+    }
+  },
+  "type": "object",
+  "required": ["subscribe", "cancel", "query", "publish", "drain", "evidence", "status", "validate", "templates"],
+  "additionalProperties": false,
+  "properties": {
+    "subscribe": {
+      "type": "object",
+      "description": "建立站立兴趣：{entityRef | url | check, opts?} → {subscriptionId, entityRef, state, validate?, warnings?[]}；smoke 失败 → {subscribed:false, validate} 不抛错。",
+      "required": ["request", "response"],
+      "additionalProperties": false,
+      "properties": {
+        "request": {
+          "type": "object",
+          "description": "entityRef/url/check 恰好其一（同时多值 = 歧义，报错并列可用选项）。",
+          "properties": {
+            "entityRef": { "$ref": "#/definitions/entityRef" },
+            "url": {
+              "type": "string",
+              "description": "URL 形态：key generator 按 host/URL 形态路由 (profile, template)；多命中要求显式 template。"
+            },
+            "check": {
+              "type": "string",
+              "description": "ad-hoc 形态：check 命令文本（ephemeral 实体，键 = sha1(check+schedule+cwd)，到终态后退役）。"
+            },
+            "opts": {
+              "type": "object",
+              "description": "subscribe opts（#31 R1 A2 补全 + threshold 裁定，与票 02 已合并 SubscribeOpts 类型逐键对齐）。opts 永不含 shell；schedule 仅 ad-hoc 形态可设（B1：模板形态不含——schedule 归模板资产；ad-hoc 缺省 60s interval 由 daemon 内置缺省承载）。",
+              "properties": {
+                "on": {
+                  "type": ["string", "array"],
+                  "items": { "type": "string" },
+                  "description": "谓词：状态值/状态集/命名转换（如 digest-changed）。"
+                },
+                "once": { "type": "boolean", "description": "一次性：命中即自动关闭。" },
+                "flip": { "type": "boolean", "description": "翻转沿通知形态：failed 不关闭（R2 裁定）。" },
+                "template": { "type": "string", "description": "显式模板名（多命中时必填）。" },
+                "smoke": { "type": "boolean", "description": "订阅时试跑 check；失败返回 {subscribed:false, validate}。" },
+                "sessionId": { "type": "string", "description": "origin=session 编址的投递目标（缺省当前 session）。" },
+                "origin": {
+                  "type": "string",
+                  "enum": ["session", "auto"],
+                  "description": "订阅来源（编址分支输入，票 35 wire 补）：session=agent 交互订阅（缺省，投 sourceSessionId）；auto=.pi/events.json 启动声明（隐式 project scope，投 scope 内活跃 session）。daemon 侧映射 kernel opts.origin。"
+                },
+                "readyCheck": { "type": "string", "description": "两阶段订阅的 flip 判定（缺省沿用 check）。" },
+                "schedule": {
+                  "$ref": "#/definitions/adhocSchedule",
+                  "description": "ad-hoc 形态专用：探针节奏（缺省 60s interval）。模板形态不含——schedule 归模板资产（B1）。"
+                },
+                "ttl": { "type": "number", "description": "到期自动关闭（I8）。单位毫秒（milliseconds）。" },
+                "failureThreshold": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "description": "连续失败计满才翻转（R2：k8s probe 阈值语义；默认 1，槽级先建者定）。"
+                },
+                "successThreshold": { "type": "integer", "minimum": 1, "description": "连续成功计满才恢复（默认 1）。" }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false,
+          "oneOf": [{ "required": ["entityRef"] }, { "required": ["url"] }, { "required": ["check"] }]
+        },
+        "response": {
+          "oneOf": [
+            {
+              "type": "object",
+              "description": "订阅成功形态。",
+              "required": ["subscriptionId", "entityRef", "state"],
+              "additionalProperties": false,
+              "properties": {
+                "subscriptionId": { "type": "string" },
+                "entityRef": { "$ref": "#/definitions/entityRef" },
+                "state": { "type": ["string", "null"], "description": "null 直到首个 verdict（无 unprobed 合成前态）。" },
+                "validate": { "$ref": "#/definitions/validateReport" },
+                "warnings": { "type": "array", "items": { "type": "string" } }
+              }
+            },
+            {
+              "type": "object",
+              "description": "smoke 失败形态：显式 subscribed:false + 体检报告，不抛错。",
+              "required": ["subscribed", "validate"],
+              "additionalProperties": false,
+              "properties": {
+                "subscribed": { "enum": [false] },
+                "validate": { "$ref": "#/definitions/validateReport" }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "cancel": {
+      "type": "object",
+      "description": "结束兴趣（幂等）：{subscriptionId} → {cancelled: true}。",
+      "required": ["request", "response"],
+      "additionalProperties": false,
+      "properties": {
+        "request": {
+          "type": "object",
+          "required": ["subscriptionId"],
+          "additionalProperties": false,
+          "properties": { "subscriptionId": { "type": "string" } }
+        },
+        "response": {
+          "type": "object",
+          "required": ["cancelled"],
+          "additionalProperties": false,
+          "properties": { "cancelled": { "enum": [true] } }
+        }
+      }
+    },
+    "query": {
+      "type": "object",
+      "description": "读侧归一（吸收 states 查询 / listChildren / backlog / dead-letter 清单 / 订阅行明细票 44）：{entityRef? | scope? | session?} → {entities, deadLetters, subscriptions}。",
+      "required": ["request", "response"],
+      "additionalProperties": false,
+      "properties": {
+        "request": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "entityRef": { "$ref": "#/definitions/entityRef" },
+            "scope": { "type": "string", "description": "scope 过滤（编址 scope project|user 或键前缀，如 \"external/\"）。" },
+            "session": { "type": "string", "description": "按会话过滤。" }
+          }
+        },
+        "response": {
+          "type": "object",
+          "required": ["entities", "deadLetters", "subscriptions"],
+          "additionalProperties": false,
+          "properties": {
+            "entities": { "type": "array", "items": { "$ref": "#/definitions/queryEntity" } },
+            "deadLetters": { "type": "array", "description": "dead-letter 清单行（B6：投递失败终态）。" },
+            "subscriptions": {
+              "type": "array",
+              "description": "订阅行明细（票 44，清 known-unresolved #4 余面——面板不再 store 直读）：随过滤面返回开放订阅；无过滤 = 全量。时间戳 ISO 串。",
+              "items": { "$ref": "#/definitions/querySubscription" }
+            }
+          }
+        }
+      }
+    },
+    "publish": {
+      "type": "object",
+      "description": "agent 断言：{entityRef, {to, contentIdentity?, payload?}} → {eventSeq, from, to}；非法 to 同步报错。",
+      "required": ["request", "response"],
+      "additionalProperties": false,
+      "properties": {
+        "request": {
+          "type": "object",
+          "required": ["entityRef", "transition"],
+          "additionalProperties": false,
+          "properties": {
+            "entityRef": { "$ref": "#/definitions/entityRef" },
+            "transition": {
+              "type": "object",
+              "required": ["to"],
+              "additionalProperties": false,
+              "properties": {
+                "to": { "type": "string", "description": "目标状态（不在闭集 = 非法 to，同步报错）。" },
+                "contentIdentity": {
+                  "type": "string",
+                  "description": "自转换身份对现值（ADR 0003：同状态新身份仍发事件）。"
+                },
+                "payload": { "description": "payload 观测态全量；>2KB 走 evidenceRef。" }
+              }
+            }
+          }
+        },
+        "response": {
+          "type": "object",
+          "required": ["eventSeq", "from", "to"],
+          "additionalProperties": false,
+          "properties": {
+            "eventSeq": { "type": "integer", "description": "写入序（全局单调）。" },
+            "from": { "type": ["string", "null"], "description": "首转换为 null（domain Transitioned 正典）。" },
+            "to": { "type": "string" }
+          }
+        }
+      }
+    },
+    "drain": {
+      "type": "object",
+      "description": "兑现 parked：{sessionId?} → {drained: n, deadLetterSummary}（SESSION_START 自动 + 手动幂等）。",
+      "required": ["request", "response"],
+      "additionalProperties": false,
+      "properties": {
+        "request": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": { "sessionId": { "type": "string" } }
+        },
+        "response": {
+          "type": "object",
+          "required": ["drained", "deadLetterSummary"],
+          "additionalProperties": false,
+          "properties": {
+            "drained": { "type": "integer" },
+            "deadLetterSummary": {
+              "type": "object",
+              "required": ["count", "oldestAge"],
+              "additionalProperties": false,
+              "properties": {
+                "count": { "type": "integer" },
+                "oldestAge": { "type": "number", "description": "单位 ms。" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "description": "指针解引用：{evidenceRef} → {content, truncated}（FTS5 可检索）。",
+      "required": ["request", "response"],
+      "additionalProperties": false,
+      "properties": {
+        "request": {
+          "type": "object",
+          "required": ["evidenceRef"],
+          "additionalProperties": false,
+          "properties": { "evidenceRef": { "type": "string" } }
+        },
+        "response": {
+          "type": "object",
+          "required": ["content", "truncated"],
+          "additionalProperties": false,
+          "properties": {
+            "content": { "type": "string" },
+            "truncated": { "type": "boolean" }
+          }
+        }
+      }
+    },
+    "status": {
+      "type": "object",
+      "description": "登记处写入（typed 实体签名）：{type, key, state?, payload?} → {entityRef, state, event?}；状态变更自动发事件。Entity 对齐 k8s status 子资源语义：spec 极小（身份）、status（观测态）为全部。",
+      "required": ["request", "response"],
+      "additionalProperties": false,
+      "properties": {
+        "request": {
+          "type": "object",
+          "required": ["type", "key"],
+          "additionalProperties": false,
+          "properties": {
+            "type": { "type": "string", "description": "源系统判别符（domain EntityRef.type，如 task / gitlab:mr）。" },
+            "key": {
+              "type": "string",
+              "pattern": "^(external|project|user)/.+$",
+              "description": "前缀编码键（external/|project/|user/<native>；ADR 0002）。"
+            },
+            "state": { "type": "string", "description": "登记观测态（变更自动发事件）。" },
+            "payload": { "description": "payload 观测态全量。" }
+          }
+        },
+        "response": {
+          "type": "object",
+          "required": ["entityRef", "state"],
+          "additionalProperties": false,
+          "properties": {
+            "entityRef": { "$ref": "#/definitions/entityRef" },
+            "state": { "type": ["string", "null"] },
+            "event": {
+              "type": "object",
+              "description": "状态变更时的转换事件（domain/types.ts Transitioned 正典 8 字段；线层透传不做深校验）。"
+            }
+          }
+        }
+      }
+    },
+    "validate": {
+      "type": "object",
+      "description": "check 体检：{check} → ValidateReport（三类错误分类，US）。",
+      "required": ["request", "response"],
+      "additionalProperties": false,
+      "properties": {
+        "request": {
+          "type": "object",
+          "required": ["check"],
+          "additionalProperties": false,
+          "properties": { "check": { "type": "string", "description": "check 命令文本（checker 是 tri-state 原语，exit 0/2/其他）。" } }
+        },
+        "response": { "$ref": "#/definitions/validateReport" }
+      }
+    },
+    "templates": {
+      "type": "object",
+      "description": "渐进式披露：{profile?} → {templates: [...]}（模型可见面先给 name/usage/params，不一次倾倒全文）。",
+      "required": ["request", "response"],
+      "additionalProperties": false,
+      "properties": {
+        "request": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": { "profile": { "type": "string", "description": "按 profile id 过滤。" } }
+        },
+        "response": {
+          "type": "object",
+          "required": ["templates"],
+          "additionalProperties": false,
+          "properties": {
+            "templates": { "type": "array", "items": { "$ref": "#/definitions/templateInfo" } }
+          }
+        }
+      }
+    }
+  }
+}

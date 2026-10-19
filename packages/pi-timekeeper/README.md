@@ -41,4 +41,4 @@ pi install ./packages/pi-timekeeper   # 本仓内
 
 ## Domain
 
-见 [CONTEXT.md](./CONTEXT.md)（词条表）与 [ADR 0001](./docs/adr/0001-pull-based-time-anchors.md)（拉式注入 vs timer/system-prompt 的取舍记录）。
+见 [GLOSSARY.md](./GLOSSARY.md)（词条表）与 [ADR 0001](./docs/adr/0001-pull-based-time-anchors.md)（拉式注入 vs timer/system-prompt 的取舍记录）。

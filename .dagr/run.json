@@ -1,0 +1,554 @@
+{
+  "dagr": 3,
+  "run": {
+    "id": "run-eda-arch-split-v01",
+    "title": "pi-events-daemon 架构深化：TxOps/kernel 拆分/loops-deliver",
+    "started_at": "2026-10-18T06:00:00Z",
+    "orchestrator": {
+      "pane": "w3:p1"
+    }
+  },
+  "generated_at": "2026-10-19T10:20:06Z",
+  "projects": [
+    {
+      "id": "ARCH",
+      "title": "架构深化（终审评审落地）"
+    }
+  ],
+  "tasks": [
+    {
+      "id": "T41",
+      "title": "impl: Store TxOps 单点声明",
+      "kind": "impl",
+      "project": "ARCH",
+      "state": "done",
+      "deps": [],
+      "attempts": [
+        {
+          "id": "T41·a1",
+          "n": 1,
+          "cause": {
+            "type": "initial"
+          },
+          "actor": "coordinator",
+          "model": "glm53·medium",
+          "state": "done",
+          "started_at": "2026-10-19T03:30:00Z",
+          "ended_at": "2026-10-19T03:50:00Z",
+          "outcome": {
+            "result": "done",
+            "evidence": "verified",
+            "receipt": "commit 02c59a5 + merge into integration; 617 tests green; dualSuite regression"
+          }
+        }
+      ]
+    },
+    {
+      "id": "T42",
+      "title": "impl: kernel 三概念拆分（query.ts+profiles 静态面）",
+      "kind": "impl",
+      "project": "ARCH",
+      "state": "done",
+      "deps": [
+        "T41"
+      ],
+      "attempts": [
+        {
+          "id": "T42·a1",
+          "n": 1,
+          "cause": {
+            "type": "initial"
+          },
+          "actor": "glm53-internal",
+          "model": "glm53·medium",
+          "state": "failed",
+          "started_at": "2026-10-16T12:29:19Z",
+          "ended_at": "2026-10-16T12:54:05Z",
+          "outcome": {
+            "result": "failed",
+            "evidence": "reported",
+            "reason": "SIGHUP/session timeout——文档文本贴 bash 循环，零 commit（66 红测试为 TDD 中态误报）"
+          }
+        },
+        {
+          "id": "T42·a2",
+          "n": 2,
+          "cause": {
+            "type": "gate_failed",
+            "ref": "T42·a1",
+            "reason": "ocr 评审 1H3M1L——双轨恢复语义破坏+全表拉下推键歧义"
+          },
+          "actor": "glm53-internal",
+          "model": "glm53·medium",
+          "state": "done",
+          "started_at": "2026-10-17T08:00:00Z",
+          "ended_at": "2026-10-17T08:40:00Z",
+          "outcome": {
+            "result": "done",
+            "evidence": "verified",
+            "receipt": "commits 0ad3184/8d4f8dc refactor + 41841ec/8d517d0 fix; 623 tests green; dualSuite ×2 后端"
+          }
+        }
+      ]
+    },
+    {
+      "id": "T43",
+      "title": "impl: loops L2 Deliver 拆出 deliver.ts（冲突面根治）",
+      "kind": "impl",
+      "project": "ARCH",
+      "state": "done",
+      "deps": [
+        "T42"
+      ],
+      "attempts": [
+        {
+          "id": "T43·a1",
+          "n": 1,
+          "cause": {
+            "type": "initial"
+          },
+          "actor": "glm53-internal",
+          "model": "glm53·medium",
+          "state": "done",
+          "started_at": "2026-10-19T03:28:38Z",
+          "ended_at": "2026-10-19T04:20:00Z",
+          "outcome": {
+            "result": "done",
+            "evidence": "verified",
+            "receipt": "commits 668acbd/53ebcde + low fix; 623 tests green; loops/index 1051→713, deliver.ts 396+test 713"
+          }
+        }
+      ]
+    },
+    {
+      "id": "T44",
+      "title": "fix: daemon 首用 bug 收尾——8a8403b 回归测试+ocr 2 medium（幂等归一/onMatches parse 防御）",
+      "kind": "fix",
+      "project": "ARCH",
+      "state": "done",
+      "deps": [
+        "T43"
+      ],
+      "attempts": [
+        {
+          "id": "T44·a1",
+          "n": 1,
+          "cause": {
+            "type": "initial"
+          },
+          "actor": "glm53-internal",
+          "state": "done",
+          "started_at": "2026-10-19T04:53:55Z",
+          "locator": {
+            "kind": "session",
+            "session": "w3:p1"
+          },
+          "liveness": {
+            "prompt_acknowledged": true,
+            "last_output_at": "2026-10-19T04:54:09Z",
+            "queued_input": 0
+          },
+          "ended_at": "2026-10-19T04:55:25Z",
+          "outcome": {
+            "result": "done",
+            "evidence": "verified",
+            "receipt": "commits test+fix 2 个：回归测试（先红后绿 mutation 验证）+ ocr 2 medium 修复（normalizeOn 幂等归一/safeParseArray parse 防御/SubscribeOpts.on 类型对齐 wire）；624 tests green；三链全绿"
+          }
+        }
+      ]
+    },
+    {
+      "id": "T45",
+      "title": "impl: herdr plugin session 订阅面板（票 44，含 query 订阅明细形态）",
+      "kind": "impl",
+      "project": "ARCH",
+      "state": "queued",
+      "deps": [
+        "T44"
+      ],
+      "attempts": []
+    },
+    {
+      "id": "T46",
+      "title": "impl: footer dock 快捷键展开 daemon 活动（票 45，与 bg dock 共用评估）",
+      "kind": "impl",
+      "project": "ARCH",
+      "state": "queued",
+      "deps": [],
+      "attempts": []
+    },
+    {
+      "id": "T47",
+      "title": "impl: footer daemon 存活三态（票 46 简化口径：● running/○ idle/● unreachable，setStatus 常驻）",
+      "kind": "impl",
+      "project": "ARCH",
+      "state": "queued",
+      "deps": [],
+      "attempts": []
+    },
+    {
+      "id": "T48",
+      "title": "review+fix: 战役生产反馈收口（8a8403b 边界重构 + envAllowlist + validate 启发式）",
+      "kind": "fix",
+      "project": "ARCH",
+      "state": "done",
+      "deps": [],
+      "attempts": [
+        {
+          "id": "T48·a1",
+          "n": 1,
+          "cause": {
+            "type": "initial"
+          },
+          "actor": "glm53-internal",
+          "state": "done",
+          "started_at": "2026-10-19T05:20:16Z",
+          "ended_at": "2026-10-19T05:20:16Z",
+          "liveness": {
+            "prompt_acknowledged": true,
+            "last_output_at": "2026-10-19T05:20:16Z",
+            "queued_input": 0
+          },
+          "outcome": {
+            "result": "done",
+            "evidence": "verified",
+            "receipt": "commits 8424ca9(边界重构)/f255465(两裁定落地)/01c965b+e05e855(fixture 对齐)；625 tests green"
+          }
+        }
+      ]
+    },
+    {
+      "id": "T49",
+      "title": "docs: CONTEXT→GLOSSARY 迁移 + 正典术语表 + ADR 0006-0008",
+      "kind": "docs",
+      "project": "ARCH",
+      "state": "done",
+      "deps": [],
+      "attempts": [
+        {
+          "id": "T49·a1",
+          "n": 1,
+          "cause": {
+            "type": "initial"
+          },
+          "actor": "glm53-internal",
+          "state": "done",
+          "started_at": "2026-10-19T06:03:32Z",
+          "ended_at": "2026-10-19T06:03:32Z",
+          "liveness": {
+            "prompt_acknowledged": true,
+            "last_output_at": "2026-10-19T06:03:32Z",
+            "queued_input": 0
+          },
+          "outcome": {
+            "result": "done",
+            "evidence": "reported",
+            "receipt": "commit f455f30：11 包更名+正典 GLOSSARY+ADR×8"
+          }
+        }
+      ]
+    },
+    {
+      "id": "T50",
+      "title": "impl: probe evidence 落盘链（票 47，#112）",
+      "kind": "impl",
+      "project": "ARCH",
+      "state": "done",
+      "deps": [],
+      "attempts": [
+        {
+          "id": "T50·a1",
+          "n": 1,
+          "cause": {
+            "type": "initial"
+          },
+          "actor": "board-run-9",
+          "state": "done",
+          "started_at": "2026-10-19T07:07:41Z",
+          "liveness": {
+            "prompt_acknowledged": true,
+            "last_output_at": "2026-10-19T07:07:41Z",
+            "queued_input": 0
+          },
+          "locator": {
+            "kind": "pane",
+            "pane": "w3:pQ"
+          },
+          "ended_at": "2026-10-19T07:28:11Z",
+          "outcome": {
+            "result": "done",
+            "evidence": "verified",
+            "receipt": "commits ed41a39+96f6ab2；628 tests 三链绿；known-unresolved #1 划账；#112 CLOSED；board 卡 10 comment id 16 留痕；owner 独立复验"
+          }
+        }
+      ]
+    },
+    {
+      "id": "T51",
+      "title": "impl: ad-hoc ephemeral 清理域（票 48，#113）",
+      "kind": "impl",
+      "project": "ARCH",
+      "state": "queued",
+      "deps": [],
+      "attempts": []
+    },
+    {
+      "id": "T52",
+      "title": "impl: url 多参数 keyGenerator（票 49，#114）",
+      "kind": "impl",
+      "project": "ARCH",
+      "state": "queued",
+      "deps": [],
+      "attempts": []
+    }
+  ],
+  "events": [
+    {
+      "at": "2026-10-16T12:29:19Z",
+      "type": "attempt_started",
+      "task": "T42",
+      "attempt": "T42·a1",
+      "actor": "glm53-internal"
+    },
+    {
+      "at": "2026-10-16T12:54:05Z",
+      "type": "attempt_settled",
+      "task": "T42",
+      "attempt": "T42·a1",
+      "actor": "glm53-internal"
+    },
+    {
+      "at": "2026-10-17T08:00:00Z",
+      "type": "attempt_started",
+      "task": "T42",
+      "attempt": "T42·a2",
+      "actor": "glm53-internal"
+    },
+    {
+      "at": "2026-10-17T08:40:00Z",
+      "type": "attempt_settled",
+      "task": "T42",
+      "attempt": "T42·a2",
+      "actor": "glm53-internal"
+    },
+    {
+      "at": "2026-10-19T03:30:00Z",
+      "type": "attempt_started",
+      "task": "T41",
+      "attempt": "T41·a1",
+      "actor": "coordinator"
+    },
+    {
+      "at": "2026-10-19T03:46:31Z",
+      "type": "note",
+      "task": "T43",
+      "detail": "queued: S3 复验有效，worktree 已预置待派 worker"
+    },
+    {
+      "at": "2026-10-19T03:50:00Z",
+      "type": "attempt_settled",
+      "task": "T41",
+      "attempt": "T41·a1",
+      "actor": "coordinator"
+    },
+    {
+      "at": "2026-10-19T03:54:30Z",
+      "type": "attempt_started",
+      "task": "T43",
+      "attempt": "T43·a1",
+      "actor": "glm53-internal"
+    },
+    {
+      "at": "2026-10-19T03:54:30Z",
+      "type": "attempt_settled",
+      "task": "T43",
+      "attempt": "T43·a1",
+      "actor": "glm53-internal"
+    },
+    {
+      "at": "2026-10-19T04:48:06Z",
+      "type": "note",
+      "task": "T42",
+      "detail": "operator message msg-ef7ceddde1466220 acknowledged: use-judgment/may_decide_and_continue — 裁决域作用于已完成任务，T42 状态 done(verified, evidence=commits 0ad3184/8d4f8dc + ocr 修复 41841ec/8d517d0, 623 tests green) 无待裁决项；run 整体三绿收官（T41/T42 done, T43 done 53ebcde+low fix）。无需 continuation。"
+    },
+    {
+      "at": "2026-10-19T04:53:55Z",
+      "type": "attempt_started",
+      "task": "T44",
+      "attempt": "T44·a1",
+      "actor": "glm53-internal",
+      "detail": "8a8403b on-array 修复的规程收尾：回归测试已落（先红后绿 mutation 验证）；ocr r1 抓 2 medium——①sameSubscribeParams 幂等比较未归一 on（数组重订永不幂等）②onMatches '[' 前缀 JSON.parse 裸奔（旧非 JSON 行崩 fanOut）。修复中"
+    },
+    {
+      "at": "2026-10-19T04:55:25Z",
+      "type": "attempt_settled",
+      "task": "T44",
+      "attempt": "T44·a1",
+      "actor": "glm53-internal"
+    },
+    {
+      "at": "2026-10-19T05:08:09Z",
+      "type": "note",
+      "task": "T45",
+      "detail": "queued: impl: herdr plugin session 订阅面板（票 44，含 query 订阅明细形…"
+    },
+    {
+      "at": "2026-10-19T05:08:09Z",
+      "type": "note",
+      "task": "T46",
+      "detail": "queued: impl: footer dock 快捷键展开 daemon 活动（票 45，与 bg dock 共…"
+    },
+    {
+      "at": "2026-10-19T05:08:09Z",
+      "type": "note",
+      "task": "T47",
+      "detail": "queued: impl: session_start footer daemon 状态三态（票 46，零副作用探测…"
+    },
+    {
+      "at": "2026-10-19T05:20:16Z",
+      "type": "attempt_started",
+      "task": "T48",
+      "attempt": "T48·a1",
+      "actor": "glm53-internal"
+    },
+    {
+      "at": "2026-10-19T05:20:16Z",
+      "type": "attempt_settled",
+      "task": "T48",
+      "attempt": "T48·a1",
+      "actor": "glm53-internal"
+    },
+    {
+      "at": "2026-10-19T05:23:51Z",
+      "type": "note",
+      "task": "T48",
+      "attempt": "T48·a1",
+      "detail": "integration receipt 收讫（speculative-training lead w1:p1 复核验收）：store 层重构/envAllowlist/validate 启发式三项采纳；battle-side 11 张订阅继续生产验证，新反馈走 owner 通道。事件闭环。"
+    },
+    {
+      "at": "2026-10-19T06:03:32Z",
+      "type": "attempt_started",
+      "task": "T49",
+      "attempt": "T49·a1",
+      "actor": "glm53-internal"
+    },
+    {
+      "at": "2026-10-19T06:03:32Z",
+      "type": "attempt_settled",
+      "task": "T49",
+      "attempt": "T49·a1",
+      "actor": "glm53-internal"
+    },
+    {
+      "at": "2026-10-19T06:12:03Z",
+      "type": "note",
+      "task": "T47",
+      "detail": "grilling 拍板：口径收缩为存活/死亡二态+idle，订阅计数/epoch/remedy 全砍（留票 45）；参照 pi-proxy setStatus 常驻姿势"
+    },
+    {
+      "at": "2026-10-19T06:14:27Z",
+      "type": "note",
+      "task": "T47",
+      "detail": "补充裁定：图标语言对齐 herdr indicators（● running/○ idle/✗ down，ui.status_indicators dots|symbols 同语法）；见 GitHub #111 comment"
+    },
+    {
+      "at": "2026-10-19T06:19:59Z",
+      "type": "note",
+      "task": "T47",
+      "detail": "herdr-board 落位：project=pi-mypackage-feat-pi-events-daemon（id 3），pipeline 六列，票 44/45/46 = 卡 7/8/9（Todo）；open-board pane 已开"
+    },
+    {
+      "at": "2026-10-19T06:31:49Z",
+      "type": "note",
+      "task": "T48",
+      "detail": "边界外事件闭环：pack-leader state dir bug 由 herdr plugin manager peer 修复（commit 9346cbf，351/351 绿，paths.ts env 非壳才信规则+壳 state.json 为 load-bearing 检测件）。上游化待办：herdr 本体 env 语义不一致（CONFIG_DIR 私有 vs STATE_DIR 共享根）"
+    },
+    {
+      "at": "2026-10-19T07:07:41Z",
+      "type": "attempt_started",
+      "task": "T50",
+      "attempt": "T50·a1",
+      "actor": "board-run-9",
+      "detail": "herdr-board dispatch: 卡 10 → Execute(auto) → pane w3:pQ"
+    },
+    {
+      "at": "2026-10-19T07:07:41Z",
+      "type": "note",
+      "task": "T51",
+      "detail": "queued on board 卡 11"
+    },
+    {
+      "at": "2026-10-19T07:07:41Z",
+      "type": "note",
+      "task": "T52",
+      "detail": "queued on board 卡 12"
+    },
+    {
+      "at": "2026-10-19T07:28:11Z",
+      "type": "attempt_settled",
+      "task": "T50",
+      "attempt": "T50·a1",
+      "actor": "board-run-9"
+    },
+    {
+      "at": "2026-10-19T07:44:53Z",
+      "type": "note",
+      "task": "T50",
+      "detail": "board 卡 10 删除（用户拍板 A：正典记录在 #112 CLOSED + commits + 台账，board 只是执行视图不留假红卡）。根因修复：Review 列 model_override=opus（pipeline 模板预设）是 run 11 死壳的根因，已 clear-model——后续 Review fork 继承卡缺省可达路由"
+    },
+    {
+      "at": "2026-10-19T08:34:51Z",
+      "type": "note",
+      "task": "T50",
+      "detail": "诊断：01a152f6 订阅不唤醒三因——①手写 check 缺 --hostname（glab 落 gitlab.com 401→KeyError→exit 1=waiting 循环，CI success 也永远 waiting）②ad-hoc 被迫手写 check=票 49 缺口实证 ③修复订阅 sub-0049 已 accepted→目标 session 离线转 parked 待 drain 补投。新事实：glab 无 --hostname 时按 cwd 找 authenticated host，daemon checker cwd 非仓内必 401"
+    },
+    {
+      "at": "2026-10-19T09:17:03Z",
+      "type": "note",
+      "task": "T50",
+      "detail": "board 迁移：五卡（44/45/46/48/49）从旧仓内板迁至 kanban 拓扑 /mnt/disk1/hyx/boards project 的 agent-wayfinder Ready 列（spec 已在 GitHub issue，跳过 wayfinder 相位）；space=new_workspace+cwd=feat worktree；老板自动归档。Runtime=agent（pi-mypackage 个人工具仓归属）"
+    },
+    {
+      "at": "2026-10-19T09:36:43Z",
+      "type": "note",
+      "task": "T47",
+      "detail": "board 合并迁移完成：五卡（44/45/46/48/49）迁至 kanban 新单板拓扑 agent 板（id 10，11 列），按跳相位规则落 Implement(auto)——串行派发中（active 1/queued 4→首个 run 14 worker w2V:p2 已在做票 44）。旧三板（wayfinder/execution 双板）归档。boards tab 重开为单板 TUI（w3:tQ/pZ，11 列渲染确认）"
+    },
+    {
+      "at": "2026-10-19T10:01:49Z",
+      "type": "note",
+      "task": "T47",
+      "detail": "并行化完成（用户拍板 implement-spec-in-pipeline 原生并行不被 board 串行化）：SpaceKey={session,kind,ref} 不含 cwd——同 ref=auto 四卡被互斥串行。修复=每卡唯一 space_ref（eda-45/46/48/49-ws）+独立 wt worktree（feat/eda-44-subscriptions/45-events-dock/46-footer-status/48-cleanup-domain/49-url-keygen，基 96f6ab2+node_modules 软链）。现状：卡 7/8 并行 running，9/11/12 随槽顶上（max_concurrent=3）"
+    },
+    {
+      "at": "2026-10-19T10:08:44Z",
+      "type": "note",
+      "task": "T47",
+      "detail": "用户提议落地：pi-events-daemon 订阅 board 卡相位沿——5 卡 × 2 相位（进 E2E=Implement 完成/进 MR&Human Review=评审完成）共 10 条 ad-hoc once 订阅（sub-0060~0069，check=board card show 判 column_id，sessionId=w3:p1 本 session）。相位到达即 wake 本 session 验收，替代轮询 board"
+    },
+    {
+      "at": "2026-10-19T10:10:21Z",
+      "type": "note",
+      "task": "T47",
+      "detail": "首个相位沿 wake 处理：卡 7（票 44）Implement 完成（28m46s，3 commits 285bb0d/ba6cb23/4505a80：query 订阅明细+Transitioned 沿广播+herdr plugin open-subscriptions 新包；640 测试绿）。验收通过，卡在 E2E Tests 列排队。订阅体系首 Wake 实战成功"
+    },
+    {
+      "at": "2026-10-19T10:14:46Z",
+      "type": "note",
+      "task": "T47",
+      "detail": "第二条相位沿 wake：卡 9（票 46 footer 状态）Implement 完成（10m58s，commit 883b6dc 在 feat/eda-46-footer-status worktree 分支——并行派发纪律生效，56 测试绿，实现完全按 #111 简化口径）。对照实验首个数据点：订阅轨 wake ✓ 及时、轮询轨漏报（脚本嵌套引号 bug 已修 v2 重启）——订阅可靠性首胜"
+    },
+    {
+      "at": "2026-10-19T10:17:04Z",
+      "type": "note",
+      "task": "T47",
+      "detail": "第三条相位沿 wake：卡 8（票 45 事件 dock）Implement 完成（14m28s，commit 2a4bac4 @ feat/eda-45-events-dock，66 测试绿）。ADR 0009 裁定：dock 独立实现不与 bg 共用（包边界/语义不同构/数据通道三论据），快捷键 ctrl+alt+e 无冲突——票 45 的共用评估条款有了明确结论。对照实验记分：订阅 wake ✓（本轮），轮询 v2 也捕到 card8 沿——两轨首平局"
+    },
+    {
+      "at": "2026-10-19T10:20:06Z",
+      "type": "note",
+      "task": "T47",
+      "detail": "第四条相位沿 wake：卡 11（票 48 ad-hoc 清理域）Implement 完成（5m26s，commit 54b2e1f @ feat/eda-48-cleanup-domain，631 测试绿，台账 #2 划账）。对照实验：订阅 wake ✓、轮询 v3 待核（card11 沿）。流水线：卡 12 Implement running（最后一张），7/8/9/11 四卡 E2E 排队"
+    }
+  ]
+}
