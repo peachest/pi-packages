@@ -3,6 +3,7 @@ import { mkdtempSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { showPresetDialog, PresetState } from "../index.ts";
+import { unseenWarned, resetScope } from "../src/notify.ts";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import type { PresetOpEntry } from "../index.ts";
 
@@ -117,19 +118,16 @@ describe("dialog load bad-reference warning (ocr-F3)", () => {
     expect(warn?.msg).toContain("cannot be offloaded");
   });
 
-  it("records warned names via consumeReplayWarning (ocr N3)", async () => {
+  it("marks warned names in the notify ledger (ocr N3)", async () => {
     const state = new PresetState();
     const { pi } = makeFakePi();
     const fake = makeFakeDialogCtx(["domain-modeling"]);
-    const warned: string[][] = [];
-    await showPresetDialog(fake.ctx, pi, state, config, () => undefined, (names) => {
-      warned.push(names);
-    });
+    await showPresetDialog(fake.ctx, pi, state, config, () => undefined);
 
     const dialog = fake.capture() as { togglePreset: (name: string) => void };
     dialog.togglePreset("ddd");
 
-    expect(warned).toEqual([["ghost-skill"]]);
+    expect(unseenWarned(["ghost-skill"])).toEqual([]); // ledger marked the name
     expect(state.has("ddd")).toBe(true);
   });
 

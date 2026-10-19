@@ -30,6 +30,7 @@ import type { PresetState } from "./preset-state.ts";
 import type { PresetsConfig, PresetOpEntry } from "./types.ts";
 import { getPresetSkills, readPresetsConfig, writePresetsConfig, getAgentDir } from "./config.ts";
 import { findBadRefs } from "./bad-refs.ts";
+import { markWarned } from "./notify.ts";
 import { PRESET_OP_CUSTOM_TYPE } from "./types.ts";
 
 type DialogMode = "browse" | "preset-edit" | "skill-list" | "new-preset" | "confirm";
@@ -60,7 +61,6 @@ export async function showPresetDialog(
   state: PresetState,
   config: PresetsConfig,
   getDefaultPreset?: () => string | undefined,
-  consumeReplayWarning?: (names: string[]) => void,
 ): Promise<void> {
   if (!ctx.hasUI) {
     ctx.ui.notify("/preset requires interactive mode", "warning");
@@ -77,7 +77,6 @@ export async function showPresetDialog(
       tui,
       done,
       getDefaultPreset ?? (() => undefined),
-      consumeReplayWarning,
     );
   }, {
     overlay: true,
@@ -162,7 +161,6 @@ class PresetDialog extends Container {
   /** Delta base for merging saves — refreshed to the merged result after each save (ocr R4M2). */
   private originalDefinitions: PresetsConfig["definitions"];
   private readonly getDefaultPreset: () => string | undefined;
-  private readonly consumeReplayWarning?: (names: string[]) => void;
   private readonly cwd: string;
 
   // Navigation state
@@ -185,7 +183,6 @@ class PresetDialog extends Container {
     tui: TUI,
     done: (result: void) => void,
     getDefaultPreset: () => string | undefined,
-    consumeReplayWarning?: (names: string[]) => void,
   ) {
     super();
     this.ctx = ctx;
@@ -197,7 +194,6 @@ class PresetDialog extends Container {
     this.tui = tui;
     this.done = done;
     this.getDefaultPreset = getDefaultPreset;
-    this.consumeReplayWarning = consumeReplayWarning;
     this.cwd = ctx.cwd;
 
     this.nameInput.onSubmit = () => this.confirmNewPreset();
@@ -756,8 +752,8 @@ class PresetDialog extends Container {
           "warning",
         );
         // Aligned with /preset-load (ocr N3): the warned names are recorded
-        // so the replay path does not repeat them.
-        this.consumeReplayWarning?.(badRefs);
+        // so the replay path does not repeat them (dedup policy in notify ledger).
+        markWarned(badRefs);
       }
     }
     this.state.load(name);

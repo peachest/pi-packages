@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { PresetState, PRESET_OP_CUSTOM_TYPE, rebuildActiveSetFromEntries } from "../index.ts";
+import { PresetState, PRESET_OP_CUSTOM_TYPE } from "../index.ts";
 import type { PresetsConfig, PresetOpEntry } from "../index.ts";
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 
@@ -35,32 +35,36 @@ describe("PresetState", () => {
     expect(state.getLoaded()).toEqual([]);
   });
 
-  it("replayEntries rebuilds active set from history", () => {
+  /** Wrap a preset op as the custom entry shape the replay path filters for. */
+  const asEntry = (op: PresetOpEntry): SessionEntry =>
+    ({ type: "custom", customType: PRESET_OP_CUSTOM_TYPE, data: op, id: "x", parentId: null }) as unknown as SessionEntry;
+
+  it("rebuildFromEntries rebuilds active set from history", () => {
     const state = new PresetState();
-    const entries: PresetOpEntry[] = [
-      { action: "load", preset: "ddd", timestamp: 1000 },
-      { action: "load", preset: "go", timestamp: 2000 },
-      { action: "offload", preset: "ddd", timestamp: 3000 },
+    const entries = [
+      asEntry({ action: "load", preset: "ddd", timestamp: 1000 }),
+      asEntry({ action: "load", preset: "go", timestamp: 2000 }),
+      asEntry({ action: "offload", preset: "ddd", timestamp: 3000 }),
     ];
-    state.replayEntries(entries);
+    state.rebuildFromEntries(entries);
     expect(state.getLoaded()).toEqual(["go"]);
   });
 
-  it("replayEntries with empty array clears state", () => {
+  it("rebuildFromEntries with empty array clears state", () => {
     const state = new PresetState();
     state.load("ddd");
-    state.replayEntries([]);
+    state.rebuildFromEntries([]);
     expect(state.getLoaded()).toEqual([]);
   });
 
-  it("replayEntries handles re-load after offload", () => {
+  it("rebuildFromEntries handles re-load after offload", () => {
     const state = new PresetState();
-    const entries: PresetOpEntry[] = [
-      { action: "load", preset: "ddd", timestamp: 1000 },
-      { action: "offload", preset: "ddd", timestamp: 2000 },
-      { action: "load", preset: "ddd", timestamp: 3000 },
+    const entries = [
+      asEntry({ action: "load", preset: "ddd", timestamp: 1000 }),
+      asEntry({ action: "offload", preset: "ddd", timestamp: 2000 }),
+      asEntry({ action: "load", preset: "ddd", timestamp: 3000 }),
     ];
-    state.replayEntries(entries);
+    state.rebuildFromEntries(entries);
     expect(state.has("ddd")).toBe(true);
   });
 });
@@ -186,7 +190,7 @@ describe("rebuildActiveSetFromEntries — compaction-safe replay (ocr R4H)", () 
 
     // The extension replays from getBranch() (full history, no truncation).
     const state = new PresetState();
-    rebuildActiveSetFromEntries(sm.getBranch(), state);
+    state.rebuildFromEntries(sm.getBranch());
     expect(state.has("early")).toBe(true);
     expect(state.has("late")).toBe(true);
   });
@@ -208,10 +212,11 @@ describe("rebuildActiveSetFromEntries — compaction-safe replay (ocr R4H)", () 
 
     const state = new PresetState();
     expect(() =>
-      rebuildActiveSetFromEntries(
-        [legit("load", "before"), nullEntry, legit("load", "after")],
-        state,
-      ),
+      state.rebuildFromEntries([
+        legit("load", "before"),
+        nullEntry,
+        legit("load", "after"),
+      ]),
     ).not.toThrow();
     expect(state.has("before")).toBe(true);
     expect(state.has("after")).toBe(true);

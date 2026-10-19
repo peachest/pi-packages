@@ -15,7 +15,7 @@ import { PRESET_OP_CUSTOM_TYPE } from "./types.ts";
 import { readPresetsConfig, getPresetSkills } from "./config.ts";
 import { showPresetDialog } from "./dialog.ts";
 import { findBadRefs } from "./bad-refs.ts";
-import { recordNotify } from "./notify.ts";
+import { markWarned, recordNotify } from "./notify.ts";
 
 /**
  * Create command handlers with shared state.
@@ -26,17 +26,12 @@ import { recordNotify } from "./notify.ts";
  * @param getDefaultPreset - Function returning the default preset name; MUST
  *   read config.default at call time (ocr N2) so interactions see the current
  *   value instead of a turn-boundary cached one.
- * @param consumeReplayWarning - Called with the names just warned, so the
- *   replay path does not re-warn them (per-name dedup, ocr-F2). Passed through
- *   to the dialog as well (ocr N3).
  */
 export function createCommands(
   pi: ExtensionAPI,
   state: PresetState,
   getCwd: () => string,
   getDefaultPreset: () => string | undefined,
-  /** Optional: records per-name replay-warning dedup (#65 B3, ocr-F2). */
-  consumeReplayWarning?: (names: string[]) => void,
 ) {
   /**
    * Read config or refuse the operation (ocr R11M2): unreadable settings.json
@@ -66,7 +61,7 @@ export function createCommands(
     if (!config) return;
     // getDefaultPreset is a live getter — the dialog re-reads the default at
     // each interaction point, so a settings.json change mid-dialog applies.
-    await showPresetDialog(ctx, pi, state, config, getDefaultPreset, consumeReplayWarning);
+    await showPresetDialog(ctx, pi, state, config, getDefaultPreset);
   }
 
   /** /preset-load <name> */
@@ -103,7 +98,7 @@ export function createCommands(
           `Preset "${name}" is already loaded, but these skills are unavailable (missing or disabled): ${badRefs.join(", ")}`,
           "warning",
         );
-        consumeReplayWarning?.(badRefs);
+        markWarned(badRefs);
       }
       ctx.ui.notify(`Preset "${name}" is already loaded.`, "info");
       return;
@@ -116,8 +111,8 @@ export function createCommands(
         "warning",
       );
       // This load consumed the warning opportunity — the warned names must
-      // not be repeated by the replay path.
-      consumeReplayWarning?.(badRefs);
+      // not be repeated by the replay path (dedup policy in notify ledger).
+      markWarned(badRefs);
     }
 
     doLoad(pi, ctx, state, name);

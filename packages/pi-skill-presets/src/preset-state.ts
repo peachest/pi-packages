@@ -5,7 +5,9 @@
  * Skills are resolved dynamically from preset names each turn.
  */
 
+import type { CustomEntry, SessionEntry } from "@earendil-works/pi-coding-agent";
 import type { PresetOpEntry, ResolvedActiveSet, PresetsConfig } from "./types.ts";
+import { PRESET_OP_CUSTOM_TYPE } from "./types.ts";
 import { getPresetSkills } from "./config.ts";
 
 /** In-memory active set: names of loaded presets (explicit loads only — the
@@ -40,13 +42,43 @@ export class PresetState {
 
   /**
    * Replay persistent entries to rebuild the active set.
-   * Entries are processed in chronological order.
-   * Kept because preset-state.test.ts exercises it; index.ts replays entries
-   * inline (path-aware, #64) instead of calling this.
+   *
+   * The single production replay path (index.ts session_start/session_tree
+   * and tests all call this): preset-op custom entries on the given entry
+   * list are replayed in order. Callers pass the entry list; path-awareness
+   * (session tree / compaction) is the caller's source choice — index.ts
+   * passes sessionManager.getBranch() (full root→leaf history, compaction-
+   * safe per ocr R4H), so preset-ops on abandoned branches never enter.
+   *
+   * The active set is pure explicit-load state: the default preset is NOT
+   * part of it (its skills are unioned per turn in resolveSkills), so
+   * switching settings.json's default mid-session drops the old default's
+   * skills immediately.
    */
-  replayEntries(entries: PresetOpEntry[]): void {
+  rebuildFromEntries(entries: SessionEntry[]): void {
     this.clear();
-    for (const entry of entries) {
+
+    // Historical load(<old-default>) entries still enter the active set here;
+    // harmless — the per-turn union with the current default dedups skills.
+    const presetOps: PresetOpEntry[] = entries
+      .filter(
+        (e): e is CustomEntry<PresetOpEntry> =>
+          e.type === "custom" && e.customType === PRESET_OP_CUSTOM_TYPE,
+      )
+      .map((e) => e.data as PresetOpEntry)
+      .filter(
+        (d) =>
+          // Null guard (ocr R5M3): a custom entry with null data is legal on
+          // disk and `typeof null === "object"` — dereferencing it here would
+          // throw and abort the whole replay after clear(). Skip it.
+          d !== null &&
+          d !== undefined &&
+          typeof d === "object" &&
+          typeof d.action === "string" &&
+          typeof d.preset === "string",
+      );
+
+    for (const entry of presetOps) {
       if (entry.action === "load") {
         this.load(entry.preset);
       } else if (entry.action === "offload") {
