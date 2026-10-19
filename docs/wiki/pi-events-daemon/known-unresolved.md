@@ -20,9 +20,12 @@
    profile 形态同一 sweep ② 清理循环。域互斥由 profileId 有无唯一判定：单次遍历每实体恰归一域，
    双域并配不重复扫描（单测断言）；未注入 adhocTerminalStates = 职责不激活（缺省语义不变）。
    e2e 模拟时钟推进 7d → retired → 清残留全链绿。
-
->>>>>> feat/eda-48-cleanup-domain
-   部分完成（票 40 ocr F5 修复后仍余子面）。
+3. ~~**subscribe url 多参数 keyGenerator**~~ → **已收口（票 49/GitHub #114，2026-10-19）**：resolve 命中时
+   urlPattern 命名捕获组随帧提取为参数字典，op-dispatch 并入 instantiate——多参数 URL 模板的 check 代入
+   与 fields keyGenerator 消费均经此面；多余参数 load 即拒，缺失参数 instantiate invalid-params 拒绝。
+4. ~~**query scope/session 过滤部分接入**~~ → **已收口（票 44/GitHub #109，2026-10-19）**：query op 返回体
+   补订阅行明细（subscriptions 数组），过滤面（sessionId/scope/entityRef）与实体面同源——订阅清单不再
+   需要 store 直读。剩余既有面（deadLetters 过滤、B4 懒重探标记）不变。
 5. **全量套件高负载偶发真进程时序 flake**：真 spawn 冒烟与 kill 自愈组在全量并发下偶发时序竞争
    （wake 屏障已改 level-trigger，剩余为观测项）。
 
