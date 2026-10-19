@@ -378,7 +378,9 @@ export class SqliteStore implements Store {
         this.st("INSERT INTO subscriptions (subscription_id, session_id, entity_ref_type, entity_ref_key, template, origin, scope, created_at, ttl_ms, check_name, on_predicate, once, flip, ready_check, thresholds_json, closed_at, closed_reason, phase) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (subscription_id) DO UPDATE SET session_id = excluded.session_id, entity_ref_type = excluded.entity_ref_type, entity_ref_key = excluded.entity_ref_key, template = excluded.template, origin = excluded.origin, scope = excluded.scope, created_at = excluded.created_at, ttl_ms = excluded.ttl_ms, check_name = excluded.check_name, on_predicate = excluded.on_predicate, once = excluded.once, flip = excluded.flip, ready_check = excluded.ready_check, thresholds_json = excluded.thresholds_json, closed_at = excluded.closed_at, closed_reason = excluded.closed_reason, phase = excluded.phase").run(
           row.subscriptionId, row.sessionId, row.entityRefType, row.entityRefKey,
           row.template ?? null, row.origin, row.scope ?? null, row.createdAt, row.ttlMs ?? null,
-          row.check ?? null, row.on ?? null,
+          row.check ?? null,
+          // on 允许 string | string[]（wire 正典）；序列化边界归 store（对齐 thresholds/schedule 先例）——bind 只收标量
+          Array.isArray(row.on) ? JSON.stringify(row.on) : row.on ?? null,
           row.once === undefined ? null : row.once ? 1 : 0,
           row.flip === undefined ? null : row.flip ? 1 : 0,
           row.readyCheck ?? null,

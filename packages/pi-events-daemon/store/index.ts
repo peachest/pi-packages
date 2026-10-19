@@ -53,7 +53,8 @@ export type SubscriptionRow = {
   // + 关闭簿记（closedAt 有值 = 已关订阅；closedReason 封闭集 = 关闭路径）。
   check?: string;
   /** on 谓词（I5：不进槽键，仅订阅参数）。 */
-  on?: string;
+  /** wire 形态（op.schema on: string | string[]）；SQLite bind 前由 sqlite.ts 序列化为 JSON 串，读出为串（kernel onMatches 兼容还原） */
+  on?: string | string[];
   once?: boolean;
   flip?: boolean;
   readyCheck?: string;

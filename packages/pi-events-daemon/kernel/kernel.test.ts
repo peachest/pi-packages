@@ -764,9 +764,9 @@ describe("票 24 — subscribe 幂等与换参", () => {
     // 数组形态订阅：修复前 bind 崩（SQLite param-11）；修复后 stringify 入库
     const id = subId(kernel.subscribe(subReq({ opts: { on: ["failed"], once: false } })));
     expect(id).toBeTruthy();
-    // 行内 on 是 JSON 字符串形态（写侧正典）
+    // 行内 on 保留 wire 形态（序列化边界归 store sqlite bind 层——8a8403b 复核重构，对齐 thresholds 先例）
     const row = store.querySubscriptions({ sessionId: "session-1" })[0];
-    expect(row?.on).toBe(JSON.stringify(["failed"]));
+    expect(row?.on).toEqual(["failed"]);
     // 读侧还原：数组形态谓词对两个值各判一次
     expect(onMatches({ to: "failed" }, row?.on)).toBe(true);
     expect(onMatches({ to: "passed" }, row?.on)).toBe(false);
@@ -920,6 +920,18 @@ describe("评审 A 组 — SqliteStore 真库订阅流程（票 24 新增字段�
   };
   afterAll(() => {
     for (const d of tmpDirs) rmSync(d, { recursive: true, force: true });
+  });
+
+  it("on 数组形态过 SQLite 持久层：bind 前序列化（8a8403b 回归——store 层接管序列化边界）", () => {
+    const s = new SqliteStore(tmpDbPath());
+    const kernel = new Kernel(s, VERDICT_STATES, 0);
+    kernel.register({ entityRef: REF, profileId: "fixture-profile", state: null });
+    const id = subId(kernel.subscribe(subReq({ opts: { on: ["failed"], once: false } })));
+    // 行读出为 JSON 串（bind 序列化后的持久形态）；onMatches 兼容还原
+    const row = s.getSubscription(id);
+    expect(row?.on).toBe(JSON.stringify(["failed"]));
+    expect(onMatches({ to: "failed" }, row?.on)).toBe(true);
+    expect(onMatches({ to: "passed" }, row?.on)).toBe(false);
   });
 
   it("真 SQLite 下 subscribe 幂等/关闭/相位推进/换参重建（字段往返过持久层）", () => {
