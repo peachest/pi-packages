@@ -18,7 +18,12 @@
    （票 28 L4）只覆盖 profile 形态；ad-hoc 声明的 ephemeral 清理域未在组合根注入。
 3. **subscribe url 多参数 keyGenerator**：url 路由的 keyGenerator 需 extension instantiate 随帧补齐
    （票 32 路由 × 票 34 extension 接缝）。
-4. **query scope/session 过滤部分接入**：store.notifications(filter) 双实现已齐；query op 侧过滤接线
+4. ~~**query scope/session 过滤部分接入**~~ → **已收口（票 44/GitHub #109，2026-10-19）**：query op
+   返回体补订阅行明细（`subscriptions` 数组：subscriptionId/sessionId/entityRef/实体现值/check/on/
+   schedule(probe spec join)/thresholds/phase/backlog(session×实体 join)/createdAt），过滤面
+   （sessionId/scope/entityRef）与实体面同源——订阅清单不再需要 store 直读，面板/脚本读侧归一。
+   剩余既有面（deadLetters 过滤、B4 懒重探标记）不变。
+   原问题：store.notifications(filter) 双实现已齐；query op 侧过滤接线
    部分完成（票 40 ocr F5 修复后仍余子面）。
 5. **全量套件高负载偶发真进程时序 flake**：真 spawn 冒烟与 kill 自愈组在全量并发下偶发时序竞争
    （wake 屏障已改 level-trigger，剩余为观测项）。
