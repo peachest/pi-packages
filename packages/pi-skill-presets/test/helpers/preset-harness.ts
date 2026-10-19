@@ -32,7 +32,7 @@ import type { RecordedNotification } from "../../index.ts";
 // to run the same suite against another gateway-hosted model for local
 // verification; CI and the default path always use the pinned value.
 export const PINNED_MODEL_ID =
-  process.env.PI_SKILL_PRESETS_TEST_MODEL?.trim() || "glm53-flash-internal";
+  process.env.PI_SKILL_PRESETS_TEST_MODEL?.trim() || "glm53-internal";
 export const PROMPT = "Reply with exactly one word: ok";
 
 export const REAL_AGENT_DIR =
