@@ -9,8 +9,8 @@
  *
  * R1 双轨恢复前提（重放不得重新编号）：
  * - decisionOrder（决策轨）从 mutation line 位点经构造注入（mutation line 归 loops 侧管）；
- * - eventSeq（写入轨）从事件流尾恢复——首版经 outbox 行 eventSeq 最大值（outbox 行与
- *   transition 1:1 同事务写入，I1 组合面；事件流尾直查归 store 接口后续票精化）。
+ * - eventSeq（写入轨）从事件流尾恢复——经 store.outboxMaxEventSeq() 聚合下推（outbox 行与
+ *   transition 1:1 同事务写入，I1 组合面；票 42 全表拉收编）。
  */
 import {
   type EntityRef,
@@ -35,7 +35,6 @@ import type { IntentSequences, ThresholdConfig } from "../domain/intent.ts";
 import {
   type SubscriptionAddressing,
   type SubscriptionScope,
-  EVIDENCE_INLINE_LIMIT,
   deliveryTargets,
   makeBillboard,
   onMatches,
@@ -43,7 +42,6 @@ import {
 } from "../domain/delivery.ts";
 import { publish as domainPublish, type Entity } from "../domain/entity.ts";
 import type { EventRow, Store, SubscriptionRow, TxView } from "../store/index.ts";
-import type { EntityRow } from "../store/index.ts";
 
 // I-01 类型面：profiles 依 eda-profiles-deps 只许经 kernel 取 domain 类型（profiles→{domain,protocol,store} 全禁），
 // 故在此转发 EntityRef；单一来源仍是 domain/types.ts（本文件上方 import 同源，零第二定义）。
@@ -168,27 +166,6 @@ export class IntentCorruption extends Error {
   }
 }
 
-/**
- * profile 注册表条目（I-01：profile 静态面作为数据声明注入，kernel 零 profile import）。
- * 票 11 消费面：templates 清单 / validate 三类错误 + ADR 0004 副作用 pattern；状态集仍走构造注入 states。
- */
-export interface ProfileRegistryEntry {
-  profileId: string;
-  templates: ReadonlyArray<{
-    name: string;
-    entityType: string;
-    states: readonly string[];
-    params?: readonly string[];
-    schedule?: unknown;
-    usage?: string;
-  }>;
-  /** 已知副作用 pattern（子串匹配）：validate 命中出 warning 不阻断（ADR 0004 checks-are-probes）。 */
-  sideEffectPatterns?: readonly string[];
-  /** C2 on-transition 编排规则（数据声明；schema profile.onTransition 投影）：消费归 loops L0——
-   *  transition 消费成功后匹配 from/to，编排动作（subscribe/close）经 L0 队列执行。 */
-  onTransition?: ReadonlyArray<{ on: string | string[]; action: string; params?: Record<string, unknown> }>;
-}
-
 /** fanOut 运行时 deps：活跃 session 是 socket runtime（transport 持有），经调用注入（kernel 不碰 socket）。 */
 export type FanOutDeps = {
   activeSessions: ReadonlyArray<{ sessionId: string; scope: SubscriptionScope }>;
@@ -208,33 +185,9 @@ export type DrainResult = {
   deadLetterSummary: { count: number; oldestAgeMs: number | null };
 };
 
-/** query B4 懒重探 ctx：probe runtime 是 RunnerSlot 侧数据（票 24 持有），读侧经调用注入。 */
-export type QueryProbeCtx = {
-  now: number;
-  reprobeAfterMs: number;
-  runtime: ReadonlyArray<{ entityRef: EntityRef; refcount: number; lastProbedAt: number | null }>;
-};
-
-export type QueryEntityEntry = {
-  entityRef: EntityRef;
-  state: string | null;
-  payload: unknown;
-  /** 实体最新事件写入序（无事件 = null）；端到端链 B 断言面。 */
-  eventSeq: number | null;
-  lastProbedAt: number | null;
-  /** pending delivery 行数（经事件 join 归实体）。 */
-  backlog: number;
-  /** listChildren 单层展开（孩子条目不再嵌套 children，无级联）。 */
-  children?: QueryEntityEntry[];
-  /** B4 懒重探标记：refcount 0 且 lastProbedAt 超阈（null=未探过亦算陈旧）→ 单次重探；
-   *  重探执行方记录 lastProbedAt 后条件自清（单次语义，query 读侧不写）。 */
-  reprobeRequested?: boolean;
-};
-
-export type QueryResult = {
-  entities: QueryEntityEntry[];
-  deadLetters: ReadonlyArray<{ notificationId: string; sessionId: string; entityRef: EntityRef }>;
-};
+// 票 42：query 读模型形状迁 kernel/query.ts（本文件 re-export 保持既有 import 路径）
+export type { QueryEntityEntry, QueryProbeCtx, QueryResult } from "./query.ts";
+import { createQueryFace, type QueryFace, type QueryProbeCtx, type QueryResult } from "./query.ts";
 
 /** validate 请求（静态面）：profile 路由 + 模板形态/ ad-hoc 形态二选一。 */
 export type ValidateRequest = {
@@ -250,24 +203,6 @@ export type ValidateResult =
   | { ok: false; error: "profile-not-found" | "invalid-params" | "checker-declaration"; reason: string }
   | { ok: true; warnings: readonly string[] };
 
-export type TemplateMeta = {
-  profileId: string;
-  name: string;
-  entityType: string;
-  states: readonly string[];
-  params?: readonly string[];
-  schedule?: unknown;
-  usage?: string;
-};
-
-/** eventSeq 事件流尾恢复（首版）：outbox 行与 transition 1:1，取 eventSeq 最大值；空库 = 0。 */
-function recoverEventSeq(store: Store): number {
-  let max = 0;
-  for (const row of store.outboxBatch(Number.MAX_SAFE_INTEGER)) {
-    if (row.eventSeq > max) max = row.eventSeq;
-  }
-  return max;
-}
 
 /** D3 映射层：domain Transitioned → store EventRow（entityRef 平铺；contentIdentity null 归一 undefined——EventRow 无 null 槽位，存储侧同形）。 */
 function toEventRow(e: Transitioned): EventRow {
@@ -307,10 +242,10 @@ function sameContent(stored: EventRow, intent: TransitionIntent): boolean {
  */
 export class Kernel {
   private sequences: IntentSequences;
+  /** 票 42：读模型面（query/evidence 实现迁 kernel/query.ts；本类保留委托签名，消费面不变）。 */
+  private readonly readFace: QueryFace;
   /** I12：本 daemon 实例世代（daemon-main 组合根传入；0 = 未接线）。 */
   private readonly ownerEpoch: number;
-  /** I-01 profile 注册表（静态面数据；票 11 消费于 validate/templates）。 */
-  private readonly registry: ReadonlyArray<ProfileRegistryEntry>;
   /** 订阅 id 序（sub-NNNN）：从既有行恢复 max——重启后新订阅不撞旧 id。 */
   private subSeq: number;
 
@@ -320,11 +255,11 @@ export class Kernel {
     private readonly states: ReadonlySet<string>,
     /** decisionOrder 起点双轨之决策轨：mutation line 尾位点（重放不得重新编号）。 */
     decisionOrder: number,
-    opts: { ownerEpoch?: number; registry?: ReadonlyArray<ProfileRegistryEntry> } = {},
+    opts: { ownerEpoch?: number } = {},
   ) {
-    this.sequences = { decisionOrder, eventSeq: recoverEventSeq(store) };
+    this.readFace = createQueryFace(store);
+    this.sequences = { decisionOrder, eventSeq: store.outboxMaxEventSeq() };
     this.ownerEpoch = opts.ownerEpoch ?? 0;
-    this.registry = opts.registry ?? [];
     this.subSeq = 0;
     for (const s of store.querySubscriptions({})) {
       const m = /^sub-(\d+)$/.exec(s.subscriptionId);
@@ -945,184 +880,23 @@ export class Kernel {
   }
 
   /**
-   * query（票 11，读侧归一）：实体清单（state/payload 摘要/eventSeq/lastProbedAt/backlog）
-   * + listChildren 单层展开 + per-entity backlog + deadLetters 清单 + B4 懒重探标记。
-   * backlog/deadLetters/eventSeq 归属：delivery/notificationId 经事件 join（tx 批量点查）。
-   * 过滤面：entityRef 点查 + scope/session（票 40 评审 F5：开放订阅-实体 join——可见实体 =
-   * 持有匹配 scope/session 的开放订阅；deadLetters 另按自身 sessionId 过滤）。
+   * query（票 11，读侧归一）：实体清单 + 单层展开 + per-entity backlog + deadLetters + B4 懒重探标记。
+   * 票 42：实现迁 kernel/query.ts 读模型（本类委托，LoopsHandle Pick 消费面不变）。
    */
   query(
     filter: { entityRef?: EntityRef; scope?: SubscriptionScope; sessionId?: string } = {},
     probe?: QueryProbeCtx,
   ): QueryResult {
-    const entities = this.store.queryEntities({});
-    // scope/session 可见集（订阅-实体 join；closed 订阅不携带可见性；scope 缺省 project 同 L0 编址口径）
-    let visible: Set<string> | null = null;
-    if (filter.scope !== undefined || filter.sessionId !== undefined) {
-      visible = new Set();
-      for (const s of this.store.querySubscriptions(
-        filter.sessionId !== undefined ? { sessionId: filter.sessionId } : {},
-      )) {
-        if (s.closedAt !== undefined) continue;
-        if (filter.scope !== undefined && (s.scope ?? "project") !== filter.scope) continue;
-        visible.add(entityRefKeyOf({ type: s.entityRefType, key: s.entityRefKey }));
-      }
-    }
-    const outbox = this.store.outboxBatch(Number.MAX_SAFE_INTEGER);
-    const pending = this.store.pendingDeliveries({});
-    const dead = this.store.deadLetters({});
-    const joins = this.store.tx((tx) => {
-      const latestSeq = new Map<string, number>();
-      const backlogByRef = new Map<string, number>();
-      const deadList: { notificationId: string; sessionId: string; entityRef: EntityRef }[] = [];
-      for (const o of outbox) {
-        const ev = tx.getEvent(o.notificationId);
-        if (!ev) continue;
-        const k = entityRefKeyOf({ type: ev.entityRefType, key: ev.entityRefKey });
-        latestSeq.set(k, Math.max(latestSeq.get(k) ?? 0, ev.eventSeq));
-      }
-      for (const d of pending) {
-        const ev = tx.getEvent(d.notificationId);
-        if (!ev) continue;
-        const k = entityRefKeyOf({ type: ev.entityRefType, key: ev.entityRefKey });
-        backlogByRef.set(k, (backlogByRef.get(k) ?? 0) + 1);
-      }
-      for (const d of dead) {
-        const ev = tx.getEvent(d.notificationId);
-        if (ev) deadList.push({ notificationId: d.notificationId, sessionId: d.sessionId, entityRef: { type: ev.entityRefType, key: ev.entityRefKey } });
-      }
-      return { latestSeq, backlogByRef, deadList };
-    });
-
-    // parent→children 索引一次构建（O(N)）：无过滤 query 全量 entryOf(true) 时，
-    // 每实体全表扫父子关系是 O(N²)（万级实体同步阻塞）——单次建 Map 后 O(1) 查找
-    const childrenByParent = new Map<string, EntityRow[]>();
-    for (const e of entities) {
-      if (e.parentType === undefined || e.parentKey === undefined) continue;
-      const pk = entityRefKeyOf({ type: e.parentType, key: e.parentKey });
-      const bucket = childrenByParent.get(pk);
-      if (bucket) bucket.push(e);
-      else childrenByParent.set(pk, [e]);
-    }
-
-    const entryOf = (row: EntityRow, withChildren: boolean): QueryEntityEntry => {
-      const ref = { type: row.type, key: row.key };
-      const k = entityRefKeyOf(ref);
-      const rt = probe?.runtime.find((r) => sameEntityRef(r.entityRef, ref));
-      const entry: QueryEntityEntry = {
-        entityRef: ref,
-        state: row.state,
-        payload: row.payload ?? null,
-        eventSeq: joins.latestSeq.get(k) ?? null,
-        lastProbedAt: rt?.lastProbedAt ?? null,
-        backlog: joins.backlogByRef.get(k) ?? 0,
-      };
-      if (withChildren) {
-        const children = (childrenByParent.get(k) ?? []).map((c) => entryOf(c, false)); // 单层：孩子不再展开
-        if (children.length > 0) entry.children = children;
-      }
-      if (rt && rt.refcount === 0 && probe && (rt.lastProbedAt === null || probe.now - rt.lastProbedAt > probe.reprobeAfterMs)) {
-        entry.reprobeRequested = true;
-      }
-      return entry;
-    };
-
-    const selected = entities.filter((e) => {
-      if (filter.entityRef && !(e.type === filter.entityRef.type && e.key === filter.entityRef.key)) return false;
-      if (visible && !visible.has(entityRefKeyOf({ type: e.type, key: e.key }))) return false;
-      return true;
-    });
-    const deadLetters = joins.deadList.filter((d) => {
-      if (filter.entityRef && !sameEntityRef(d.entityRef, filter.entityRef)) return false;
-      if (filter.sessionId !== undefined && d.sessionId !== filter.sessionId) return false;
-      if (visible && !visible.has(entityRefKeyOf(d.entityRef))) return false;
-      return true;
-    });
-    return { entities: selected.map((e) => entryOf(e, true)), deadLetters };
+    return this.readFace.query(filter, probe);
   }
 
-  /**
-   * evidence（票 11）：FTS5 点查（B 层 = store.evidenceSearch 朴素子串 + 精确 ref 收口）。
-   * 双 ref 形态：直接 evidence 行 ref，或 billboard 截断指针（= notificationId）→ 事件
-   * evidenceRef → 全文（截断只发生在 billboard 内联，指针解引用不被吞）。truncated =
-   * 全文超 2KB 内联上限（EVIDENCE_INLINE_LIMIT，UTF-8 字节）。
-   */
+  /** evidence（票 11）：双 ref 形态精确读。票 42：实现迁 kernel/query.ts（本类委托）。 */
   evidence(evidenceRef: string): { content: string; truncated: boolean } {
-    // 点查语义（票 40）：双 ref 形态都是 ref 精确读——FTS 搜索面（evidenceSearch）对含 ":" 的
-    // 确定性 event id 形 ref 会解析成 FTS 列过滤器，不承载点查（getEvidence enumeration-completion）。
-    const direct = this.store.getEvidence(evidenceRef);
-    const row =
-      direct ??
-      (() => {
-        const event = this.store.tx((tx) => tx.getEvent(evidenceRef));
-        return event?.evidenceRef ? this.store.getEvidence(event.evidenceRef) : undefined;
-      })();
-    if (!row) throw new Error(`evidence not found: ${evidenceRef}`);
-    return { content: row.content, truncated: Buffer.byteLength(row.content, "utf8") > EVIDENCE_INLINE_LIMIT };
+    return this.readFace.evidence(evidenceRef);
   }
 
-  /**
-   * validate（票 11，静态面）：三类错误同步拒（错误信息一律列可用选项）+ ADR 0004 已知
-   * 副作用 pattern 命中出 warning 不阻断。数据全部来自构造注入注册表（I-01）；live-run
-   * 执行（verdict/durationMs）归 prober 后续票，kernel 不 spawn。
-   */
-  validate(req: ValidateRequest): ValidateResult {
-    const entry = this.registry.find((r) => r.profileId === req.profile);
-    if (!entry) {
-      return {
-        ok: false,
-        error: "profile-not-found",
-        reason: `profile "${req.profile}" 未找到 — 可用: [${this.registry.map((r) => r.profileId).sort().join(", ")}]`,
-      };
-    }
-    if (req.template !== undefined && req.check !== undefined) {
-      return {
-        ok: false,
-        error: "checker-declaration",
-        reason: "template 与 check 二选一：模板形态（check 由模板派生）或 ad-hoc 形态（显式声明 check）",
-      };
-    }
-    if (req.template !== undefined) {
-      const tpl = entry.templates.find((t) => t.name === req.template);
-      if (!tpl) {
-        return {
-          ok: false,
-          error: "profile-not-found",
-          reason: `template "${req.template}" 未找到 — 可用: [${entry.templates.map((t) => t.name).join(", ")}]`,
-        };
-      }
-      // own-property 判定（票 04 校验器同修法）：不吃 Object.prototype 原型链（"constructor" 等）；显式 undefined 仍算缺失
-      const provided = req.params ?? {};
-      const missing = (tpl.params ?? []).filter(
-        (p) => !Object.prototype.hasOwnProperty.call(provided, p) || provided[p] === undefined,
-      );
-      if (missing.length > 0) {
-        return { ok: false, error: "invalid-params", reason: `缺少必填参数: ${missing.join(", ")}` };
-      }
-    }
-    const check = req.check;
-    if (check !== undefined && check.trim() === "") {
-      return { ok: false, error: "checker-declaration", reason: "check 声明为空" };
-    }
-    if (check === undefined && req.template === undefined) {
-      return { ok: false, error: "checker-declaration", reason: "ad-hoc 形态必须显式声明 check（模板形态由模板派生）" };
-    }
-    const warnings = (entry.sideEffectPatterns ?? [])
-      .filter((p) => (check ?? "").includes(p))
-      .map((p) => `check 命中已知副作用 pattern "${p}"（ADR 0004：探测零副作用，不阻断）`);
-    return { ok: true, warnings };
-  }
-
-  /** templates（票 11）：模板元数据清单，全部来自注册表注入内容（渐进式披露面）。 */
-  templates(profile?: string): { templates: readonly TemplateMeta[] } {
-    if (profile !== undefined && !this.registry.some((r) => r.profileId === profile)) {
-      throw new Error(`profile "${profile}" 未找到 — 可用: [${this.registry.map((r) => r.profileId).sort().join(", ")}]`);
-    }
-    const templates = this.registry
-      .filter((r) => profile === undefined || r.profileId === profile)
-      .flatMap((r) => r.templates.map((t) => ({ profileId: r.profileId, ...t })));
-    return { templates };
-  }
+  // 票 42：validate/templates 静态面迁 profiles（ProfileRegistry.validate/templates +
+  // validateEntry/profileTemplates 纯函数）；注册表注入随消费面同步删除。
 
   /**
    * 串行消费的事务内形态（I1：事件 + 实体状态 + outbox 行同事务原子）。

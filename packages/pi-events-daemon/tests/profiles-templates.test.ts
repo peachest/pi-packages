@@ -44,10 +44,9 @@ describe("组 1：内置三模板资产——schema 合法 + 数据完整（chec
     }
   });
 
-  it("gitlab-pipeline 三域模板：mr/ci/ticket 各自 EntityRef.type（kernel templates op 可见）", () => {
+  it("gitlab-pipeline 三域模板：mr/ci/ticket 各自 EntityRef.type（票 42：templates 静态面经 ProfileRegistry.templates）", () => {
     const reg = loadBuiltin();
-    const kernel = new Kernel(createMemoryStore(), reg.states(), 0, { registry: reg.entries() });
-    const { templates } = kernel.templates("gitlab-pipeline");
+    const { templates } = reg.templates("gitlab-pipeline");
     expect(templates.map((t) => [t.name, t.entityType]).sort()).toEqual([
       ["ci", "gitlab:pipeline"],
       ["mr", "gitlab:mr"],
@@ -56,28 +55,25 @@ describe("组 1：内置三模板资产——schema 合法 + 数据完整（chec
   });
 });
 
-describe("组 2：validate 静态面——三类错误数据 + ADR 0004 warning 全部来自注册表注入", () => {
-  const kernelWithRegistry = () => {
-    const reg = loadBuiltin();
-    return new Kernel(createMemoryStore(), reg.states(), 0, { registry: reg.entries() });
-  };
+describe("组 2：validate 静态面——三类错误数据 + ADR 0004 warning 全部来自注册表注入（票 42 经 ProfileRegistry.validate）", () => {
+  const regWithEntries = () => loadBuiltin();
 
   it("profile 未找到（列可用）/ 模板缺参数（invalid-params）/ ad-hoc 缺 check（checker-declaration）", () => {
-    const kernel = kernelWithRegistry();
-    expect(kernel.validate({ profile: "nope" })).toMatchObject({ ok: false, error: "profile-not-found" });
-    expect(kernel.validate({ profile: "k8s-pod", template: "pod-ready", params: {} })).toMatchObject({
+    const reg = regWithEntries();
+    expect(reg.validate({ profile: "nope" })).toMatchObject({ ok: false, error: "profile-not-found" });
+    expect(reg.validate({ profile: "k8s-pod", template: "pod-ready", params: {} })).toMatchObject({
       ok: false,
       error: "invalid-params",
     });
-    expect(kernel.validate({ profile: "k8s-pod" })).toMatchObject({ ok: false, error: "checker-declaration" });
+    expect(reg.validate({ profile: "k8s-pod" })).toMatchObject({ ok: false, error: "checker-declaration" });
   });
 
   it("sideEffectPatterns 命中 → warning 不阻断（ADR 0004 checks-are-probes）；干净 check 零 warning", () => {
-    const kernel = kernelWithRegistry();
-    const hit = kernel.validate({ profile: "k8s-pod", check: "kubectl delete pod x" });
+    const reg = regWithEntries();
+    const hit = reg.validate({ profile: "k8s-pod", check: "kubectl delete pod x" });
     expect(hit).toMatchObject({ ok: true });
     if (hit.ok) expect(hit.warnings.join(" ")).toContain("kubectl delete");
-    const clean = kernel.validate({ profile: "k8s-pod", check: "kubectl get pod x -n ns" });
+    const clean = reg.validate({ profile: "k8s-pod", check: "kubectl get pod x -n ns" });
     expect(clean).toEqual({ ok: true, warnings: [] });
   });
 });

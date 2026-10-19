@@ -160,7 +160,7 @@ describe("组 3：链 B 复用——instantiate 产出经 kernel 可 register/su
     if (!inst.ok) throw new Error(inst.reason);
 
     const store = createMemoryStore();
-    const kernel = new Kernel(store, reg.states(), 0, { registry: reg.entries() });
+    const kernel = new Kernel(store, reg.states(), 0);
     const regResult = kernel.register({ entityRef: inst.entityRef, profileId: inst.profileId, state: null });
     expect(regResult.created).toBe(true);
 

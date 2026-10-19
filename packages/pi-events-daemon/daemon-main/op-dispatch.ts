@@ -4,8 +4,9 @@
  *
  * 结果管道选型（commit 记录）：写侧 op（subscribe/cancel/publish/drain/status/register）全部经
  * loops.submit 返回 Promise<SubmitOutcome>（消费即结算，错误携回提交方；票 40 评审 F1：变更类
- * 只经 L0 单一写路径，stopped 后结算拒绝）；读侧 query/evidence/templates 经 LoopsHandle.kernel
- * 直调（收窄后只余读方法）；validate live-run 与 subscribe smoke 预检经组合根持有的 Prober 单发
+ * 只经 L0 单一写路径，stopped 后结算拒绝）；读侧 query/evidence 经 LoopsHandle.kernel 直调
+ * （票 42 Pick 收窄至读侧）；templates/validate 静态面经 ProfileRegistry 组合根直调（票 42
+ * owner 归位 profiles）；validate live-run 与 subscribe smoke 预检经组合根持有的 Prober 单发
  * 路径（exec 异步，kernel probeSync 同步注入不可达）。
  *
  * 错误面：kernel 域拒绝原样上抛（transport toRpcError 归一 -32603，原因随 message 可见）——
@@ -338,7 +339,7 @@ export function createOpDispatch(deps: OpDispatchDeps): (frame: OpRequestFrame) 
 
       case "templates": {
         const profile = params.profile !== undefined ? String(params.profile) : undefined;
-        const list = kernel.templates(profile).templates; // 未知 profile 抛错（列可用选项）
+        const list = registry.templates(profile).templates; // 未知 profile 抛错（列可用选项；票 42 静态面迁 profiles）
         // 参数说明面在资产定义（entries() 只留参数名清单）——组合根持全定义补齐
         const paramDesc = new Map(
           registry.profiles().flatMap((d) => d.templates.map((t) => [`${d.id}/${t.name}`, t.params] as const)),
