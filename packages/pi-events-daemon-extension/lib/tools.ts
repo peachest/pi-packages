@@ -67,11 +67,11 @@ function buildTool(op: OpName, opSchema: JsonSchema, sender: OpSender): OpToolDe
   const request = node?.properties?.request;
   if (!request) throw new Error(`op.schema.json 缺少 ${op}.request（同源契约损坏）`);
 
-  // 评审 H：request 内 $ref 指向根文档 definitions（entityRef/adhocSchedule）——host 校验只见
-  // 工具级 schema，definitions 必须随抽取内联；D1a validateFull 仍以 opSchema 为解析基准，不变。
-  const parameters: JsonSchema = opSchema.definitions
-    ? { ...request, definitions: opSchema.definitions }
-    : request;
+  // 评审 H：request 内 $ref 指向根文档 definitions——host 校验只见工具级 schema，被引定义必须
+  // 随抽取内联；但只内联 $ref 闭包（entityRef/adhocSchedule），response 侧定义不进工具面
+  //（全量内联曾致每工具 ~1.5k tok 注册开销）；D1a validateFull 仍以 opSchema 为解析基准，不变。
+  const parameters: JsonSchema =
+    opSchema.definitions ? { ...request, definitions: collectRefDefs(opSchema.definitions, request) } : request;
 
   return {
     name: op,
@@ -149,4 +149,27 @@ function present(op: OpName, result: unknown): string {
       return `模板 ${list.length} 个\n${head}\n${body}`;
     }
   }
+}
+
+/** $ref 闭包收集：request（及被引定义自身）引用到的 definitions 子集，其余不进工具面。 */
+function collectRefDefs(
+  defs: NonNullable<JsonSchema["definitions"]>,
+  root: unknown,
+): NonNullable<JsonSchema["definitions"]> {
+  const found = new Set<string>();
+  const walk = (node: unknown): void => {
+    if (Array.isArray(node)) return void node.forEach(walk);
+    if (node === null || typeof node !== "object") return;
+    const ref = (node as { $ref?: string }).$ref;
+    if (typeof ref === "string" && ref.startsWith("#/definitions/")) {
+      const name = ref.slice("#/definitions/".length);
+      if (name in defs && !found.has(name)) {
+        found.add(name);
+        walk(defs[name]);
+      }
+    }
+    Object.values(node).forEach(walk);
+  };
+  walk(root);
+  return Object.fromEntries([...found].map((k) => [k, defs[k]]));
 }

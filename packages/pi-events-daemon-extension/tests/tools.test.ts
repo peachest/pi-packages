@@ -38,12 +38,26 @@ describe("票 34：9 op 工具注册 + 参数 schema 与 03 同源逐 op 对齐"
     expect(tools.map((t) => t.name).sort()).toEqual([...OP_NAMES].sort());
   });
 
-  it("每 op 工具 parameters 与 op.schema.json request 同源（deep equal，不复制不手写；评审 H：definitions 内联）", () => {
+  it("每 op 工具 parameters 与 op.schema.json request 同源（deep equal，不复制不手写；#50：definitions 闭包内联）", () => {
     const props = OP_SCHEMA.properties as Record<string, { properties?: { request: JsonSchema }; description?: string }>;
+    const allDefs = OP_SCHEMA.definitions ?? {};
     for (const tool of build()) {
+      // 闭包子集：request 引到的 definitions（采集逻辑与 collectRefDefs 同口径，独立重写防同义反复）
+      const used = new Set<string>();
+      const walk = (node: unknown): void => {
+        if (Array.isArray(node)) return void node.forEach(walk);
+        if (node === null || typeof node !== "object") return;
+        const ref = (node as { $ref?: string }).$ref;
+        if (typeof ref === "string" && ref.startsWith("#/definitions/")) {
+          const n = ref.slice("#/definitions/".length);
+          if (n in allDefs && !used.has(n)) { used.add(n); walk(allDefs[n]); }
+        }
+        Object.values(node).forEach(walk);
+      };
+      walk(props[tool.name].properties!.request);
       expect(tool.parameters, `${tool.name} parameters 同源`).toEqual({
         ...props[tool.name].properties!.request,
-        definitions: OP_SCHEMA.definitions,
+        definitions: Object.fromEntries([...used].map((k) => [k, allDefs[k]])),
       });
       expect(tool.description, `${tool.name} description 来自 op schema`).toBe(props[tool.name].description);
     }
