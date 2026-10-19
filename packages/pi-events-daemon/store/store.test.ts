@@ -184,6 +184,24 @@ function dualSuite(label: string, make: () => Store & { close?(): void }): void 
       s.close?.();
     });
 
+    it("票 42 下推：outboxSeqByRef 每实体最新 eventSeq（无事件行跳过）/ outboxMaxEventSeq 全局尾迹（空库 0）", () => {
+      const s = make();
+      expect(s.outboxMaxEventSeq()).toBe(0);
+      expect(s.outboxSeqByRef()).toEqual([]);
+      s.tx((tx) => {
+        tx.putEvent(ev(1));
+        tx.putOutbox({ notificationId: ev(1).eventId, eventSeq: 1 });
+        tx.putEvent(ev(2, { entityRefKey: "external/456" }));
+        tx.putOutbox({ notificationId: ev(2).eventId, eventSeq: 2 });
+      });
+      expect(s.outboxMaxEventSeq()).toBe(2);
+      expect(s.outboxSeqByRef()).toEqual([
+        { entityRefType: "gitlab:mr", entityRefKey: "external/123", eventSeq: 1 },
+        { entityRefType: "gitlab:mr", entityRefKey: "external/456", eventSeq: 2 },
+      ]);
+      s.close?.();
+    });
+
     it("run_ledger：get/put/list + epoch 字段结构落位（D2）", () => {
       const s = make();
       s.putRunLedger({ slotKey: "gitlab:mr/external/1|gitlab-pipeline", epoch: 3, refcount: 2, consecutiveFails: 1 });
@@ -200,7 +218,7 @@ function dualSuite(label: string, make: () => Store & { close?(): void }): void 
         "tx", "appendEventIfMissing",
         "getEntity", "putEntity", "getSubscription", "putSubscription",
         "getDelivery", "putDelivery", "getProbeSpec", "putProbeSpec",
-        "queryEntities", "outboxBatch", "pendingDeliveries", "evidenceSearch",
+        "queryEntities", "outboxBatch", "outboxSeqByRef", "outboxMaxEventSeq", "pendingDeliveries", "evidenceSearch",
         "notifications", "deadLetters",
         "getRunLedger", "putRunLedger", "listRunLedger",
         "onWrite",

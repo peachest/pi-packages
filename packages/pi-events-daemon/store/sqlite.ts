@@ -29,6 +29,7 @@ import {
   type NotificationFilter,
   type NotificationRow,
   type OutboxRow,
+  type OutboxSeqByRefRow,
   type ProbeSpecRow,
   type RunLedgerRow,
   type Store,
@@ -554,6 +555,21 @@ export class SqliteStore implements Store {
   outboxBatch(limit: number): OutboxRow[] {
     return (this.st("SELECT notification_id, event_seq FROM outbox ORDER BY rowid LIMIT ?").all(limit) as RawRow[])
       .map((r) => ({ notificationId: String(r.notification_id), eventSeq: Number(r.event_seq) }));
+  }
+
+  outboxSeqByRef(): OutboxSeqByRefRow[] {
+    return (this.st(
+      "SELECT e.entity_ref_type AS entity_ref_type, e.entity_ref_key AS entity_ref_key, MAX(e.event_seq) AS event_seq FROM outbox o JOIN events e ON e.event_id = o.notification_id GROUP BY e.entity_ref_type, e.entity_ref_key ORDER BY e.entity_ref_type, e.entity_ref_key",
+    ).all() as RawRow[]).map((r) => ({
+      entityRefType: String(r.entity_ref_type),
+      entityRefKey: String(r.entity_ref_key),
+      eventSeq: Number(r.event_seq),
+    }));
+  }
+
+  outboxMaxEventSeq(): number {
+    const r = this.st("SELECT COALESCE(MAX(event_seq), 0) AS m FROM outbox").get() as RawRow | undefined;
+    return Number(r?.m ?? 0);
   }
 
   pendingDeliveries(filter: DeliveryFilter): DeliveryRowData[] {

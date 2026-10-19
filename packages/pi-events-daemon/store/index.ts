@@ -96,6 +96,9 @@ export type OutboxRow = {
   eventSeq: number;
 };
 
+/** 票 42 下推聚合行：每实体最新 eventSeq（outbox⨝events；无事件行跳过）。 */
+export type OutboxSeqByRefRow = { entityRefType: string; entityRefKey: string; eventSeq: number };
+
 export type RunLedgerRow = {
   slotKey: string;
   epoch: number;
@@ -176,6 +179,10 @@ export interface TxView extends TxOps {
   queryEntities(filter: EntityFilter): EntityRow[];
   querySubscriptions(filter: SubscriptionFilter): SubscriptionRow[];
   outboxBatch(limit: number): OutboxRow[];
+  /** 票 42 下推：outbox⨝events 每实体最新 eventSeq（kernel query latestSeq join 专用，替代 MAX_SAFE_INTEGER 全表拉）。 */
+  outboxSeqByRef(): OutboxSeqByRefRow[];
+  /** 票 42 下推：outbox eventSeq 全局尾迹（max，空库 = 0）——eventSeq/decisionOrder 双轨同锁步分配，kernel/loops 位点恢复共用。 */
+  outboxMaxEventSeq(): number;
   pendingDeliveries(filter: DeliveryFilter): DeliveryRowData[];
   /** drain D2a 输入面：parked 行读取（与 pendingDeliveries/deadLetters 同构直过滤；票 11 最小增补）。 */
   parkedDeliveries(filter: DeliveryFilter): DeliveryRowData[];
@@ -409,6 +416,29 @@ export class MemoryStore implements Store {
 
   outboxBatch(limit: number): OutboxRow[] {
     return [...this.tables.outbox.values() as IterableIterator<OutboxRow>].slice(0, limit);
+  }
+
+  outboxSeqByRef(): OutboxSeqByRefRow[] {
+    // outbox.notificationId = eventId（I1 1:1）；直读已提交 events 表（只读聚合，不开 staging）
+    const latest = new Map<string, OutboxSeqByRefRow>();
+    for (const o of this.tables.outbox.values() as IterableIterator<OutboxRow>) {
+      const ev = this.tables.events.get(o.notificationId) as EventRow | undefined;
+      if (!ev) continue;
+      const k = `${ev.entityRefType}/${ev.entityRefKey}`;
+      const cur = latest.get(k);
+      if (cur === undefined || o.eventSeq > cur.eventSeq) {
+        latest.set(k, { entityRefType: ev.entityRefType, entityRefKey: ev.entityRefKey, eventSeq: o.eventSeq });
+      }
+    }
+    return [...latest.values()];
+  }
+
+  outboxMaxEventSeq(): number {
+    let max = 0;
+    for (const o of this.tables.outbox.values() as IterableIterator<OutboxRow>) {
+      if (o.eventSeq > max) max = o.eventSeq;
+    }
+    return max;
   }
 
   pendingDeliveries(filter: DeliveryFilter): DeliveryRowData[] {

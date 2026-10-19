@@ -147,24 +147,13 @@ export interface LoopsHandle {
   readonly kernel: Pick<Kernel, "query" | "evidence" | "templates" | "validate">;
 }
 
-/**
- * 决策轨恢复（R1 双轨前提，loops 侧落地）：mutation line 的持久形态 = 事件流——单写者纪律下
- * 每个已提交决策恰一事件（I1：transition+事件+outbox 行同事务原子），decisionOrder 内嵌于
- * 确定性 event id 尾段 `#N`（deterministicEventId）。outbox 行与 transition 1:1（与 kernel
- * recoverEventSeq 同源同法，事件流直查归 store 接口后续票精化），max = mutation line 位点，重放不重新编号。
- */
-function recoverDecisionOrderTail(store: Store): number {
-  let tail = 0;
-  for (const row of store.outboxBatch(Number.MAX_SAFE_INTEGER)) {
-    const order = Number(row.notificationId.slice(row.notificationId.lastIndexOf("#") + 1));
-    if (Number.isInteger(order) && order > tail) tail = order;
-  }
-  return tail;
-}
-
 /** startLoops——loops 模块唯一入口：装配 L0（唯一写者）；L1-L4 后续票在此挂入。 */
 export function startLoops(ctx: LoopsCtx): LoopsHandle {
-  const kernel = new Kernel(ctx.store, ctx.states, recoverDecisionOrderTail(ctx.store), {
+  // 决策轨位点（R1 双轨前提，票 42 下推收编）：mutation line 的持久形态 = 事件流，单写者纪律下
+  // 每个已提交决策恰一事件（I1），decisionOrder 内嵌于确定性 event id 尾段 #N（deterministicEventId）
+  // 且与 eventSeq 同锁步分配（domain nextSequences 双轨 +1）——store 聚合 max(eventSeq) 即位点，
+  // 重放不重新编号（原 recoverDecisionOrderTail 全表拉删除）。
+  const kernel = new Kernel(ctx.store, ctx.states, ctx.store.outboxMaxEventSeq(), {
     ownerEpoch: ctx.ownerEpoch,
     registry: ctx.registry,
   });
