@@ -87,7 +87,7 @@ export function defaultDaemonLauncher(socketPath: string, env: NodeJS.ProcessEnv
     if (!existsSync(entry)) {
       throw new Error(`daemon 拉起失败：入口缺失 ${entry}（票 38 bootstrap 落地前请手动启动 daemon）`);
     }
-    spawn(process.execPath, ["--experimental-strip-types", entry], {
+    spawn(process.execPath, ["--experimental-transform-types", entry], {
       detached: true,
       stdio: "ignore",
       env: { ...env, PI_EVENTS_SOCK: socketPath },
