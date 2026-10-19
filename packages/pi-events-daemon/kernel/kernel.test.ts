@@ -770,8 +770,13 @@ describe("票 24 — subscribe 幂等与换参", () => {
     // 读侧还原：数组形态谓词对两个值各判一次
     expect(onMatches({ to: "failed" }, row?.on)).toBe(true);
     expect(onMatches({ to: "passed" }, row?.on)).toBe(false);
-    // 旧行兼容：非 JSON 字符串形态依旧按单值判
+    // 旧行兼容：非 JSON 字符串形态依旧按单值判（含 '[' 开头的旧单值不炸 parse）
     expect(onMatches({ to: "failed" }, "failed")).toBe(true);
+    expect(onMatches({ to: "[failed]" }, "[failed]")).toBe(true);
+    // 幂等：同数组参数重订 → 返回既有 id（ocr r1 medium #1 回归——直比永不相等会关旧开新）
+    const id2 = subId(kernel.subscribe(subReq({ opts: { on: ["failed"], once: false } })));
+    expect(id2).toBe(id);
+    expect(store.querySubscriptions({ sessionId: "session-1" })).toHaveLength(1);
   });
 
   it("换参：旧关新开（closedReason replaced）、checker 替换（solo 槽 ProbeSpec 换 check）、在途投递不撤", () => {

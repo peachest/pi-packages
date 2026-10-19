@@ -79,8 +79,8 @@ export type RegisterResult = {
 /** subscribe opts（#31 操作面正典：{on, once, flip, template, smoke, sessionId, readyCheck, ttl, thresholds}；
  *  template 提升为请求结构位；schedule/source 是模板资产解析产物（caller 传入，kernel 零 profile import——opts 永不含 shell）。 */
 export type SubscribeOpts = {
-  /** on 谓词（状态值/状态集/命名转换）——I5：不进槽键。 */
-  on?: string;
+  /** on 谓词（状态值/状态集/命名转换）——wire 形态 string | string[]（op.schema.json on 与票 02 对齐）；I5：不进槽键。 */
+  on?: string | string[];
   once?: boolean;
   flip?: boolean;
   smoke?: boolean;
@@ -130,10 +130,16 @@ export type CancelRequest = {
 
 /** 幂等比较域（换参检测）：check/on/once/flip/readyCheck/ttl/origin/scope。
  *  thresholds 不入比较域——阈值是槽级（先建者定），差异走 adoptThresholds warning+沿用，不构成换参（票面验收分组）。 */
+// on 幂等/读侧共用归一：数组 → JSON 串（8a8403b 写侧正典）；行内存序列化串，数组请求直比永不相等致幂等失效（ocr r1 medium #1）
+function normalizeOn(on: string | string[] | undefined): string | string[] | undefined {
+  if (Array.isArray(on)) return JSON.stringify(on);
+  return on;
+}
+
 function sameSubscribeParams(row: SubscriptionRow, req: SubscribeRequest, opts: SubscribeOpts): boolean {
   return (
     row.check === req.check &&
-    (row.on ?? undefined) === (opts.on ?? undefined) &&
+    normalizeOn(row.on) === normalizeOn(opts.on) &&
     (row.once ?? false) === (opts.once ?? false) &&
     (row.flip ?? false) === (opts.flip ?? false) &&
     (row.readyCheck ?? undefined) === (opts.readyCheck ?? undefined) &&

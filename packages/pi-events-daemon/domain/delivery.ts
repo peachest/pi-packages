@@ -223,10 +223,20 @@ export function validateAddressing(input: unknown): AddressingValidation {
  * on 形状 = 状态值 / 状态集（SubscriptionOpts.on），按事件终态 to 判定；缺省（未设）收全部事件。
  * shortcut: 命名转换谓词（如 digest-changed）post-MVP——形状落定前仅支持终态匹配，需用时升级。
  */
+function safeParseArray(s: string): unknown {
+	try {
+		const v = JSON.parse(s) as unknown;
+		return Array.isArray(v) ? v : s;
+	} catch {
+		return s;
+	}
+}
+
 export function onMatches(ev: { to: string }, on: string | string[] | undefined): boolean {
 	if (on === undefined) return true;
 	// 存储层序列化形态：数组写为 JSON 串（SQLite bind 只收标量，kernel/index.ts subscribe 侧），读出后还原
-	const parsed = typeof on === "string" && on.startsWith("[") ? (JSON.parse(on) as unknown) : on;
+	// '[' 前缀可能是旧非 JSON 单值（如 "[failed]"）——解析失败回退原串按单值判；解析结果非数组同退（ocr r1 medium #2）
+	const parsed = typeof on === "string" && on.startsWith("[") ? safeParseArray(on) : on;
 	return Array.isArray(parsed) ? (parsed as string[]).includes(ev.to) : parsed === ev.to;
 }
 
