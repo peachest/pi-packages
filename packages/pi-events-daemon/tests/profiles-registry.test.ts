@@ -305,9 +305,10 @@ describe("票 11 组 4：validate 三类错误 + templates 注册表清单（票
       ok: true,
       warnings: [expect.stringContaining("fixture-destructive")],
     });
+    // 干净 check：无副作用 pattern 但无显式 exit → 语义启发式 warning（2026-10-19 生产反馈新增）
     expect(validateEntry(REGISTRY, { profile: "fixture-profile", check: "curl -sf http://x/health" })).toEqual({
       ok: true,
-      warnings: [],
+      warnings: [expect.stringContaining("exit")],
     });
   });
 

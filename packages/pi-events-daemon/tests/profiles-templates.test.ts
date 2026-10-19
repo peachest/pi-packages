@@ -74,6 +74,7 @@ describe("组 2：validate 静态面——三类错误数据 + ADR 0004 warning 
     expect(hit).toMatchObject({ ok: true });
     if (hit.ok) expect(hit.warnings.join(" ")).toContain("kubectl delete");
     const clean = reg.validate({ profile: "k8s-pod", check: "kubectl get pod x -n ns" });
-    expect(clean).toEqual({ ok: true, warnings: [] });
+    // 无显式 exit → 语义启发式 warning（新增行为：三态语义提醒）
+    expect(clean).toEqual({ ok: true, warnings: [expect.stringContaining("exit")] });
   });
 });
