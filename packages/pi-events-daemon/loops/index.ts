@@ -20,16 +20,14 @@ import {
   INITIAL_THRESHOLD_STATE,
   cronNextMs,
   deterministicEventId,
-  epochAccepts,
   observeVerdict,
   onVerdict,
-  repushDecision,
   restoreSlotThresholds,
   runnerSlotKey,
   ttlExpired,
   type ThresholdState,
 } from "../domain/intent.ts";
-import { transitionDelivery, type SubscriptionScope, EVIDENCE_RETENTION, evidenceRetentionExpired } from "../domain/delivery.ts";
+import { type SubscriptionScope, EVIDENCE_RETENTION, evidenceRetentionExpired } from "../domain/delivery.ts";
 import { retiredCleanupDue } from "../domain/entity.ts";
 
 // cronNextMs 归 domain（单一解析：kernel subscribe 校验 + loops 调度共用）；此处保持既有导出位兼容
@@ -44,7 +42,7 @@ import {
 import { createDeliver } from "./deliver.ts";
 import { Prober, type ProbeResult } from "../prober/index.ts";
 import type { Clock, Exec, Fs, Pusher } from "../fx/index.ts";
-import type { DeliveryRowData, ProbeSpecRow, Store, SubscriptionRow } from "../store/index.ts";
+import type { ProbeSpecRow, Store, SubscriptionRow } from "../store/index.ts";
 import type { SessionRef, TranscriptAdapter } from "../transcript-adapter/index.ts";
 
 /** L0 变更请求——kernel 变更方法（票 10 消费终点 transition/consumeIntent + 票 24/26 subscribe/cancel）的队列载体；
