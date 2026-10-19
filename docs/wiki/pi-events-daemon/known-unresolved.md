@@ -14,8 +14,12 @@
    e2e（subscribe→probe→evidence op 读回）+ 幂等单测全绿；保留期归票 28/L4 既有删除域不变。
    原问题：evidence op 的 probe 路径解引用空——prober 回流的 evidence 文本尚未经
    loops 落盘铸造 evidenceRef（ProbeResult.evidenceRef 由 loops 落盘后铸造的 D4 分工，最后一公里未接）。
-2. **ad-hoc ephemeral L4 retired 清理域未注入**：ephemeral 实体 terminal→retired 标记与 7d 到期清残留
-   （票 28 L4）只覆盖 profile 形态；ad-hoc 声明的 ephemeral 清理域未在组合根注入。
+2. ~~**ad-hoc ephemeral L4 retired 清理域未注入**~~ → **已收口（票 48/GitHub #113，2026-10-19）**：
+   housekeeping.ephemeral 扩 `adhocTerminalStates` 域——profileId 为空的条件实体（ephemeralRef 铸造键）
+   终态 passed/failed 走 terminal→retired 标记与 7d 到期清残留；组合根（daemon-main）注入该域，与
+   profile 形态同一 sweep ② 清理循环。域互斥由 profileId 有无唯一判定：单次遍历每实体恰归一域，
+   双域并配不重复扫描（单测断言）；未注入 adhocTerminalStates = 职责不激活（缺省语义不变）。
+   e2e 模拟时钟推进 7d → retired → 清残留全链绿。
 3. **subscribe url 多参数 keyGenerator**：url 路由的 keyGenerator 需 extension instantiate 随帧补齐
    （票 32 路由 × 票 34 extension 接缝）。
 4. **query scope/session 过滤部分接入**：store.notifications(filter) 双实现已齐；query op 侧过滤接线

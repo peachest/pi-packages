@@ -800,6 +800,67 @@ describe("终审修复② — L4 ephemeral retired 标记经 kernel.unregister�
   });
 });
 
+// ==================== 票 48/#113 — ad-hoc ephemeral L4 retired 清理域（known-unresolved #2） ====================
+
+describe("票 48 — ad-hoc ephemeral 清理域：terminal→retired 标记 + 7d 到期清残留（e2e 模拟时钟）", () => {
+  const ADHOC_REF = { type: "adhoc", key: "external/" + "a".repeat(40) };
+
+  it("ad-hoc 条件实体（profileId 空）terminal 后 7d 模拟时钟推进 → retired → 清残留；profile 实体不被 ad-hoc 域误扫", () => {
+    const store = createMemoryStore();
+    store.putEntity({ type: ADHOC_REF.type, key: ADHOC_REF.key, state: "passed", profileId: "" });
+    store.appendEventIfMissing({
+      eventId: NID(1), eventSeq: 1, entityRefType: ADHOC_REF.type, entityRefKey: ADHOC_REF.key,
+      from: "waiting", to: "passed", occurredAt: new Date(0).toISOString(),
+    });
+    store.putOutbox({ notificationId: NID(1), eventSeq: 1 });
+    store.putNotification({ notificationId: NID(1), eventSeq: 1, billboardJson: "{}" });
+    // 对照组：profile 实体，state 同在 adhocTerminalStates——无 profileIds 命中，不被 ad-hoc 域误扫
+    store.putEntity({ type: REF.type, key: REF.key, state: "passed", profileId: "p-x" });
+    const clock = new FakeClock();
+    const loops = startLoops(makeCtx(store, {
+      clock,
+      housekeeping: { ephemeral: { profileIds: new Set(), terminalStates: new Set(), adhocTerminalStates: new Set(["passed", "failed"]) } },
+    }));
+    clock.step(0); // 首扫：ad-hoc 实体标记 retired；profile 实体不动
+    expect(store.getEntity(ADHOC_REF.type, ADHOC_REF.key)).toMatchObject({ retired: true, state: "passed" });
+    expect(store.getEntity(REF.type, REF.key)?.retired).toBeFalsy(); // profile 实体不被 ad-hoc 域标记
+    clock.step(8 * 86_400_000); // 7d 保留窗到期：同扫清残留（deleteEventsBefore + deleteEntity）
+    expect(store.getEntity(ADHOC_REF.type, ADHOC_REF.key)).toBeUndefined();
+    expect(store.notifications({})).toHaveLength(0);
+    expect(store.getEntity(REF.type, REF.key)).toBeDefined(); // profile 实体全程不被 ad-hoc 域触达
+    expect(loops.errors).toHaveLength(0);
+    loops.stop();
+  });
+
+  it("互不重复扫描：实体按 profileId 有无归入恰一域——双域并配时 profile 实体只走 profile 域、ad-hoc 实体只走 ad-hoc 域", () => {
+    const store = createMemoryStore();
+    // 双域终态集重叠（passed 同在两域）：归属性由 profileId 唯一判定，不双扫
+    store.putEntity({ type: REF.type, key: REF.key, state: "passed", profileId: "p-eph" });
+    store.putEntity({ type: ADHOC_REF.type, key: ADHOC_REF.key, state: "passed", profileId: "" });
+    const eph = { profileIds: new Set(["p-eph"]), terminalStates: new Set(["passed"]), adhocTerminalStates: new Set(["passed"]) };
+    const clock = new FakeClock();
+    const loops = startLoops(makeCtx(store, { clock, housekeeping: { ephemeral: eph } }));
+    clock.step(0); // 启动惰性首扫
+    expect(store.getEntity(REF.type, REF.key)?.retired).toBe(true);
+    expect(store.getEntity(ADHOC_REF.type, ADHOC_REF.key)?.retired).toBe(true);
+    expect(loops.errors).toHaveLength(0);
+    loops.stop();
+  });
+
+  it("未注入 adhocTerminalStates：ad-hoc 实体不被清理（职责不激活，缺省无域语义不变）", () => {
+    const store = createMemoryStore();
+    store.putEntity({ type: ADHOC_REF.type, key: ADHOC_REF.key, state: "passed", profileId: "" });
+    const clock = new FakeClock();
+    const loops = startLoops(makeCtx(store, {
+      clock,
+      housekeeping: { ephemeral: { profileIds: new Set(), terminalStates: new Set() } },
+    }));
+    clock.step(8 * 86_400_000);
+    expect(store.getEntity(ADHOC_REF.type, ADHOC_REF.key)).toBeDefined();
+    loops.stop();
+  });
+});
+
 describe("终审修复⑥ — C2 on-transition 编排（transition 消费成功后查 profile 规则 → 经 L0 执行 subscribe/close）", () => {
   const ORCH_RULES = [{ on: "passed", action: "close" }] as const;
   const orchRegistry = (rules: ReadonlyArray<{ on: string | string[]; action: string; params?: Record<string, unknown> }>) => [

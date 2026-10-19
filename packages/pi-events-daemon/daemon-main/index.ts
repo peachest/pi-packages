@@ -196,6 +196,16 @@ export async function bootstrap(opts: BootstrapOptions = {}): Promise<DaemonHand
       registry: registry.entries(),
       ownerEpoch: epoch,
       transcript: { adapter, sessionRefOf: (sessionId) => refBySession.get(sessionId) },
+      // 票 48/#113（known-unresolved #2）：ad-hoc ephemeral L4 retired 清理域注入组合根——
+      // profileId 为空的条件实体（ephemeralRef 铸造键）终态 passed/failed 走 terminal→retired
+      // 标记与 7d 到期清残留（与 profile 形态同一清理循环，同 sweep ②；profile 域随 profiles 票接线）。
+      housekeeping: {
+        ephemeral: {
+          profileIds: new Set<string>(),
+          terminalStates: new Set<string>(),
+          adhocTerminalStates: new Set(["passed", "failed"]),
+        },
+      },
     });
     step("loops");
 
