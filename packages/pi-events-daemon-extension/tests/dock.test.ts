@@ -120,7 +120,7 @@ describe("票 45：wake 旁路钩子（真 socket，票 44 沿广播通道）", 
         notify: () => {},
         sleep: async () => {},
         onTransitioned: (params) => edges.push(params),
-        onConnectChange: (connected) => connectChanges.push(connected),
+        onEdge: (connected) => connectChanges.push(connected),
       });
       await waitFor(() => wake.isConnected(), "wake connected");
       expect(connectChanges[0]).toBe(true);

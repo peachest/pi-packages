@@ -76,6 +76,8 @@ describe("票 46：extension 接线——沿刷新矩阵", () => {
     const registered: Array<{ name: string; execute: (...a: unknown[]) => unknown }> = [];
     const pi = {
       registerTool: (tool: never) => registered.push(tool as never),
+      registerCommand: () => {}, // 票 45 dock 命令注册（footer 测试不需要其行为，只需不炸）
+      registerShortcut: () => {},
       on: (event: string, handler: (event: unknown, ctx: unknown) => void) => {
         (handlers[event] ??= []).push(handler);
       },
@@ -141,9 +143,14 @@ describe("票 46：extension 接线——沿刷新矩阵", () => {
       await waitFor(() => statuses.some((s) => s.text === "● pi-events running"), "probe/wake → running");
 
       await daemon.close(); // 断连沿
-      await waitFor(() => statuses.at(-1)!.text !== "● pi-events running", "leave running on disconnect edge");
+      // 合并后两状态段共存（票 46 footer 段 + 票 45 dock hint 段）：断言 footer 段离开 running
+      const footerTexts = () => statuses.filter((s) => s.key === DAEMON_STATUS_KEY).map((s) => s.text);
+      await waitFor(() => {
+        const f = footerTexts();
+        return f.length > 0 && f.at(-1) !== "● pi-events running";
+      }, "leave running on disconnect edge");
       // socket 文件未清理 → down（daemon 挂了）；若实现清理 socket → idle，两态皆合法
-      expect(["✗ pi-events down", "○ pi-events idle"]).toContain(statuses.at(-1)!.text);
+      expect(["✗ pi-events down", "○ pi-events idle"]).toContain(footerTexts().at(-1));
     } finally {
       void daemon.close();
     }

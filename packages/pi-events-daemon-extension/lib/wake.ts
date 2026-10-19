@@ -111,6 +111,7 @@ export function startWake(deps: WakeDeps): WakeHandle {
   const seen = new Set<string>();
 
   let stopped = false;
+  let degraded = false; // 降级通知去重位（票 46：每次断供只通知一次，恢复复位）
   let attempts = 0;
   let connected = false;
   let client: EventsClient | null = null;

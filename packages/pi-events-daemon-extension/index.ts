@@ -167,7 +167,13 @@ export default function eventsDaemonExtension(pi: ExtensionAPI, deps: ExtensionD
     uiCtx = ctx;
     sessionId = ctx.sessionManager.getSessionId();
     if (event.reason === "fork") return; // fork no-inherit：子会话不重声明、不建长连接（零推送）
-    void declareFromEventsJson(pi, ctx, { sender, templatesDir: deps.templatesDir, templates: deps.templates });
+    footer.bind(ctx as never); // wake 断连沿回调引用最新呈现面
+    // 零副作用探测先行（不拉起 daemon）：probe 结果落后于并发 op 副作用的窗口极小
+    // （probe 只读 socket 存在性 + 一次握手），可接受（票 46）。
+    void (async () => {
+      footer.set(await probeDaemonStatus(socketPath));
+      void declareFromEventsJson(pi, ctx, { sender: senderWithFooter, templatesDir: deps.templatesDir, templates: deps.templates });
+    })();
     wake = startWake({
       sessionId,
       socketPath: deps.socketPath,
@@ -236,6 +242,8 @@ async function declareFromEventsJson(
 
 // --- 可单测公共面（tests/ 经包根入口消费；deep-module 布局 packages/README.md） ---
 export { validateFull, loadOpSchema, loadProfileSchema, loadEventsSchema, daemonSchemasDir } from "./lib/schema.ts";
+export { createFooterStatus, probeDaemonStatus, renderDaemonStatus, DAEMON_STATUS_KEY } from "./lib/footer.ts";
+export type { DaemonStatus } from "./lib/footer.ts";
 export type { JsonSchema, Issue } from "./lib/schema.ts";
 export { buildToolDefs } from "./lib/tools.ts";
 export type { OpToolDef, OpSender, ToolResult } from "./lib/tools.ts";
