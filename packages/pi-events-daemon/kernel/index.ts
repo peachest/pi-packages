@@ -467,7 +467,8 @@ export class Kernel {
           entityRefKey: req.entityRef.key,
           template: req.template,
           check: req.check,
-          on: opts.on,
+          // on 允许 string | string[]（skill 文档形态）；SQLite bind 只收标量——数组序列化为 JSON 串，读取侧 str() 再解析（#31 follow-up：adhoc 订阅数组 on 崩 param-11）
+          on: Array.isArray(opts.on) ? JSON.stringify(opts.on) : opts.on,
           once: opts.once,
           flip: opts.flip,
           readyCheck: opts.readyCheck,

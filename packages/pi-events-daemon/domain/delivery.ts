@@ -225,7 +225,9 @@ export function validateAddressing(input: unknown): AddressingValidation {
  */
 export function onMatches(ev: { to: string }, on: string | string[] | undefined): boolean {
 	if (on === undefined) return true;
-	return Array.isArray(on) ? on.includes(ev.to) : on === ev.to;
+	// 存储层序列化形态：数组写为 JSON 串（SQLite bind 只收标量，kernel/index.ts subscribe 侧），读出后还原
+	const parsed = typeof on === "string" && on.startsWith("[") ? (JSON.parse(on) as unknown) : on;
+	return Array.isArray(parsed) ? (parsed as string[]).includes(ev.to) : parsed === ev.to;
 }
 
 /** 编址推导的投递目标（#31：session → sourceSessionId 精确；auto → scope 内全部活跃 session，不留 pending 行）。 */
