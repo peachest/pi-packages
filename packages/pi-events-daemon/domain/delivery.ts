@@ -153,6 +153,8 @@ export interface ProbeSpec {
 	schedule: Schedule;
 	failureThreshold: number;
 	successThreshold: number;
+	/** 显式 env 追加白名单（订阅/模板声明；与全局默认 PATH/HOME/no_proxy 合并——凭据纪律仍首选文件路径，此口子用于非敏感运行时变量）。 */
+	envAllowlist?: string[];
 }
 
 /** subscribe opts（#31 操作面）：{on, once, flip, template, smoke, sessionId, readyCheck, ttl, failureThreshold?, successThreshold?}；永不含 shell/schedule（模板形态）。 */
@@ -169,6 +171,8 @@ export interface SubscriptionOpts {
 	ttl?: number;
 	failureThreshold?: number;
 	successThreshold?: number;
+	/** 显式 env 追加白名单（ad-hoc 形态；默认白名单 PATH/HOME/no_proxy 之上追加，凭据仍首选文件路径）。 */
+	envAllowlist?: string[];
 }
 
 /**

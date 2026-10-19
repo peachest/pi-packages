@@ -77,6 +77,7 @@ export type ProbeSpecRow = {
   check: string;
   schedule: { type: "interval" | "cron"; intervalMs?: number; cron?: string; tz?: string };
   source: "poll" | "fs-watch" | "k8s-watch";
+  envAllowlist?: string[];
 };
 
 export type NotificationRow = {

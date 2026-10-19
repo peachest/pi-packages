@@ -81,6 +81,8 @@ export type RegisterResult = {
 export type SubscribeOpts = {
   /** on 谓词（状态值/状态集/命名转换）——wire 形态 string | string[]（op.schema.json on 与票 02 对齐）；I5：不进槽键。 */
   on?: string | string[];
+  /** 显式 env 追加白名单（ad-hoc 形态；默认 PATH/HOME/no_proxy 之上追加，凭据纪律首选文件路径）。 */
+  envAllowlist?: string[];
   once?: boolean;
   flip?: boolean;
   smoke?: boolean;
@@ -445,6 +447,7 @@ export class Kernel {
             check: req.check,
             schedule: opts.schedule ?? DEFAULT_PROBE_SCHEDULE,
             source: opts.source ?? DEFAULT_PROBE_SOURCE,
+            ...(opts.envAllowlist !== undefined ? { envAllowlist: opts.envAllowlist } : {}),
           });
           tx.putRunLedger({
             slotKey,

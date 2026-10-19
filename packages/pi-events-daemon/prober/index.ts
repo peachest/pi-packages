@@ -28,6 +28,8 @@ export type ProbeSlot = {
   source?: ProbeSource;
   /** fs-watch 源监听目标（checker 声明携带；source=fs-watch 必填）。 */
   watchPath?: string;
+  /** 显式 env 追加白名单（与默认 PATH/HOME/no_proxy 合并；凭据纪律首选文件路径）。 */
+  envAllowlist?: string[];
 };
 
 /** probe 结果（completion queue 回流行）。 */
@@ -225,7 +227,7 @@ export class Prober {
     };
     let pending: Promise<ExecResult>;
     try {
-      pending = this.deps.exec.run(slot.check, { timeoutMs, env: this.envFor() });
+      pending = this.deps.exec.run(slot.check, { timeoutMs, env: this.envFor(slot.envAllowlist) });
     } catch (err) {
       // run 同步抛错：转该任务 waiting 结果（不走 .catch 面），槽位照常释放、
       // 补位不中断——否则异常逃进前一任务的 settle 链，其 seq 永久缺失卡死稳序缓冲（ocr 评审 2M）
@@ -268,9 +270,10 @@ export class Prober {
    * 「必要」）+ no_proxy/NO_PROXY（配置时）；token 不入白名单（脱敏承诺的 env 侧执行点，输出侧
    * maskText 兜底）。fx ExecOptions.env 为替换语义：此处返回值即 checker 的整环境。
    */
-  private envFor(): Record<string, string> {
+  private envFor(extraAllowlist?: string[]): Record<string, string> {
     const env: Record<string, string> = {};
-    for (const key of ["PATH", "HOME"] as const) {
+    const allowed = new Set(["PATH", "HOME", ...(extraAllowlist ?? [])]);
+    for (const key of allowed) {
       const value = process.env[key];
       if (value !== undefined) env[key] = value;
     }
