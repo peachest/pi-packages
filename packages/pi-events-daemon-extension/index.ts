@@ -19,6 +19,13 @@ import {
   readEventsJson,
 } from "./lib/eventsjson.ts";
 import { startWake, type WakeHandle } from "./lib/wake.ts";
+import {
+  createFooterStatus,
+  probeDaemonStatus,
+  statusFromTransportFailure,
+} from "./lib/footer.ts";
+import { isRpcError } from "./lib/client.ts";
+import { resolveSocketPath } from "pi-events-daemon/transport.ts";
 import type { ProfileRegistry } from "pi-events-daemon/profiles.ts";
 
 /** 工厂注入面（测试替身 / 环境覆盖；缺省全走默认实现）。 */
@@ -55,24 +62,49 @@ export default function eventsDaemonExtension(pi: ExtensionAPI, deps: ExtensionD
     return client.request(op, params);
   });
 
-  for (const tool of buildToolDefs({ opSchema, sender })) {
+  // 票 46：footer 状态位（三态沿驱动）。op 副作用刷新——成功/业务错误 = daemon 活着；
+  // 传输失败按 socket 存在性归类（消失 = idle 已停，仍在 = down 故障）。
+  const footer = createFooterStatus();
+  const socketPath = deps.socketPath ?? resolveSocketPath();
+  const senderWithFooter: OpSender = async (op, params) => {
+    try {
+      const result = await sender(op, params);
+      footer.set("running");
+      return result;
+    } catch (err) {
+      footer.set(isRpcError(err) ? "running" : statusFromTransportFailure(socketPath));
+      throw err;
+    }
+  };
+
+  for (const tool of buildToolDefs({ opSchema, sender: senderWithFooter })) {
     // 同源 JSON Schema（无 TypeBox Kind 符号）→ pi 以 JSON Schema 路径校验（coerceWithJsonSchema + Compile）；
     // D1a 权威门在 lib/tools execute 内（完整校验客户端先行），此处 cast 仅为注册边界。
     pi.registerTool(tool as unknown as Parameters<ExtensionAPI["registerTool"]>[0]);
   }
 
-  // 票 35 声明链 + 票 36 wake（SESSION_START：长连接建立 = SESSION_START 信号，#31）。
+  // 票 35 声明链 + 票 36 wake + 票 46 footer（SESSION_START：长连接建立 = SESSION_START 信号，#31）。
   let wake: WakeHandle | null = null;
   pi.on("session_start", (event, ctx) => {
+    footer.bind(ctx as never); // wake 断连沿回调引用最新呈现面
     void wake?.stop(); // 评审 H：任何 session_start（含 fork）先退位旧 handle——fork 检查前 stop+清引用，
     wake = null; // 父长连接的注入回调不得活到子会话（no-inherit）
     if (event.reason === "fork") return; // fork no-inherit：子会话不重声明、不建长连接（零推送）
-    void declareFromEventsJson(pi, ctx, { sender, templatesDir: deps.templatesDir, templates: deps.templates });
+    void (async () => {
+      // 零副作用探测先行（不拉起 daemon）：probe 结果落后于并发 op 副作用的窗口极小
+      // （probe 只读 socket 存在性 + 一次握手），可接受（票 46）。
+      footer.set(await probeDaemonStatus(socketPath));
+      void declareFromEventsJson(pi, ctx, { sender: senderWithFooter, templatesDir: deps.templatesDir, templates: deps.templates });
+    })();
     wake = startWake({
       sessionId: ctx.sessionManager.getSessionId(),
       socketPath: deps.socketPath,
       inject: (message) => pi.sendMessage(message, message.options),
       notify: (message, type) => ctx.ui.notify(message, type),
+      onEdge: (connected) => {
+        // wake 连接沿 → footer 刷新（notify 降级详情由 wake 自身去重，一次性）
+        footer.set(connected ? "running" : statusFromTransportFailure(socketPath));
+      },
     });
   });
   pi.on("session_shutdown", () => {
@@ -113,6 +145,8 @@ export type { JsonSchema, Issue } from "./lib/schema.ts";
 export { buildToolDefs } from "./lib/tools.ts";
 export type { OpToolDef, OpSender, ToolResult } from "./lib/tools.ts";
 export { createOpClient, readDaemonEpoch, defaultDaemonLauncher, MAX_OP_ATTEMPTS, OP_RETRY_DELAY_MS } from "./lib/client.ts";
+export { DAEMON_STATUS_KEY, createFooterStatus, probeDaemonStatus, renderDaemonStatus, statusFromTransportFailure } from "./lib/footer.ts";
+export type { DaemonStatus, FooterStatus, FooterSurface } from "./lib/footer.ts";
 export type { OpClient, OpClientConfig } from "./lib/client.ts";
 export {
   declareAutoSubscriptions,

@@ -93,6 +93,12 @@ _Avoid_: notice, alert
 **epoch**:
 daemon 代的单调标识（pidfile+flock 单实例仲裁 + I12 投递所有权防僵尸 daemon 误投）。socket 旁车 `pi-events.sock.epoch` 随换代更新；客户端连接必须携带当前 epoch。
 
+### 呈现
+
+**Footer status（footer 状态位）**:
+extension 在 pi footer 的常驻状态位 `setStatus("pi-events")`，只显示 daemon 存活，无更多状态（订阅明细归票 45 dock）。三态对齐 herdr indicators 视觉语法：`● pi-events running` / `○ pi-events idle`（socket 不存在=未启动，首操作自动拉起） / `✗ pi-events down`（socket 在但连接失败）。零副作用探测：session_start 只读 socket+一次握手，不 spawn daemon（惰性拉起语义不变）。沿驱动刷新：session_start 探测、op 副作用（成功/业务错误=running，传输失败按 socket 存在性归类）、wake 连接沿；同态不重绘。降级 notify 去重：每次断供只通知一次，恢复复位。（票 46，#111）
+_Avoid_: daemon health check（不是轮询健康检查，是沿驱动状态位）, footer polling
+
 ### 角色
 
 **Profile**:
