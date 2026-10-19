@@ -10,6 +10,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createMemoryStore, type Store, type TxView } from "../store/index.ts";
+import { onMatches } from "../domain/delivery.ts";
 import { SqliteStore } from "../store/sqlite.ts";
 import { FIRST_SEQUENCE, planTransition, deterministicEventId } from "../domain/intent.ts";
 import { IntentCorruption, Kernel } from "./index.ts";
@@ -754,6 +755,23 @@ describe("票 24 — subscribe 幂等与换参", () => {
     expect(subId(r2)).toBe(id1);
     expect(store.querySubscriptions({ sessionId: "session-1" })).toHaveLength(1);
     expect(store.getRunLedger(SLOT_KEY)?.refcount).toBe(1);
+  });
+
+  it("opts.on 数组形态：入库 stringify / onMatches 读侧还原（8a8403b 回归——数组直绑 SQLite param 崩溃）", () => {
+    const store = createMemoryStore();
+    seedEntity(store, "passed");
+    const kernel = new Kernel(store, VERDICT_STATES, 0);
+    // 数组形态订阅：修复前 bind 崩（SQLite param-11）；修复后 stringify 入库
+    const id = subId(kernel.subscribe(subReq({ opts: { on: ["failed"], once: false } })));
+    expect(id).toBeTruthy();
+    // 行内 on 是 JSON 字符串形态（写侧正典）
+    const row = store.querySubscriptions({ sessionId: "session-1" })[0];
+    expect(row?.on).toBe(JSON.stringify(["failed"]));
+    // 读侧还原：数组形态谓词对两个值各判一次
+    expect(onMatches({ to: "failed" }, row?.on)).toBe(true);
+    expect(onMatches({ to: "passed" }, row?.on)).toBe(false);
+    // 旧行兼容：非 JSON 字符串形态依旧按单值判
+    expect(onMatches({ to: "failed" }, "failed")).toBe(true);
   });
 
   it("换参：旧关新开（closedReason replaced）、checker 替换（solo 槽 ProbeSpec 换 check）、在途投递不撤", () => {
