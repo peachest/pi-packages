@@ -116,7 +116,14 @@ export interface LoopsCtx {
     deadLetterNotice?: boolean;
     /** ephemeral 清理域：profileIds ∩ terminalStates 命中的实体走 terminal→retired 标记与 7d 到期清理
      *  （profiles 票接线后由组合根注入；缺省无域 = 职责不激活）。 */
-    ephemeral?: { profileIds: ReadonlySet<string>; terminalStates: ReadonlySet<string> };
+    ephemeral?: {
+      profileIds: ReadonlySet<string>;
+      terminalStates: ReadonlySet<string>;
+      /** ad-hoc ephemeral 清理域（票 48/#113）：profileId 为空的条件实体（ephemeralRef 铸造键），
+       *  终态 = 判定闭集 terminal（passed/failed）。与 profile 域同扫互斥——实体按 profileId
+       *  有无归入恰一域，不重复扫描。 */
+      adhocTerminalStates?: ReadonlySet<string>;
+    };
     /** 快照触发阈值（单实体事件数；#31 性能条件 MVP 面——快照机制本体归后票，候选上报在 handle.housekeeping）。 */
     snapshotThreshold?: number;
   };
@@ -614,8 +621,14 @@ export function startLoops(ctx: LoopsCtx): LoopsHandle {
     const eph = hk?.ephemeral;
     if (eph) {
       for (const e of ctx.store.queryEntities({})) {
-        if (!e.profileId || !eph.profileIds.has(e.profileId)) continue;
-        if (e.state === null || !eph.terminalStates.has(e.state)) continue;
+        // 域互斥（票 48/#113）：profileId 有 → profile 域（profileIds ∩ terminalStates）；
+        // profileId 空 → ad-hoc 域（adhocTerminalStates）。单次遍历每实体恰归一域，不重复扫描。
+        if (e.profileId) {
+          if (!eph.profileIds.has(e.profileId)) continue;
+          if (e.state === null || !eph.terminalStates.has(e.state)) continue;
+        } else {
+          if (e.state === null || eph.adhocTerminalStates === undefined || !eph.adhocTerminalStates.has(e.state)) continue;
+        }
         if (!e.retired) void doSubmit({ kind: "unregister", ref: { type: e.type, key: e.key } }); // 终审裁定②：写路径归 kernel（L0 队列，timer 上下文同步消费）
         const anchor = latestEventMsByEntity?.get(`${e.type}/${e.key}`);
         if (anchor !== undefined && retiredCleanupDue(anchor, now)) {

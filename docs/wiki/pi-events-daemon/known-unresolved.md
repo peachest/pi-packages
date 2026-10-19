@@ -14,18 +14,14 @@
    e2e（subscribe→probe→evidence op 读回）+ 幂等单测全绿；保留期归票 28/L4 既有删除域不变。
    原问题：evidence op 的 probe 路径解引用空——prober 回流的 evidence 文本尚未经
    loops 落盘铸造 evidenceRef（ProbeResult.evidenceRef 由 loops 落盘后铸造的 D4 分工，最后一公里未接）。
-2. **ad-hoc ephemeral L4 retired 清理域未注入**：ephemeral 实体 terminal→retired 标记与 7d 到期清残留
-   （票 28 L4）只覆盖 profile 形态；ad-hoc 声明的 ephemeral 清理域未在组合根注入。
-3. ~~**subscribe url 多参数 keyGenerator**~~ → **已收口（票 49/GitHub #114，2026-10-19）**：resolve 命中时
-   urlPattern 命名捕获组随帧提取为参数字典，op-dispatch 并入 instantiate——多参数 URL 模板
-   （如 gitlab mr 双参数 project+mr_id）的 check 代入与 fields keyGenerator 消费均经此面。
-   多余参数 load 即拒（urlPattern 捕获组 ⊄ params → 拒载）；缺失参数 instantiate invalid-params 拒绝。
-4. ~~**query scope/session 过滤部分接入**~~ → **已收口（票 44/GitHub #109，2026-10-19）**：query op
-   返回体补订阅行明细（`subscriptions` 数组：subscriptionId/sessionId/entityRef/实体现值/check/on/
-   schedule(probe spec join)/thresholds/phase/backlog(session×实体 join)/createdAt），过滤面
-   （sessionId/scope/entityRef）与实体面同源——订阅清单不再需要 store 直读，面板/脚本读侧归一。
-   剩余既有面（deadLetters 过滤、B4 懒重探标记）不变。
-   原问题：store.notifications(filter) 双实现已齐；query op 侧过滤接线
+2. ~~**ad-hoc ephemeral L4 retired 清理域未注入**~~ → **已收口（票 48/GitHub #113，2026-10-19）**：
+   housekeeping.ephemeral 扩 `adhocTerminalStates` 域——profileId 为空的条件实体（ephemeralRef 铸造键）
+   终态 passed/failed 走 terminal→retired 标记与 7d 到期清残留；组合根（daemon-main）注入该域，与
+   profile 形态同一 sweep ② 清理循环。域互斥由 profileId 有无唯一判定：单次遍历每实体恰归一域，
+   双域并配不重复扫描（单测断言）；未注入 adhocTerminalStates = 职责不激活（缺省语义不变）。
+   e2e 模拟时钟推进 7d → retired → 清残留全链绿。
+
+>>>>>> feat/eda-48-cleanup-domain
    部分完成（票 40 ocr F5 修复后仍余子面）。
 5. **全量套件高负载偶发真进程时序 flake**：真 spawn 冒烟与 kill 自愈组在全量并发下偶发时序竞争
    （wake 屏障已改 level-trigger，剩余为观测项）。
