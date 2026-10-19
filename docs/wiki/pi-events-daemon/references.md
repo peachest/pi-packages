@@ -12,7 +12,7 @@
 
 ## 2. pi-poll（仓库内的直接前身）
 
-- 位置: `packages/pi-poll/`（CONTEXT.md 是最好的入口）
+- 位置: `packages/pi-poll/`（GLOSSARY.md 是最好的入口）
 - 关键决策: check = shell 命令单一原语（拒绝类型化 port/file/http 快捷原语）；返回 last check output 作证据
 - 局限: 前台阻塞、无通知唤醒、无跨 session
 - 给了: 判定器契约的骨架（exit 0 = ready）；"HTTP 用 curl -sf 表达"的既有裁定

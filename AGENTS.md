@@ -29,4 +29,4 @@ Triage labels follow the five canonical roles with default names. See `docs/agen
 
 ### Domain docs
 
-Multi-context layout: a root `CONTEXT-MAP.md` points to per-package `CONTEXT.md` files. See `docs/agents/domain.md`.
+Multi-context layout: a root `GLOSSARY-MAP.md` points to per-package `GLOSSARY.md` files. See `docs/agents/domain.md`.（2026-10-19 由 CONTEXT 迁移更名）

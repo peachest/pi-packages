@@ -1,4 +1,6 @@
-# pi-events-daemon (prototype-events-daemon)
+# pi-events-daemon (prototype-events-daemon) — 已冻结
+
+> **本表已冻结（2026-10-19）**：正典术语表迁至 [pi-events-daemon/GLOSSARY.md](../pi-events-daemon/GLOSSARY.md)（含实现期演进术语 Transitioned/epoch/TxOps/envAllowlist 与 ADR 0006-0008）。本文件保留为历史参照。
 
 Centralized events daemon pi extension: an entity state-machine substrate. Entities mirror external systems, transitions produce events as byproducts, and sessions subscribe to be woken. This file is the domain vocabulary; the frozen user-facing spec is issue #26, the aggregate design is #29.
 

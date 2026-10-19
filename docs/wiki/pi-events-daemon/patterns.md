@@ -87,5 +87,5 @@
 - 状态: open（写作纪律，作用于 spec/issue/HTML/CONTEXT 全部产物）
 - 现象: 设计推进中出现同一概念多名并存——scope 被称"债主"、sourceSessionId 被称"紧地址"、Delivery 投递记录被称"收据"、runner 槽键被称"抓取键"、checker 替换（close+open）被称"换装"、subscribe(check) ad-hoc 路径被称"逃生舱"
 - 根因: 解释性回复中为求生动引入隐喻，隐喻随后泄漏进裁定记录与图表
-- 推论: ①术语只用字段名和已裁定词汇（CONTEXT.md 词汇表为准）；解释概念 = 展开已有名字的定义，不是再造新名词 ②每引入新名词先问"它和现有名字是不是同一个东西" ③描述性用语（兜底/fallback、tech debt、行为描述）不算概念命名，不受此约束 ④存量：#26 冻结正文内"换装"两处在 spec 增量时统一替换为"checker 替换（close+open）"
+- 推论: ①术语只用字段名和已裁定词汇（GLOSSARY.md 词汇表为准）；解释概念 = 展开已有名字的定义，不是再造新名词 ②每引入新名词先问"它和现有名字是不是同一个东西" ③描述性用语（兜底/fallback、tech debt、行为描述）不算概念命名，不受此约束 ④存量：#26 冻结正文内"换装"两处在 spec 增量时统一替换为"checker 替换（close+open）"
 - 去向: memory lesson 已存；本条为 wiki 侧纪律
