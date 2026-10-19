@@ -611,6 +611,7 @@ export class Kernel {
     ref: EntityRef,
     verdict: Verdict,
     occurredAt: string,
+    evidenceRef?: string,
   ): { result: TransitionResult; sequences: IntentSequences } | null {
     const entity = tx.getEntity(ref.type, ref.key);
     if (!entity) throw new Error(`transition rejected: unknown entity ${entityRefKeyOf(ref)}`);
@@ -626,6 +627,7 @@ export class Kernel {
       from: entity.state,
       to: verdict,
       occurredAt,
+      ...(evidenceRef !== undefined ? { evidenceRef } : {}), // 票 47：probe evidence 指针随翻转沿事件旁车
     });
     this.consumeTx(tx, intent);
     return { result: { eventSeq: intent.eventSeq, from: intent.from, to: intent.to, eventId: intent.eventId }, sequences };
@@ -636,11 +638,11 @@ export class Kernel {
    * → planTransition 双轨分配 → 串行消费（tx 内 appendIfMissing + 实体写回 + outbox 行，I1 原子）。
    * 同态 verdict → null（无转换无事件，ADR 0003）。
    */
-  transition(ref: EntityRef, verdict: Verdict, occurredAt: string): TransitionResult | null {
+  transition(ref: EntityRef, verdict: Verdict, occurredAt: string, evidenceRef?: string): TransitionResult | null {
     return this.withRetry(`transition ${entityRefKeyOf(ref)}/${verdict}`, () => {
       // F1：回调只产出 {业务结果, 待推进游标}，Store.tx 成功返回后才推进——
       // 回调完成、提交失败的回滚场景下重试重排同序 → 同确定性 eventId（幂等不烧号）
-      const planned = this.store.tx((tx) => this.transitionTx(tx, ref, verdict, occurredAt));
+      const planned = this.store.tx((tx) => this.transitionTx(tx, ref, verdict, occurredAt, evidenceRef));
       if (planned === null) return null;
       this.sequences = planned.sequences;
       return planned.result;
@@ -794,10 +796,10 @@ export class Kernel {
           .querySubscriptions({ entityRefType: ref.type, entityRefKey: ref.key })
           // 评审 F18：on 谓词参与事件匹配——按事件终态评估，on="passed" 不再收 failed；缺省收全部
           .filter((s) => s.closedAt === undefined && onMatches({ to: event.to }, s.on)); // 已关订阅不收新投递（换参/cancel 后零新行；在途行不撤）
-        // billboard evidence 内容：事件 evidenceRef → evidence 表（无则空 billboard）
-        const evidence = event.evidenceRef
-          ? (this.store.evidenceSearch(event.evidenceRef).find((e) => e.evidenceRef === event.evidenceRef)?.content ?? "")
-          : "";
+        // billboard evidence 内容：事件 evidenceRef → evidence 表（无则空 billboard）。
+        // 点查（票 47）：确定性 ref 含 ":"，evidenceSearch 的 FTS MATCH 会解析成列过滤器直接抛错
+        // （"no such column"）——真实 probe 链一接即炸，ref 精确读归 getEvidence（票 40 点查同法）。
+        const evidence = event.evidenceRef ? (this.store.getEvidence(event.evidenceRef)?.content ?? "") : "";
         tx.putNotification({
           notificationId,
           eventSeq: event.eventSeq,

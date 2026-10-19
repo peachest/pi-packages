@@ -66,6 +66,10 @@ _Avoid_: worker, probe instance, runner pool
 probe 执行的 shell 级原语，产出三态语义 verdict（**passed / failed / waiting**——#31 正典语义名；退出码 0=passed、2=waiting、其他=failed）加 evidence。
 _Avoid_: script, command
 
+**Evidence ref（evidence 指针）**:
+probe evidence 的可寻址指针，L1 回流处（loops）落盘时铸造：`ev:<内容 sha256 前 16 hex>` 内容寻址——同 probe 结果重放同 ref，upsert 幂等不重复行。翻转沿事件旁车携带；evidence op 按 ref 精确读（点查），billboard 截断指针形态的 ref = notificationId。保留期归 L4（passed 7d / 其余 30d）。（票 47，2026-10-19 收口）
+_Avoid_: evidence id（铸造方是内容哈希，非序号）, log
+
 **envAllowlist**:
 订阅/模板显式追加的 checker 环境变量白名单（默认 PATH/HOME/no_proxy 之上合并）。凭据纪律：敏感凭据首选文件路径，allowlist 只用于非敏感运行时标识符；smoke 路径不开放。（2026-10-19 生产反馈裁定）
 

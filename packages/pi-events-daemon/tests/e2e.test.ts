@@ -466,15 +466,38 @@ describe("票 40 组 3：9 op 面收口（读侧 + cancel/drain/validate/templat
     const vFail = (await client.request("validate", { check: "exit 2" })) as { verdict: string };
     expect(vFail.verdict).toBe("failed");
 
-    // evidence：指针解引用（直接 ref 命中；probe evidence 落盘链未接——观测行由 store 面布种）
-    (await client.request("status", { type: "fixture:op", key: "external/e1", state: "waiting" })) as unknown;
-    (await client.request("publish", { entityRef: "fixture:op:external/e1", transition: { to: "passed" } })) as unknown;
-    rt.db.putEvidence({ evidenceRef: "evt:fixture:op:external/e1#1", content: "evidence-marker-e2e-fulltext", recordedAt: Date.now() });
-    const ev = (await client.request("evidence", { evidenceRef: "evt:fixture:op:external/e1#1" })) as {
+    // evidence：指针解引用（票 47：probe evidence 落盘链已接——真链验收：subscribe → probe 回流落盘铸造
+    // evidenceRef → 事件旁车 → evidence op 读回全文；billboard 旁车同链断言）
+    (await client.request("status", { type: "fixture:ev", key: "external/1", state: "waiting" })) as unknown;
+    const subEv = (await client.request("subscribe", {
+      entityRef: "fixture:ev:external/1",
+      check: "echo evidence-marker-e2e-fulltext",
+      opts: { template: "watch", sessionId: "s-ev" },
+    })) as { subscriptionId: string };
+    expect(subEv.subscriptionId).toMatch(/^sub-/);
+    await waitFor(() => rt.db.getEntity("fixture:ev", "external/1")?.state === "passed", "probe flip");
+    const evEvent = rt.db
+      .outboxBatch(Number.MAX_SAFE_INTEGER)
+      .map((r) => rt.db.tx((tx) => tx.getEvent(r.notificationId)!))
+      .find((e) => e.entityRefKey === "external/1" && e.to === "passed");
+    expect(evEvent?.evidenceRef).toMatch(/^ev:[0-9a-f]{16}$/);
+    const ev = (await client.request("evidence", { evidenceRef: evEvent!.evidenceRef })) as {
       content: string;
       truncated: boolean;
     };
-    expect(ev).toEqual({ content: "evidence-marker-e2e-fulltext", truncated: false });
+    expect(ev.content).toContain("evidence-marker-e2e-fulltext");
+    expect(ev.truncated).toBe(false);
+    await waitFor(() => rt.db.notifications({}).some((n) => n.eventSeq === evEvent!.eventSeq), "billboard materialize");
+    const billboard = JSON.parse(
+      rt.db.notifications({}).find((n) => n.eventSeq === evEvent!.eventSeq)!.billboardJson,
+    );
+    expect(billboard.evidence).toContain("evidence-marker-e2e-fulltext");
+
+    // publish 路径事件（无 evidence 源）不携带指针；直接 ref 命中 + 未找到拒绝仍成立
+    (await client.request("status", { type: "fixture:op", key: "external/e1", state: "waiting" })) as unknown;
+    (await client.request("publish", { entityRef: "fixture:op:external/e1", transition: { to: "passed" } })) as unknown;
+    const pubEvent = rt.db.tx((tx) => tx.getEvent("evt:fixture:op:external/e1#1"));
+    expect(pubEvent?.evidenceRef).toBeUndefined();
     await expect(client.request("evidence", { evidenceRef: "evt:fixture:op:external/e1#999" })).rejects.toMatchObject({
       code: -32603,
       message: expect.stringContaining("evidence not found"),

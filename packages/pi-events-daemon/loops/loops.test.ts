@@ -867,3 +867,52 @@ describe("终审修复⑥ — C2 on-transition 编排（transition 消费成功�
     loops.stop();
   });
 });
+
+// =============================================================================
+// 票 47 — probe evidence 落盘铸造（known-unresolved #1 收口）：L1 回流处落盘 + 内容哈希 ref，
+// 翻转沿事件旁车携带 evidenceRef，evidence op 读回全文。幂等：同结果重放同 ref 单行。
+// =============================================================================
+describe("票 47 — probe evidence 落盘铸造（L1 回流 → 事件旁车 → evidence op 读回）", () => {
+  it("evidence 非空回流：落盘 ev:<hash> 行，翻转沿事件携带 evidenceRef，evidence op 读回全文", () => {
+    const store = createMemoryStore();
+    store.putEntity({ type: REF.type, key: REF.key, state: null });
+    const loops = startLoops(makeCtx(store));
+    subVia(loops);
+
+    loops.ingestProbeResult({ slotKey: SLOT_KEY, verdict: "passed", reason: "exit 0", evidence: "probe-out-marker", durationMs: 1 });
+    const [event] = store.outboxBatch(10).map((r) => store.tx((tx) => tx.getEvent(r.notificationId)!));
+    expect(event?.evidenceRef).toMatch(/^ev:[0-9a-f]{16}$/);
+    expect(store.getEvidence(event!.evidenceRef!)?.content).toBe("probe-out-marker");
+    expect(loops.kernel.evidence(event!.evidenceRef!)).toEqual({ content: "probe-out-marker", truncated: false });
+    loops.stop();
+  });
+
+  it("幂等：同 probe 结果重复回流 → 同 ref、单 evidence 行，不炸不重复", () => {
+    const store = createMemoryStore();
+    store.putEntity({ type: REF.type, key: REF.key, state: null });
+    const loops = startLoops(makeCtx(store));
+    subVia(loops, {}, { opts: { schedule: { type: "interval", intervalMs: 60_000 } } });
+
+    loops.ingestProbeResult({ slotKey: SLOT_KEY, verdict: "failed", reason: "exit 1", evidence: "same-output", durationMs: 1 });
+    loops.ingestProbeResult({ slotKey: SLOT_KEY, verdict: "failed", reason: "exit 1", evidence: "same-output", durationMs: 1 });
+    const evidenceRows = store.evidenceSearch("same-output");
+    expect(evidenceRows).toHaveLength(1); // 内容寻址：同内容同 ref，upsert 不重复
+    const [event] = store.outboxBatch(10).map((r) => store.tx((tx) => tx.getEvent(r.notificationId)!));
+    expect(event?.evidenceRef).toBe(evidenceRows[0].evidenceRef);
+    expect(loops.errors).toHaveLength(0);
+    loops.stop();
+  });
+
+  it("evidence 空（分类失败的 probe）：不落盘不铸 ref，事件旁车无 evidenceRef", () => {
+    const store = createMemoryStore();
+    store.putEntity({ type: REF.type, key: REF.key, state: null });
+    const loops = startLoops(makeCtx(store));
+    subVia(loops);
+
+    loops.ingestProbeResult({ slotKey: SLOT_KEY, verdict: "failed", reason: "exit 2", evidence: "", durationMs: 1 });
+    const [event] = store.outboxBatch(10).map((r) => store.tx((tx) => tx.getEvent(r.notificationId)!));
+    expect(event?.evidenceRef).toBeUndefined();
+    expect(store.evidenceOlderThan(0)).toHaveLength(0);
+    loops.stop();
+  });
+});

@@ -5,7 +5,12 @@
 
 ## 既有遗留（终票 worker 报告，2026-10-16，五项）
 
-1. **probe evidence 落盘链未接**：evidence op 的 probe 路径解引用空——prober 回流的 evidence 文本尚未经
+1. ~~**probe evidence 落盘链未接**~~ → **已收口（票 47/GitHub #112，2026-10-19）**：L1 回流处（loops
+   `ingestProbeResult`）evidence 非空即落盘铸造 `ev:<sha256 前 16 hex>` 内容哈希 ref（同结果重放同 ref，
+   upsert 幂等不重复行）→ `probeVerdict` 请求携带 → 翻转沿事件旁车；fanOut billboard 同步改 `getEvidence`
+   点查（原 `evidenceSearch` 对含 `:` 的 ref FTS MATCH 抛 "no such column"，真实链一接即炸）。
+   e2e（subscribe→probe→evidence op 读回）+ 幂等单测全绿；保留期归票 28/L4 既有删除域不变。
+   原问题：evidence op 的 probe 路径解引用空——prober 回流的 evidence 文本尚未经
    loops 落盘铸造 evidenceRef（ProbeResult.evidenceRef 由 loops 落盘后铸造的 D4 分工，最后一公里未接）。
 2. **ad-hoc ephemeral L4 retired 清理域未注入**：ephemeral 实体 terminal→retired 标记与 7d 到期清残留
    （票 28 L4）只覆盖 profile 形态；ad-hoc 声明的 ephemeral 清理域未在组合根注入。

@@ -16,6 +16,7 @@
  * 与 onVerdict 真值表（once 关订阅 / twoStage flip 切换）——verdict 应用与订阅生命周期判定全在唯一写者内串行。
  */
 import { type EntityRef, type TransitionIntent, type Verdict, entityRefKeyOf } from "../domain/types.ts";
+import { createHash } from "node:crypto";
 import {
   INITIAL_THRESHOLD_STATE,
   cronNextMs,
@@ -61,7 +62,9 @@ export type MutationRequest =
   | { kind: "cancel"; req: CancelRequest }
   | { kind: "probeVerdict"; slotKey: string; verdict: Verdict; occurredAt: string;
       /** 评审 B 组：dispatch 时刻的槽 generation——旧代 completion 拒应用；缺省（watch 回流等无 dispatch 来源）不判代。 */
-      generation?: number }
+      generation?: number;
+      /** 票 47：probe evidence 落盘铸造的指针（L1 回流处铸造；空 evidence 无指针）。 */
+      evidenceRef?: string }
   | { kind: "fanOut"; notificationId: string }
   | { kind: "sessionStart"; sessionId: string; scope?: SubscriptionScope }
   | { kind: "sessionEnd"; sessionId: string }
@@ -338,7 +341,7 @@ export function startLoops(ctx: LoopsCtx): LoopsHandle {
     }
     // 达标翻转沿：先转换提交，提交成功才落 settle（评审 F7——提交失败进 errors，
     // thresholdStates 保留旧值，下一个同 verdict 重评重试，不因内存先行 settled 而永丢转换）
-    const result = kernel.transition(ref, req.verdict, req.occurredAt);
+    const result = kernel.transition(ref, req.verdict, req.occurredAt, req.evidenceRef);
     if (result) orchestrateOnTransition(ref, result.from, result.to); // C2：probe 翻转沿转换同链编排
     const actions = slotSubs.map((s) => ({
       sub: s,
@@ -400,11 +403,21 @@ export function startLoops(ctx: LoopsCtx): LoopsHandle {
    *  一槽至多一在飞（dispatchDue/reshedule 跳过在飞槽，排队上限 1）；完成回流时按标记判代。 */
   const inflight = new Map<string, number>();
 
+  /** 票 47（known-unresolved #1 收口）：probe evidence 落盘铸造——D4 分工最后一公里。
+   *  ref = 内容哈希（同 probe 结果重放同 ref，putEvidence upsert 不重复行）；已存在跳过
+   *  写入（免 FTS 重索引 churn）。保留期归 L4 既有删除域（无事件 join 的行按 30d 桶老化）。 */
+  const mintEvidence = (content: string, recordedAt: number): string => {
+    const evidenceRef = `ev:${createHash("sha256").update(content, "utf8").digest("hex").slice(0, 16)}`;
+    if (!ctx.store.getEvidence(evidenceRef)) ctx.store.putEvidence({ evidenceRef, content, recordedAt });
+    return evidenceRef;
+  };
+
   const ingestProbeResult = (result: ProbeResult): void => {
     if (stopped) return; // 停机后迟到 completion 丢弃（重启侧归零重探自愈）
     const generation = inflight.get(result.slotKey);
     inflight.delete(result.slotKey);
-    doSubmit({ kind: "probeVerdict", slotKey: result.slotKey, verdict: result.verdict, occurredAt: new Date(ctx.clock.now()).toISOString(), generation });
+    const evidenceRef = result.evidence ? mintEvidence(result.evidence, ctx.clock.now()) : undefined;
+    doSubmit({ kind: "probeVerdict", slotKey: result.slotKey, verdict: result.verdict, occurredAt: new Date(ctx.clock.now()).toISOString(), generation, evidenceRef });
   };
 
   /** 槽的下一到点；null = 366 天内无匹配或缺 cron → MAX_SAFE_INTEGER 封口（永不触发，不回退为“立即可探”死循环）。 */
