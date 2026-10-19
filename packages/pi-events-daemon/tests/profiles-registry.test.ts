@@ -303,7 +303,8 @@ describe("票 11 组 4：validate 三类错误 + templates 注册表清单（票
   it("validate ADR 0004：已知副作用 pattern 命中 → warning 不阻断（ok:true）；干净 check 零 warning", () => {
     expect(validateEntry(REGISTRY, { profile: "fixture-profile", check: "fixture-destructive-cmd --force" })).toEqual({
       ok: true,
-      warnings: [expect.stringContaining("fixture-destructive")],
+      // 副作用 warning + exit 语义启发式 warning（该 check 亦无显式 exit）双命中
+      warnings: expect.arrayContaining([expect.stringContaining("fixture-destructive")]),
     });
     // 干净 check：无副作用 pattern 但无显式 exit → 语义启发式 warning（2026-10-19 生产反馈新增）
     expect(validateEntry(REGISTRY, { profile: "fixture-profile", check: "curl -sf http://x/health" })).toEqual({
