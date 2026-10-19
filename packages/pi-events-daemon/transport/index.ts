@@ -103,6 +103,7 @@ export function serve(path: string, handlers: TransportHandlers): TransportHandl
     connections.set(socket, null);
     socket.setEncoding("utf8");
     let sessionId: string | null = null;
+    let isObserver = false;
     let buffer = "";
 
     const handleLine = (line: string): void => {
@@ -132,10 +133,15 @@ export function serve(path: string, handlers: TransportHandlers): TransportHandl
         case "session-start": {
           if (sessionId !== null) return; // 一连接一会话：重复声明忽略
           sessionId = frame.sessionId;
+          isObserver = frame.observer === true;
           connections.set(socket, frame.sessionId);
-          handlers.onSessionStart?.(frame.sessionId, (method, params) =>
-            pushLine(socket, encodeNotification(method, params)),
-          );
+          // 票 44 评审 H：observer 连接只注册推送资格（broadcastWake 可达），不进投递活跃面——
+          // 若照走 onSessionStart，fanOut auto 编址会给无订阅的观察者持久化投递行，永无 transcript 验证成死账。
+          if (!frame.observer) {
+            handlers.onSessionStart?.(frame.sessionId, (method, params) =>
+              pushLine(socket, encodeNotification(method, params)),
+            );
+          }
           return;
         }
         case "ack":
@@ -159,7 +165,7 @@ export function serve(path: string, handlers: TransportHandlers): TransportHandl
     });
     socket.on("close", () => {
       connections.delete(socket);
-      if (sessionId !== null) handlers.onSessionEnd?.(sessionId); // 断连 = 注销
+      if (sessionId !== null && !isObserver) handlers.onSessionEnd?.(sessionId); // 断连 = 注销（observer 无活跃面可注销）
     });
     socket.on("error", () => socket.destroy()); // 连接级错误只销毁本连接，close 钩子随后注销
   });

@@ -131,10 +131,16 @@ export function createQueryFace(store: Store): QueryFace {
     });
 
     // 订阅行明细（票 44）：随过滤面返回开放订阅 + 实体现值/probe spec 槽节奏/backlog join。
+    // 票 44 评审：sessionId/entityRef 谓词下推到 store（querySubscriptions 支持），避免每次面板刷新全表拉历史订阅。
     const lastProbedAtOf = (ref: EntityRef): number | null =>
       probe?.runtime.find((r) => sameEntityRef(r.entityRef, ref))?.lastProbedAt ?? null;
     const subscriptions: QuerySubscriptionEntry[] = store
-      .querySubscriptions({})
+      .querySubscriptions({
+        ...(filter.sessionId !== undefined ? { sessionId: filter.sessionId } : {}),
+        ...(filter.entityRef !== undefined
+          ? { entityRefType: filter.entityRef.type, entityRefKey: filter.entityRef.key }
+          : {}),
+      })
       .filter((s) => {
         if (s.closedAt !== undefined) return false; // 面板语义：活跃订阅（closed 走 closedAt/closedReason 只在历史面）
         if (filter.sessionId !== undefined && s.sessionId !== filter.sessionId) return false;

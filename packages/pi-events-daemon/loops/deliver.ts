@@ -363,11 +363,19 @@ export function createDeliver(ctx: LoopsCtx, deps: DeliverDeps) {
       // 观察面板（herdr 订阅面板）靠它做沿驱动刷新：离线 session 的投递行进 parked 不推 wake，
       // 无此沿则面板对离线订阅永无刷新触发。沿是刷新触发非投递：0 送达不重试，面板下一沿/手动刷新追平。
       // pi session wake.ts 只认带 sessionId 的 wake 信封（envelope 过滤），此行零影响（dead-letter-notice 同先例）。
-      const ev = ctx.store.tx((tx) => tx.getEvent(notificationId));
-      if (ev) {
-        void ctx.pusher
-          .pushEdge?.(JSON.stringify({ kind: "transitioned", entityRef: entityRefKeyOf({ type: ev.entityRefType, key: ev.entityRefKey }), from: ev.from, to: ev.to, eventSeq: ev.eventSeq }))
-          ?.catch(() => undefined);
+      // 票 44 评审：观察块自带 try/catch（store 读与 pushEdge 同步 throw 不得改变主链结果——
+      // 此时 fanOut 已提交、outbox 已消费）；无 pushEdge 实现时连额外语件读也跳过。
+      if (ctx.pusher.pushEdge) {
+        try {
+          const ev = ctx.store.tx((tx) => tx.getEvent(notificationId));
+          if (ev) {
+            void ctx.pusher
+              .pushEdge(JSON.stringify({ kind: "transitioned", entityRef: entityRefKeyOf({ type: ev.entityRefType, key: ev.entityRefKey }), from: ev.from, to: ev.to, eventSeq: ev.eventSeq }))
+              ?.catch(() => undefined);
+          }
+        } catch {
+          /* 观测沿 best-effort：失败不影响投递主链 */
+        }
       }
       return result;
     } finally {

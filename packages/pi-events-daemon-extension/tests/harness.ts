@@ -57,9 +57,7 @@ export function startTestDaemon(opts: { store?: Store; socketPath?: string } = {
     // Pusher 适配（daemon-main 接线预演）：loops 推送行（{sessionId,count,entries} JSON 串）
     // → transport 长连接 notification 帧（method "wake"）。
     pusher: {
-      push: async (line: string) => {
-        handle?.broadcastWake("wake", JSON.parse(line));
-      },
+      push: async (line: string) => (await handle?.broadcastWake("wake", JSON.parse(line))) ?? 0,
     } as Pusher,
     fs: {
       readFile: async () => {

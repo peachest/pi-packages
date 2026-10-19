@@ -15,8 +15,8 @@ import {
 export interface EventsClient {
   /** op 请求（帧携带 epoch，I12）：resolve=result，reject=RpcError。 */
   request(op: OpName, params: Record<string, unknown>): Promise<unknown>;
-  /** 长连接声明（长连接建立 = SESSION_START 信号）：此后本连接收推送。 */
-  startSession(sessionId: string): void;
+  /** 长连接声明（长连接建立 = SESSION_START 信号）：此后本连接收推送；opts.observer = 纯广播观察者（不进投递活跃面，票 44 评审 H）。 */
+  startSession(sessionId: string, opts?: { observer?: boolean }): void;
   /** daemon 推送行监听。 */
   onNotification(handler: (method: string, params: unknown) => void): void;
   /** 断连回调（连接关闭即触发一次；wake 重连循环消费，票 36）。 */
@@ -78,8 +78,8 @@ export function connectEvents(path: string, opts: { epoch: number }): Promise<Ev
         socket.write(line + "\n");
       });
     },
-    startSession(sessionId) {
-      socket.write(encodeSessionStart(sessionId) + "\n");
+    startSession(sessionId, opts) {
+      socket.write(encodeSessionStart(sessionId, opts) + "\n");
     },
     onNotification(handler) {
       notificationHandler = handler;

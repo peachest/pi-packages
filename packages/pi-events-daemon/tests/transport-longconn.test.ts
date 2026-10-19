@@ -194,3 +194,29 @@ describe("票 38 评审修复 — Group Push：broadcastWake 返回实际送达�
     await waitFor(() => handle!.broadcastWake("wake", { n: 2 }) === 0, "unregistration");
   });
 });
+
+describe("票 44 评审 H — observer 连接：收广播沿，不进投递活跃面", () => {
+  it("observer session_start 不触发 onSessionStart/onSessionEnd，但 broadcastWake 仍可达", async () => {
+    const started: string[] = [];
+    const ended: string[] = [];
+    const p = startServer({
+      onSessionStart: (sid) => started.push(sid),
+      onSessionEnd: (sid) => ended.push(sid),
+    });
+    const obs = await transport.connectEvents(p, { epoch: EPOCH });
+    const gotEdge: Array<[string, unknown]> = [];
+    obs.onNotification((method, params) => gotEdge.push([method, params]));
+    obs.startSession("pane:obs", { observer: true });
+    await new Promise((r) => setTimeout(r, 80)); // 给 handleLine 处理留时间
+    expect(started).toEqual([]); // 未进 onSessionStart（不进 activeSessions，fanOut 不编址）
+
+    handle!.broadcastWake("transitioned", { eventSeq: 1 }); // 广播沿可达
+    await waitFor(() => gotEdge.length === 1, "edge delivery");
+    expect(gotEdge).toEqual([["transitioned", { eventSeq: 1 }]]);
+    expect(handle!.broadcastWake("wake", { n: 1 })).toBe(1); // 注册计数含 observer
+
+    await obs.close();
+    await waitFor(() => handle!.broadcastWake("transitioned", { eventSeq: 2 }) === 0, "observer unregister");
+    expect(ended).toEqual([]); // 无活跃面可注销
+  });
+});

@@ -123,8 +123,6 @@ export function createOpDispatch(deps: OpDispatchDeps): (frame: OpRequestFrame) 
   });
 
   /** 订阅行明细 → wire（票 44）：时间戳 ISO 串与 entities 面同约定。 */
-  const isoMs = (ms: number | undefined): string | undefined =>
-    ms !== undefined ? new Date(ms).toISOString() : undefined;
   const mapQuerySubscription = (s: QuerySubscriptionEntry): Record<string, unknown> => ({
     subscriptionId: s.subscriptionId,
     sessionId: s.sessionId,

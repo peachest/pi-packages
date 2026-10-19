@@ -751,4 +751,26 @@ describe("票 44 — Transitioned 沿广播（观察面板 edge-driven 刷新）
     bare.stop();
     loops.stop();
   });
+
+  it("票 44 评审：pushEdge 同步 throw 不改变主链结果（fanOut 已提交、事件已消费、consumeFanOut 不报错）", async () => {
+    class ThrowingEdgePusher implements Pusher {
+      push(line: string): Promise<number> {
+        return Promise.resolve(1);
+      }
+      pushEdge(_line: string): Promise<number> {
+        throw new Error("sync boom"); // promise 返回前同步炸
+      }
+    }
+    const pusher = new ThrowingEdgePusher();
+    const store = createMemoryStore();
+    const clock = new FakeClock();
+    const loops = startLoops(makeCtx(store, { clock, pusher }));
+    store.putEntity({ type: REF.type, key: REF.key, state: null });
+    await expect(
+      loops.submit({ kind: "transition", ref: REF, verdict: "failed", occurredAt: "2026-01-01T00:00:00Z" }),
+    ).resolves.toBeDefined(); // 主链成功：观测同步 throw 被吞
+    await micro();
+    expect(store.tx((tx) => tx.getEvent(NID(1)))).toBeDefined(); // 事件已落盘（fanOut 已提交）
+    loops.stop();
+  });
 });

@@ -151,6 +151,19 @@ describe("ticket 02: 短帧/长帧分流（断言 2）", () => {
       protocol.decodeLine('{"jsonrpc":"2.0","id":1,"method":"session_start","params":{"sessionId":"w1:pA"}}'),
     ).toBeNull();
   });
+
+  it("SESSION_START observer 声明（票 44 评审 H：纯广播观察者旗标解码）", () => {
+    expect(protocol.decodeLine(protocol.encodeSessionStart("pane:obs", { observer: true }))).toEqual({
+      kind: "session-start",
+      sessionId: "pane:obs",
+      observer: true,
+    });
+    // 非 boolean observer 值不置旗标（decode 严格）
+    expect(protocol.decodeLine('{"jsonrpc":"2.0","method":"session_start","params":{"sessionId":"x","observer":"yes"}}')).toEqual({
+      kind: "session-start",
+      sessionId: "x",
+    });
+  });
 });
 
 describe("ticket 02: 畸形帧跳过不崩（断言 3）", () => {

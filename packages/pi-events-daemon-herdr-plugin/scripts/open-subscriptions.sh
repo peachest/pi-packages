@@ -24,8 +24,11 @@ esac
 
 # 焦点 pane → 本 session 的订阅锚（agent_session.value = <ts>_<uuid>.jsonl）；
 # 焦点 pane 非 agent（无 agent_session）→ 空文件 = 全量视图。
-state_dir="${XDG_RUNTIME_DIR:-$HOME/.pi/run}/pi-events-subscriptions"
-mkdir -p "$state_dir"
+# 票 44 评审：每次 launch 独立 mktemp 目录（panel 读取自己那次的锚快照）——共享文件会在
+# 连续两次 open 动作间被覆写竞争（A 面板读到 B 的锚），且目录随 pane 生命周期共存不互踩。
+state_parent="${XDG_RUNTIME_DIR:-$HOME/.pi/run}/pi-events-subscriptions"
+mkdir -p "$state_parent"
+state_dir=$(mktemp -d "$state_parent/pane-XXXXXXXX")
 "$herdr_bin" pane list | node -e '
 let raw = "";
 process.stdin.on("data", (c) => (raw += c));

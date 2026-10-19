@@ -88,8 +88,9 @@ const connect = (): void => {
   sock.on("connect", () => {
     data.connected = true;
     data.epoch = epochOf();
-    // 合成观察者声明：daemon 侧 drain(空)+snapshot(空) 无副作用；此后收广播沿。
-    send({ jsonrpc: "2.0", method: "session_start", params: { sessionId: observerSession } });
+    // 纯观察者声明（票 44 评审 H）：observer=true 只注册推送资格，不进投递活跃面（fanOut 不向本面板编址），
+    // 此后收 transitioned 广播沿。
+    send({ jsonrpc: "2.0", method: "session_start", params: { sessionId: observerSession, observer: true } });
     refresh();
     draw();
   });
@@ -100,20 +101,23 @@ const connect = (): void => {
       const line = buffer.slice(0, idx);
       buffer = buffer.slice(idx + 1);
       if (!line.trim()) continue;
-      let frame: Record<string, unknown>;
+      let frame: unknown;
       try {
-        frame = JSON.parse(line) as Record<string, unknown>;
+        frame = JSON.parse(line);
       } catch {
         continue; // 畸形帧跳过（protocol 同纪律）
       }
-      if (frame.method !== undefined) {
-        // 通知行：wake（Transitioned 沿）——登记沿时刻，去抖重拉
+      // 票 44 评审：frame/result 形状校验后再访问——JSON null 或 result:null 不得炸面板进程
+      if (typeof frame !== "object" || frame === null || Array.isArray(frame)) continue;
+      const msg = frame as Record<string, unknown>;
+      if (msg.method === "transitioned") {
+        // 通知行：Transitioned 沿——登记沿时刻，去抖重拉（wake 信封等其他 method 不触发）
         data.lastEdgeAt = Date.now();
         scheduleRefresh();
-      } else if (frame.id !== undefined && frame.result !== undefined) {
-        const result = frame.result as { entities?: unknown[]; deadLetters?: unknown[]; subscriptions?: WireSubscription[] };
-        data.subs = result.subscriptions ?? [];
-        data.deadLetters = result.deadLetters?.length ?? 0;
+      } else if (msg.id !== undefined && msg.result !== undefined && typeof msg.result === "object" && msg.result !== null) {
+        const result = msg.result as { subscriptions?: unknown; deadLetters?: unknown };
+        data.subs = Array.isArray(result.subscriptions) ? (result.subscriptions as WireSubscription[]) : [];
+        data.deadLetters = Array.isArray(result.deadLetters) ? result.deadLetters.length : 0;
         draw();
       }
     }

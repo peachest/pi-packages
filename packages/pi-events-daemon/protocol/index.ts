@@ -207,7 +207,9 @@ export type NotificationFrame = { kind: "notification"; method: string; params: 
 /** 传输确认行（extension → daemon，两段式 ack 的 accepted 段）。 */
 export type AckFrame = { kind: "ack"; notificationId: string };
 /** 长连接建立声明行（SESSION_START 信号，daemon 触发该 session 的 drain）。 */
-export type SessionStartFrame = { kind: "session-start"; sessionId: string };
+// 票 44 评审 H：observer=true = 纯广播观察者（订阅面板）——只注册推送资格不进投递活跃面
+// （不触发 daemon 侧 SESSION_START 的 drain+snapshot+activeSessions 登记，fanOut 不向它编址）。
+export type SessionStartFrame = { kind: "session-start"; sessionId: string; observer?: true };
 export type Frame = OpRequestFrame | OpResponseFrame | NotificationFrame | AckFrame | SessionStartFrame;
 
 /** 非 op 保留方法（长连接内部帧，带 id 也不算 op 请求）。 */
@@ -247,9 +249,13 @@ export function encodeAck(notificationId: string): string {
   return JSON.stringify({ jsonrpc: "2.0", method: ACK_METHOD, params: { notificationId } });
 }
 
-/** 编码长连接声明行（SESSION_START 信号）。 */
-export function encodeSessionStart(sessionId: string): string {
-  return JSON.stringify({ jsonrpc: "2.0", method: SESSION_START_METHOD, params: { sessionId } });
+/** 编码长连接声明行（SESSION_START 信号）；opts.observer = 纯广播观察者（票 44 评审 H）。 */
+export function encodeSessionStart(sessionId: string, opts: { observer?: boolean } = {}): string {
+  return JSON.stringify({
+    jsonrpc: "2.0",
+    method: SESSION_START_METHOD,
+    params: { sessionId, ...(opts.observer ? { observer: true } : {}) },
+  });
 }
 
 /** 解码单行帧；畸形帧（空行/坏 JSON/未知 op/超长行/形状不符）返回 null，绝不抛错。 */
@@ -289,7 +295,11 @@ export function decodeLine(line: string): Frame | null {
     }
     if (method === SESSION_START_METHOD) {
       return isRecord(msg.params) && typeof msg.params.sessionId === "string"
-        ? { kind: "session-start", sessionId: msg.params.sessionId }
+        ? {
+            kind: "session-start",
+            sessionId: msg.params.sessionId,
+            ...(msg.params.observer === true ? { observer: true as const } : {}),
+          }
         : null;
     }
     return { kind: "notification", method, params: msg.params };
