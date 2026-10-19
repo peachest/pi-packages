@@ -1,0 +1,27 @@
+{
+	"name": "prototype-viz",
+	"version": "0.1.0",
+	"private": true,
+	"description": "PROTOTYPE (throwaway): Can a pure pi extension deliver a Codex-Visualize-like loop in the TUI? /viz inline image card + ctrl+g drill-down + follow-up turn",
+	"keywords": [
+		"pi-package",
+		"pi",
+		"prototype",
+		"visualization"
+	],
+	"license": "MIT",
+	"type": "module",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/hyx/pi-mypackage.git",
+		"directory": "packages/prototype-viz"
+	},
+	"peerDependencies": {
+		"@earendil-works/pi-coding-agent": "*"
+	},
+	"pi": {
+		"extensions": [
+			"./viz.ts"
+		]
+	}
+}
