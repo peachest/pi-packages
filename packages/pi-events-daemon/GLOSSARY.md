@@ -93,6 +93,14 @@ _Avoid_: notice, alert
 **epoch**:
 daemon 代的单调标识（pidfile+flock 单实例仲裁 + I12 投递所有权防僵尸 daemon 误投）。socket 旁车 `pi-events.sock.epoch` 随换代更新；客户端连接必须携带当前 epoch。
 
+**Transitioned 沿广播**:
+票 44：每次事件消费（fanOut）后向全部注册长连接 best-effort 推一行 `transitioned` 通知（entityRef/from/to/eventSeq，独立 method）——观察面（herdr 订阅面板）的沿驱动刷新源。与 wake 信封不同：不编址 session、不建投递行、0 送达不重试；pi session wake.ts 只认 wake 信封，零影响。合成观察者 session（`pane:<id>`）借注册收沿，无订阅不产生投递行。
+_Avoid_: edge push 与 wake 混用；轮询刷新
+
+**订阅行明细**:
+票 44：query 返回体的 `subscriptions` 数组——开放订阅随过滤面（sessionId/scope/entityRef）返回，携实体现值/probe spec 槽节奏（runnerSlotKey join）/thresholds/phase/backlog（session×实体 join）。订阅读侧归一：面板与脚本不再 store 直读。
+_Avoid_: 订阅列表直读 store
+
 ### 角色
 
 **Profile**:

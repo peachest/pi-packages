@@ -174,6 +174,18 @@ export async function bootstrap(opts: BootstrapOptions = {}): Promise<DaemonHand
         // 送达数透传（票 38 评审 H）：0 = 无人收到，loops 保持 pending 不迁移（零客户端不假成功）
         return Promise.resolve(transport.broadcastWake("wake", params));
       },
+      // 票 44：Transitioned 沿广播（观察面板 edge-driven 刷新）——独立 method，pi session wake.ts
+      // 只认 "wake" 信封（method 过滤），零影响；best-effort 与 push 同语义（0 送达不重试）。
+      pushEdge: (line: string) => {
+        if (!transport) return Promise.reject(new Error("transport not serving yet"));
+        let params: unknown = line;
+        try {
+          params = JSON.parse(line);
+        } catch {
+          /* 非信封行原样透传 */
+        }
+        return Promise.resolve(transport.broadcastWake("transitioned", params));
+      },
     };
 
     // --- 8. run_ledger 对账：startLoops 归零重探（D13/A5）前的账面快照（可观测 + 审计面）---

@@ -7,8 +7,36 @@
  * （MAX_SAFE_INTEGER）收编为 store 谓词下推聚合（outboxSeqByRef）。
  */
 import { type EntityRef, entityRefKeyOf, sameEntityRef } from "../domain/types.ts";
+import { runnerSlotKey } from "../domain/intent.ts";
 import { type SubscriptionScope, EVIDENCE_INLINE_LIMIT } from "../domain/delivery.ts";
-import type { EntityRow, Store } from "../store/index.ts";
+import type { EntityRow, ProbeSpecRow, Store, SubscriptionRow } from "../store/index.ts";
+
+/** 订阅行明细（票 44：query 返回体补订阅清单，清 known-unresolved #4 余面——面板不再 store 直读）。 */
+export type QuerySubscriptionEntry = {
+  subscriptionId: string;
+  sessionId: string;
+  entityRef: EntityRef;
+  /** 实体现值（store join；实体不存在 = null）。 */
+  state: string | null;
+  origin: SubscriptionRow["origin"];
+  template?: string;
+  check?: string;
+  on?: string | string[];
+  once?: boolean;
+  flip?: boolean;
+  readyCheck?: string;
+  thresholds?: SubscriptionRow["thresholds"];
+  /** 两阶段订阅相位（票 26）。 */
+  phase?: SubscriptionRow["phase"];
+  /** 槽探测节奏（probe spec join；无槽订阅 = undefined，如 url/status 形态）。 */
+  schedule?: ProbeSpecRow["schedule"];
+  lastProbedAt: number | null;
+  /** 该订阅（session×实体）的 pending 投递行数。 */
+  backlog: number;
+  createdAt: number;
+  closedAt?: number;
+  closedReason?: SubscriptionRow["closedReason"];
+};
 
 /** query B4 懒重探 ctx：probe runtime 是 RunnerSlot 侧数据（票 24 持有），读侧经调用注入。 */
 export type QueryProbeCtx = {
@@ -36,6 +64,8 @@ export type QueryEntityEntry = {
 export type QueryResult = {
   entities: QueryEntityEntry[];
   deadLetters: ReadonlyArray<{ notificationId: string; sessionId: string; entityRef: EntityRef }>;
+  /** 订阅行明细（票 44）：随过滤面（sessionId/scope/entityRef）返回开放订阅；无过滤 = 全量。 */
+  subscriptions: QuerySubscriptionEntry[];
 };
 
 /** 读模型 seam（票 42）：LoopsHandle.kernel 的 query/evidence 消费形状。 */
@@ -82,19 +112,60 @@ export function createQueryFace(store: Store): QueryFace {
     const dead = store.deadLetters({});
     const joins = store.tx((tx) => {
       const backlogByRef = new Map<string, number>();
+      /** 订阅 backlog join 键：`${sessionId}\u0000${refKey}`（票 44 订阅行明细）。 */
+      const backlogBySessionRef = new Map<string, number>();
       const deadList: { notificationId: string; sessionId: string; entityRef: EntityRef }[] = [];
       for (const d of pending) {
         const ev = tx.getEvent(d.notificationId);
         if (!ev) continue;
         const k = entityRefKeyOf({ type: ev.entityRefType, key: ev.entityRefKey });
         backlogByRef.set(k, (backlogByRef.get(k) ?? 0) + 1);
+        const sk = `${d.sessionId}\u0000${k}`;
+        backlogBySessionRef.set(sk, (backlogBySessionRef.get(sk) ?? 0) + 1);
       }
       for (const d of dead) {
         const ev = tx.getEvent(d.notificationId);
         if (ev) deadList.push({ notificationId: d.notificationId, sessionId: d.sessionId, entityRef: { type: ev.entityRefType, key: ev.entityRefKey } });
       }
-      return { backlogByRef, deadList };
+      return { backlogByRef, backlogBySessionRef, deadList };
     });
+
+    // 订阅行明细（票 44）：随过滤面返回开放订阅 + 实体现值/probe spec 槽节奏/backlog join。
+    const lastProbedAtOf = (ref: EntityRef): number | null =>
+      probe?.runtime.find((r) => sameEntityRef(r.entityRef, ref))?.lastProbedAt ?? null;
+    const subscriptions: QuerySubscriptionEntry[] = store
+      .querySubscriptions({})
+      .filter((s) => {
+        if (s.closedAt !== undefined) return false; // 面板语义：活跃订阅（closed 走 closedAt/closedReason 只在历史面）
+        if (filter.sessionId !== undefined && s.sessionId !== filter.sessionId) return false;
+        if (filter.scope !== undefined && (s.scope ?? "project") !== filter.scope) return false;
+        if (filter.entityRef && !(s.entityRefType === filter.entityRef.type && s.entityRefKey === filter.entityRef.key)) return false;
+        return true;
+      })
+      .map((s) => {
+        const ref = { type: s.entityRefType, key: s.entityRefKey };
+        const k = entityRefKeyOf(ref);
+        const specSchedule = store.getProbeSpec(runnerSlotKey(ref, s.template ?? ""))?.schedule;
+        return {
+          subscriptionId: s.subscriptionId,
+          sessionId: s.sessionId,
+          entityRef: ref,
+          state: store.getEntity(ref.type, ref.key)?.state ?? null,
+          origin: s.origin,
+          ...(s.template !== undefined ? { template: s.template } : {}),
+          ...(s.check !== undefined ? { check: s.check } : {}),
+          ...(s.on !== undefined ? { on: s.on } : {}),
+          ...(s.once !== undefined ? { once: s.once } : {}),
+          ...(s.flip !== undefined ? { flip: s.flip } : {}),
+          ...(s.readyCheck !== undefined ? { readyCheck: s.readyCheck } : {}),
+          ...(s.thresholds !== undefined ? { thresholds: s.thresholds } : {}),
+          ...(s.phase !== undefined ? { phase: s.phase } : {}),
+          ...(specSchedule ? { schedule: specSchedule } : {}),
+          lastProbedAt: lastProbedAtOf(ref),
+          backlog: joins.backlogBySessionRef.get(`${s.sessionId}\u0000${k}`) ?? 0,
+          createdAt: s.createdAt,
+        };
+      });
 
     // parent→children 索引一次构建（O(N)）：无过滤 query 全量 entryOf(true) 时，
     // 每实体全表扫父子关系是 O(N²)（万级实体同步阻塞）——单次建 Map 后 O(1) 查找
@@ -140,7 +211,7 @@ export function createQueryFace(store: Store): QueryFace {
       if (visible && !visible.has(entityRefKeyOf(d.entityRef))) return false;
       return true;
     });
-    return { entities: selected.map((e) => entryOf(e, true)), deadLetters };
+    return { entities: selected.map((e) => entryOf(e, true)), deadLetters, subscriptions };
   };
 
   /**

@@ -38,6 +38,9 @@ export interface ExecResult {
  *  （fake 须镜像 close/reject 注入路径，票 13）。 */
 export interface Pusher {
   push(line: string): Promise<number>;
+  /** 票 44：Transitioned 沿广播（观察面板 edge-driven 刷新）。可选 seam：未实现 = 不广播
+   *  （测试 fake 零改动）；实现方负责向全部注册连接 best-effort 下发，0 送达不重试。 */
+  pushEdge?(line: string): Promise<number>;
 }
 
 /** 只读文件面（fx.md“文件读写”的收窄裁定：MVP 消费者全部只读——transcript-adapter 只读、daemon-main 配置读）：接口无写方法。watch 是观察非写（票 18 fs-watch 原生推送停点）。 */

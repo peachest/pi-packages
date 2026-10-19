@@ -194,7 +194,7 @@ export type DrainResult = {
 };
 
 // 票 42：query 读模型形状迁 kernel/query.ts（本文件 re-export 保持既有 import 路径）
-export type { QueryEntityEntry, QueryProbeCtx, QueryResult } from "./query.ts";
+export type { QueryEntityEntry, QueryProbeCtx, QueryResult, QuerySubscriptionEntry } from "./query.ts";
 import { createQueryFace, type QueryFace, type QueryProbeCtx, type QueryResult } from "./query.ts";
 
 /** validate 请求（静态面）：profile 路由 + 模板形态/ ad-hoc 形态二选一。 */

@@ -245,3 +245,34 @@ describe("票 40 评审 F6/F12 — validate 报告接真实静态语法校验（
     expect(validateValue(VALIDATE_REPORT_SCHEMA, r.validate)).toEqual([]);
   });
 });
+
+describe("票 44 — query wire 订阅行明细", () => {
+  it("query 响应携带 subscriptions（entityRef 单串 + ISO 时间戳 + thresholds/schedule 透传）", async () => {
+    const rig = makeRig();
+    await rig.dispatch(frame("status", { type: "fixture:widget", key: "external/1", state: "waiting" }));
+    rig.store.putSubscription({
+      subscriptionId: "sub-1", sessionId: "s1", entityRefType: "fixture:widget", entityRefKey: "external/1",
+      template: "mr", origin: "session", check: "glab mr status", on: ["failed"],
+      thresholds: { failureThreshold: 2, successThreshold: 1 }, phase: "flip", createdAt: 0,
+    });
+    rig.store.putProbeSpec({ slotKey: slotKeyOf({ type: "fixture:widget", key: "external/1" }, "mr"), check: "true", schedule: { type: "interval", intervalMs: 60_000 }, source: "poll" });
+    const q = (await rig.dispatch(frame("query", { session: "s1" }))) as { subscriptions: Record<string, unknown>[] };
+    expect(q.subscriptions).toEqual([
+      {
+        subscriptionId: "sub-1",
+        sessionId: "s1",
+        entityRef: "fixture:widget:external/1",
+        state: "waiting",
+        origin: "session",
+        template: "mr",
+        check: "glab mr status",
+        on: ["failed"],
+        thresholds: { failureThreshold: 2, successThreshold: 1 },
+        phase: "flip",
+        schedule: { type: "interval", intervalMs: 60_000 },
+        backlog: 0,
+        createdAt: "1970-01-01T00:00:00.000Z",
+      },
+    ]);
+  });
+});

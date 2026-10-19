@@ -101,7 +101,33 @@ export type QueryEntity = {
   backlog?: number;
   children?: QueryEntity[];
 };
-export type QueryResponse = { entities: QueryEntity[]; deadLetters: unknown[] };
+/** 订阅行明细（票 44：清 known-unresolved #4 余面——面板不再 store 直读）。时间戳 ISO 串。 */
+export type QuerySubscription = {
+  subscriptionId: string;
+  sessionId: string;
+  entityRef: EntityRefId;
+  /** 实体现值（无实体 = null）。 */
+  state: string | null;
+  origin: "session" | "auto";
+  template?: string;
+  check?: string;
+  on?: string | string[];
+  once?: boolean;
+  flip?: boolean;
+  readyCheck?: string;
+  thresholds?: { failureThreshold: number; successThreshold: number };
+  phase?: "startup" | "flip";
+  /** 槽探测节奏（probe spec join；无槽订阅缺省）。 */
+  schedule?: { type: "interval"; intervalMs?: number } | { type: "cron"; cron?: string; tz?: string };
+  lastProbedAt?: string;
+  backlog?: number;
+  createdAt: string;
+};
+export type QueryResponse = {
+  entities: QueryEntity[];
+  deadLetters: unknown[];
+  subscriptions: QuerySubscription[];
+};
 
 /** publish：agent 断言 {entityRef, transition:{to, contentIdentity?, payload?}} → {eventSeq, from, to}（非法 to 同步报错）。 */
 export type PublishRequest = {

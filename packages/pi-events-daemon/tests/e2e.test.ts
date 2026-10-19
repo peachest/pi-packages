@@ -253,7 +253,8 @@ describe("票 40 组 1：两段式 ack 双路径 e2e + extension→daemon 全链
     await waitFor(() => rt.db.getDelivery("evt:fixture:widget:external/9#2", SESSION) !== undefined, "status 自动事件 delivery 行物化（fanOut）");
     await waitFor(() => pushes.some((p) => p.method === "wake"), "status 自动事件 wake push（failed 绕行立即推）");
     await waitFor(() => rt.db.getDelivery("evt:fixture:widget:external/9#2", SESSION)?.state === "accepted", "两段式段一簿记");
-    expect(pushes[0]).toMatchObject({
+    // 票 44：transitioned 沿广播先行于 wake 批（同连接可达）——wake 断言改按 method 定位
+    expect(pushes.find((p) => p.method === "wake")).toMatchObject({
       method: "wake",
       params: { sessionId: SESSION, entries: [{ notificationId: "evt:fixture:widget:external/9#2", verdict: "failed" }] },
     });
@@ -327,7 +328,7 @@ describe("票 40 组 2：五条顺序约束端到端断言", () => {
     expect(rt.db.getDelivery("evt:fixture:order:external/e1#2", "sA")?.state).toBe("pending");
     await waitFor(() => pushes.some((p) => p.method === "wake"), "wake push");
     expect(Date.now() - t0).toBeLessThan(60_000); // 到达性断言（batch 窗 2s 正典节奏；update_hook 快路径归 A 层细分）
-    expect(pushes[0]).toMatchObject({
+    expect(pushes.find((p) => p.method === "wake")).toMatchObject({
       method: "wake",
       params: { sessionId: "sA", entries: [{ notificationId: "evt:fixture:order:external/e1#2", verdict: "passed" }] },
     });

@@ -359,6 +359,16 @@ export function createDeliver(ctx: LoopsCtx, deps: DeliverDeps) {
     try {
       const result = fanOut(notificationId, { activeSessions: fanOutSessions() });
       consumedOutbox.add(notificationId);
+      // 票 44：Transitioned 沿广播——每次事件消费后向全部注册连接推一行观测沿（best-effort）。
+      // 观察面板（herdr 订阅面板）靠它做沿驱动刷新：离线 session 的投递行进 parked 不推 wake，
+      // 无此沿则面板对离线订阅永无刷新触发。沿是刷新触发非投递：0 送达不重试，面板下一沿/手动刷新追平。
+      // pi session wake.ts 只认带 sessionId 的 wake 信封（envelope 过滤），此行零影响（dead-letter-notice 同先例）。
+      const ev = ctx.store.tx((tx) => tx.getEvent(notificationId));
+      if (ev) {
+        void ctx.pusher
+          .pushEdge?.(JSON.stringify({ kind: "transitioned", entityRef: entityRefKeyOf({ type: ev.entityRefType, key: ev.entityRefKey }), from: ev.from, to: ev.to, eventSeq: ev.eventSeq }))
+          ?.catch(() => undefined);
+      }
       return result;
     } finally {
       inProgressOutbox.delete(notificationId);

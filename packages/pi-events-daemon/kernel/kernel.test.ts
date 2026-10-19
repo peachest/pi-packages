@@ -526,6 +526,7 @@ describe("票 11 组 3：query——listChildren 单层 + per-entity backlog/dea
         },
       ],
       deadLetters: [],
+      subscriptions: [],
     });
   });
 
@@ -1261,5 +1262,66 @@ describe("票 40 评审 F5 — query scope/session 过滤（开放订阅-实体 
     expect(kernel.query({ sessionId: "s2" }).deadLetters.map((d) => d.notificationId)).toEqual([]);
     // scope 是实体可见性过滤（delivery 行无 scope）：实体经 user 订阅可见 → 其 dead-letter 可见
     expect(kernel.query({ scope: "user" }).deadLetters.map((d) => d.notificationId)).toEqual(["n1"]);
+  });
+});
+
+describe("票 44 — query 订阅行明细（返回体补订阅清单，清 known-unresolved #4 余面）", () => {
+  const e1 = { type: "fixture:widget", key: "external/1" };
+  const base = { origin: "session" as const, createdAt: 1 };
+
+  it("session 过滤返回该 session 的开放订阅：join 实体现值/backlog/槽节奏/谓词阈值相位全量携带", () => {
+    const store = createMemoryStore();
+    const kernel = new Kernel(store, VERDICT_STATES, 0);
+    kernel.register({ entityRef: e1, profileId: "p" });
+    store.putEntity({ type: e1.type, key: e1.key, state: "failed" });
+    store.putSubscription({
+      subscriptionId: "sub-1", sessionId: "s1", entityRefType: e1.type, entityRefKey: e1.key, template: "t",
+      check: "true", on: ["failed"], thresholds: { failureThreshold: 2, successThreshold: 1 }, phase: "startup", ...base,
+    });
+    store.putProbeSpec({ slotKey: `slot:${e1.type}:${e1.key}#t`, check: "true", schedule: { type: "interval", intervalMs: 60_000 }, source: "poll" });
+    // 同实体他 session pending 投递行：不进本订阅 backlog（session×实体 join）
+    store.putDelivery({ notificationId: "n1", sessionId: "s2", state: "pending", recordEpoch: 1 });
+    store.tx((tx) => tx.putEvent({ eventId: "n1", eventSeq: 1, entityRefType: e1.type, entityRefKey: e1.key, from: null, to: "failed", occurredAt: at(1) }));
+
+    const r = kernel.query({ sessionId: "s1" });
+    expect(r.subscriptions).toEqual([
+      {
+        subscriptionId: "sub-1",
+        sessionId: "s1",
+        entityRef: e1,
+        state: "failed",
+        origin: "session",
+        template: "t",
+        check: "true",
+        on: ["failed"],
+        thresholds: { failureThreshold: 2, successThreshold: 1 },
+        phase: "startup",
+        schedule: { type: "interval", intervalMs: 60_000 },
+        lastProbedAt: null,
+        backlog: 0,
+        createdAt: 1,
+      },
+    ]);
+    // 无 session 过滤 = 全量（跨 session 面板全视图）
+    expect(kernel.query({}).subscriptions).toHaveLength(1);
+  });
+
+  it("closed 订阅不进清单；scope 过滤随编址 scope；backlog 按 session×实体 计数", () => {
+    const store = createMemoryStore();
+    const kernel = new Kernel(store, VERDICT_STATES, 0);
+    kernel.register({ entityRef: e1, profileId: "p" });
+    store.putSubscription({ subscriptionId: "sub-open", sessionId: "s1", entityRefType: e1.type, entityRefKey: e1.key, scope: "user", ...base });
+    store.putSubscription({ subscriptionId: "sub-closed", sessionId: "s2", entityRefType: e1.type, entityRefKey: e1.key, closedAt: 9, closedReason: "cancelled", ...base });
+    store.putSubscription({ subscriptionId: "sub-proj", sessionId: "s3", entityRefType: e1.type, entityRefKey: e1.key, ...base });
+    // 本订阅（s1×e1）一条 pending → backlog=1
+    store.putDelivery({ notificationId: "n1", sessionId: "s1", state: "pending", recordEpoch: 1 });
+    store.tx((tx) => tx.putEvent({ eventId: "n1", eventSeq: 1, entityRefType: e1.type, entityRefKey: e1.key, from: null, to: "failed", occurredAt: at(1) }));
+
+    expect(kernel.query({ sessionId: "s1" }).subscriptions.map((s) => s.subscriptionId)).toEqual(["sub-open"]);
+    expect(kernel.query({ sessionId: "s1" }).subscriptions[0].backlog).toBe(1);
+    expect(kernel.query({}).subscriptions.map((s) => s.subscriptionId).sort()).toEqual(["sub-open", "sub-proj"]);
+    expect(kernel.query({ scope: "user" }).subscriptions.map((s) => s.subscriptionId)).toEqual(["sub-open"]);
+    expect(kernel.query({ scope: "project" }).subscriptions.map((s) => s.subscriptionId)).toEqual(["sub-proj"]);
+    expect(kernel.query({ entityRef: e1 }).subscriptions).toHaveLength(2);
   });
 });

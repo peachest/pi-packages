@@ -711,3 +711,44 @@ describe("票 38 评审修复 — Group Push M：sessionEnd 注销（断连后 f
   });
 });
 
+
+describe("票 44 — Transitioned 沿广播（观察面板 edge-driven 刷新）", () => {
+  class EdgePusher implements Pusher {
+    readonly pushed: string[] = [];
+    readonly edges: string[] = [];
+    push(line: string): Promise<number> {
+      this.pushed.push(line);
+      return Promise.resolve(1);
+    }
+    pushEdge(line: string): Promise<number> {
+      this.edges.push(line);
+      return Promise.resolve(1);
+    }
+  }
+
+  it("每次事件消费（fanOut）后推一行 transitioned 沿（entityRef/from/to/eventSeq）；无 pushEdge 实现则跳过不炸", async () => {
+    const pusher = new EdgePusher();
+    const store = createMemoryStore();
+    const clock = new FakeClock();
+    const loops = startLoops(makeCtx(store, { clock, pusher }));
+    store.putEntity({ type: REF.type, key: REF.key, state: null });
+    await loops.submit({ kind: "transition", ref: REF, verdict: "failed", occurredAt: "2026-01-01T00:00:00Z" });
+    await micro();
+    expect(pusher.edges).toHaveLength(1);
+    expect(JSON.parse(pusher.edges[0]!)).toEqual({
+      kind: "transitioned",
+      entityRef: "fixture:widget:external/fixture-1",
+      from: null,
+      to: "failed",
+      eventSeq: 1,
+    });
+
+    // 无 pushEdge 的 pusher（旧 fake/旧实现）：沿跳过，主 wake 路径不受影响
+    const bare = startLoops(makeCtx(store, { clock: new FakeClock() }));
+    store.putEntity({ type: REF.type, key: "external/other", state: null });
+    await bare.submit({ kind: "transition", ref: { type: REF.type, key: "external/other" }, verdict: "passed", occurredAt: "2026-01-01T00:00:01Z" });
+    await micro();
+    bare.stop();
+    loops.stop();
+  });
+});

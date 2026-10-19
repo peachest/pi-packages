@@ -94,6 +94,45 @@
         }
       }
     },
+    "querySubscription": {
+      "type": "object",
+      "description": "query 订阅行明细（票 44）：开放订阅 + 实体现值/槽节奏/backlog join。",
+      "required": ["subscriptionId", "sessionId", "entityRef", "state", "origin", "createdAt"],
+      "additionalProperties": false,
+      "properties": {
+        "subscriptionId": { "type": "string" },
+        "sessionId": { "type": "string" },
+        "entityRef": { "$ref": "#/definitions/entityRef" },
+        "state": { "type": ["string", "null"], "description": "实体现值（无实体 = null）。" },
+        "origin": { "type": "string", "enum": ["session", "auto"] },
+        "template": { "type": "string" },
+        "check": { "type": "string" },
+        "on": { "type": ["string", "array"], "items": { "type": "string" } },
+        "once": { "type": "boolean" },
+        "flip": { "type": "boolean" },
+        "readyCheck": { "type": "string" },
+        "thresholds": {
+          "type": "object",
+          "properties": { "failureThreshold": { "type": "integer" }, "successThreshold": { "type": "integer" } }
+        },
+        "phase": { "type": "string", "enum": ["startup", "flip"] },
+        "schedule": {
+          "description": "槽探测节奏（probe spec join；无槽订阅缺省）：interval 携 intervalMs，cron 携 cron/tz。",
+          "type": "object",
+          "required": ["type"],
+          "properties": {
+            "type": { "type": "string", "enum": ["interval", "cron"] },
+            "intervalMs": { "type": "integer" },
+            "cron": { "type": "string" },
+            "tz": { "type": "string" }
+          },
+          "additionalProperties": false
+        },
+        "lastProbedAt": { "type": "string" },
+        "backlog": { "type": "integer", "description": "该订阅（session×实体）pending 投递行数。" },
+        "createdAt": { "type": "string" }
+      }
+    },
     "templateInfo": {
       "type": "object",
       "description": "probe 模板条目（templates op 渐进披露；实体参数由 key generator 分解，agent 只填意图不碰 shell）。",
@@ -225,7 +264,7 @@
     },
     "query": {
       "type": "object",
-      "description": "读侧归一（吸收 states 查询 / listChildren / backlog / dead-letter 清单）：{entityRef? | scope? | session?} → {entities, deadLetters}。",
+      "description": "读侧归一（吸收 states 查询 / listChildren / backlog / dead-letter 清单 / 订阅行明细票 44）：{entityRef? | scope? | session?} → {entities, deadLetters, subscriptions}。",
       "required": ["request", "response"],
       "additionalProperties": false,
       "properties": {
@@ -240,11 +279,16 @@
         },
         "response": {
           "type": "object",
-          "required": ["entities", "deadLetters"],
+          "required": ["entities", "deadLetters", "subscriptions"],
           "additionalProperties": false,
           "properties": {
             "entities": { "type": "array", "items": { "$ref": "#/definitions/queryEntity" } },
-            "deadLetters": { "type": "array", "description": "dead-letter 清单行（B6：投递失败终态）。" }
+            "deadLetters": { "type": "array", "description": "dead-letter 清单行（B6：投递失败终态）。" },
+            "subscriptions": {
+              "type": "array",
+              "description": "订阅行明细（票 44，清 known-unresolved #4 余面——面板不再 store 直读）：随过滤面返回开放订阅；无过滤 = 全量。时间戳 ISO 串。",
+              "items": { "$ref": "#/definitions/querySubscription" }
+            }
           }
         }
       }

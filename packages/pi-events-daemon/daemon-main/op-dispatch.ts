@@ -17,6 +17,7 @@ import type { LoopsHandle, MutationRequest, SubmitOutcome } from "../loops/index
 import type {
   DrainResult,
   QueryEntityEntry,
+  QuerySubscriptionEntry,
   SmokeValidate,
   SubscribeOpts,
   SubscribeResult,
@@ -119,6 +120,29 @@ export function createOpDispatch(deps: OpDispatchDeps): (frame: OpRequestFrame) 
     ...(e.lastProbedAt !== null ? { lastProbedAt: new Date(e.lastProbedAt).toISOString() } : {}),
     backlog: e.backlog,
     ...(e.children !== undefined ? { children: e.children.map(mapQueryEntity) } : {}),
+  });
+
+  /** 订阅行明细 → wire（票 44）：时间戳 ISO 串与 entities 面同约定。 */
+  const isoMs = (ms: number | undefined): string | undefined =>
+    ms !== undefined ? new Date(ms).toISOString() : undefined;
+  const mapQuerySubscription = (s: QuerySubscriptionEntry): Record<string, unknown> => ({
+    subscriptionId: s.subscriptionId,
+    sessionId: s.sessionId,
+    entityRef: entityRefKeyOf(s.entityRef),
+    state: s.state,
+    origin: s.origin,
+    ...(s.template !== undefined ? { template: s.template } : {}),
+    ...(s.check !== undefined ? { check: s.check } : {}),
+    ...(s.on !== undefined ? { on: s.on } : {}),
+    ...(s.once !== undefined ? { once: s.once } : {}),
+    ...(s.flip !== undefined ? { flip: s.flip } : {}),
+    ...(s.readyCheck !== undefined ? { readyCheck: s.readyCheck } : {}),
+    ...(s.thresholds !== undefined ? { thresholds: s.thresholds } : {}),
+    ...(s.phase !== undefined ? { phase: s.phase } : {}),
+    ...(s.schedule !== undefined ? { schedule: s.schedule } : {}),
+    ...(s.lastProbedAt !== null ? { lastProbedAt: new Date(s.lastProbedAt).toISOString() } : {}),
+    backlog: s.backlog,
+    createdAt: new Date(s.createdAt).toISOString(),
   });
 
   return function dispatch(frame: OpRequestFrame): unknown | Promise<unknown> {
@@ -294,6 +318,7 @@ export function createOpDispatch(deps: OpDispatchDeps): (frame: OpRequestFrame) 
             sessionId: d.sessionId,
             entityRef: entityRefKeyOf(d.entityRef),
           })),
+          subscriptions: r.subscriptions.map(mapQuerySubscription),
         };
       }
 
