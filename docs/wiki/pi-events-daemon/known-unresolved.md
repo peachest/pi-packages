@@ -9,6 +9,8 @@
    `ingestProbeResult`）evidence 非空即落盘铸造 `ev:<sha256 前 16 hex>` 内容哈希 ref（同结果重放同 ref，
    upsert 幂等不重复行）→ `probeVerdict` 请求携带 → 翻转沿事件旁车；fanOut billboard 同步改 `getEvidence`
    点查（原 `evidenceSearch` 对含 `:` 的 ref FTS MATCH 抛 "no such column"，真实链一接即炸）。
+   验收补注（同日，实战误报排障）：落盘内容 = **verdict reason + checker 输出**（stdout+stderr prober
+   已合并掩码）——静默失败（curl -sf 401 类零输出）时 reason 单独可答「probe 当时看到了什么」。
    e2e（subscribe→probe→evidence op 读回）+ 幂等单测全绿；保留期归票 28/L4 既有删除域不变。
    原问题：evidence op 的 probe 路径解引用空——prober 回流的 evidence 文本尚未经
    loops 落盘铸造 evidenceRef（ProbeResult.evidenceRef 由 loops 落盘后铸造的 D4 分工，最后一公里未接）。

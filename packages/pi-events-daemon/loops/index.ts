@@ -416,7 +416,10 @@ export function startLoops(ctx: LoopsCtx): LoopsHandle {
     if (stopped) return; // 停机后迟到 completion 丢弃（重启侧归零重探自愈）
     const generation = inflight.get(result.slotKey);
     inflight.delete(result.slotKey);
-    const evidenceRef = result.evidence ? mintEvidence(result.evidence, ctx.clock.now()) : undefined;
+    // 票 47 验收补注：evidence = verdict reason + checker 输出（stdout+stderr，prober 已合并掩码）——
+    // 静默失败（curl -sf 401 类零输出退出）时 reason 单独可答「probe 当时看到了什么」
+    const text = [result.reason, result.evidence].filter((s) => s !== "").join("\n");
+    const evidenceRef = text ? mintEvidence(text, ctx.clock.now()) : undefined;
     doSubmit({ kind: "probeVerdict", slotKey: result.slotKey, verdict: result.verdict, occurredAt: new Date(ctx.clock.now()).toISOString(), generation, evidenceRef });
   };
 

@@ -170,8 +170,12 @@ describe("票 39 组 1：kill -9 → 重启 → run_ledger 全部槽归零重探
     const ledger = s.db.getRunLedger(SLOT);
     expect(ledger?.lastVerdict).toBe("passed"); // verdict 刷新（A5 最新事实）
     expect(ledger?.nextDueAt).toBeGreaterThan(Date.now()); // 调度重臂
-    // GC L4 首轮（启动惰性首扫 delay 0）：过期证据删、新鲜证据留
-    expect(s.db.evidenceOlderThan(Number.MAX_SAFE_INTEGER).map((r) => r.evidenceRef)).toEqual(["ev-new"]);
+    // GC L4 首轮（启动惰性首扫 delay 0）：过期证据删、新鲜证据留。probe 本体 stdout 重定向进
+    // firings 文件（零输出），票 47 落盘链接后 reason 单独成行（ev:<hash("exit 0")>，新鲜留）——
+    // 故断言用包含语义（票 47 前 probe 零输出无行，精确等值是落盘链未接时的形状）
+    const refsAfterGc = s.db.evidenceOlderThan(Number.MAX_SAFE_INTEGER).map((r) => r.evidenceRef);
+    expect(refsAfterGc).toContain("ev-new");
+    expect(refsAfterGc).not.toContain("ev-old");
     const shutdown = exitOf(c2);
     c2.kill("SIGTERM");
     await shutdown;

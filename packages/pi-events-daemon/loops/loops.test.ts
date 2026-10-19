@@ -882,8 +882,8 @@ describe("票 47 — probe evidence 落盘铸造（L1 回流 → 事件旁车 �
     loops.ingestProbeResult({ slotKey: SLOT_KEY, verdict: "passed", reason: "exit 0", evidence: "probe-out-marker", durationMs: 1 });
     const [event] = store.outboxBatch(10).map((r) => store.tx((tx) => tx.getEvent(r.notificationId)!));
     expect(event?.evidenceRef).toMatch(/^ev:[0-9a-f]{16}$/);
-    expect(store.getEvidence(event!.evidenceRef!)?.content).toBe("probe-out-marker");
-    expect(loops.kernel.evidence(event!.evidenceRef!)).toEqual({ content: "probe-out-marker", truncated: false });
+    expect(store.getEvidence(event!.evidenceRef!)?.content).toBe("exit 0\nprobe-out-marker");
+    expect(loops.kernel.evidence(event!.evidenceRef!)).toEqual({ content: "exit 0\nprobe-out-marker", truncated: false });
     loops.stop();
   });
 
@@ -903,7 +903,7 @@ describe("票 47 — probe evidence 落盘铸造（L1 回流 → 事件旁车 �
     loops.stop();
   });
 
-  it("evidence 空（分类失败的 probe）：不落盘不铸 ref，事件旁车无 evidenceRef", () => {
+  it("静默失败 probe（零输出，curl -sf 401 类）：reason 单独落盘，evidence 可答「probe 当时看到了什么」", () => {
     const store = createMemoryStore();
     store.putEntity({ type: REF.type, key: REF.key, state: null });
     const loops = startLoops(makeCtx(store));
@@ -911,8 +911,8 @@ describe("票 47 — probe evidence 落盘铸造（L1 回流 → 事件旁车 �
 
     loops.ingestProbeResult({ slotKey: SLOT_KEY, verdict: "failed", reason: "exit 2", evidence: "", durationMs: 1 });
     const [event] = store.outboxBatch(10).map((r) => store.tx((tx) => tx.getEvent(r.notificationId)!));
-    expect(event?.evidenceRef).toBeUndefined();
-    expect(store.evidenceOlderThan(0)).toHaveLength(0);
+    expect(event?.evidenceRef).toBeDefined();
+    expect(store.getEvidence(event!.evidenceRef!)?.content).toBe("exit 2");
     loops.stop();
   });
 });
