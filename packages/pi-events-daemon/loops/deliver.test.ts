@@ -573,18 +573,18 @@ describe("票 27 评审修复 — M1：failed 绕行在飞期到达", () => {
 });
 
 describe("票 27 评审修复 — M2：兜底扫异常自愈", () => {
-  it("单次 outboxBatch 读异常 → 记 errors 后照常重排；24h 扫描通道同 tick 照跑、后续 tick 无重复异常", async () => {
+  it("单次 outboxUnconsumed 读异常（票 123 游标化后同语义）→ 记 errors 后照常重排；24h 扫描通道同 tick 照跑、后续 tick 无重复异常", async () => {
     const base = createMemoryStore();
     base.putEntity({ type: REF.type, key: REF.key, state: null });
     seedSub(base);
     let failOutbox = 0;
     const store: Store = Object.create(base);
-    store.outboxBatch = (limit) => {
+    store.outboxUnconsumed = (afterSeq) => {
       if (failOutbox > 0) {
         failOutbox -= 1;
         throw new Error("read down");
       }
-      return base.outboxBatch(limit);
+      return base.outboxUnconsumed(afterSeq);
     };
     const clock = new FakeClock();
     const pusher = new FakePusher();

@@ -43,7 +43,7 @@ describe("组 1：L0 串行队列——kernel 方法调用唯一路径，提交�
     for (const verdict of verdicts) loops.submit({ kind: "transition", ref: REF, verdict, occurredAt: at(1) });
 
     // 提交序 = 消费序：outbox 插入序（Map 插入序 = 提交序）eventSeq 1..N，to 链 = 入队 verdict 链
-    const outbox = store.outboxBatch(Number.MAX_SAFE_INTEGER);
+    const outbox = store.outboxUnconsumed(0);
     expect(outbox.map((r) => r.eventSeq)).toEqual([1, 2, 3, 4, 5]);
     const events = outbox.map((r) => store.tx((tx) => tx.getEvent(r.notificationId)!));
     expect(events.map((e) => e.to)).toEqual([...verdicts]);
@@ -67,7 +67,7 @@ describe("组 1：L0 串行队列——kernel 方法调用唯一路径，提交�
     });
 
     loops.submit({ kind: "transition", ref: REF, verdict: "failed", occurredAt: at(1) });
-    const outbox = store.outboxBatch(Number.MAX_SAFE_INTEGER);
+    const outbox = store.outboxUnconsumed(0);
     expect(outbox.map((r) => r.eventSeq)).toEqual([1, 2]);
     const events = outbox.map((r) => store.tx((tx) => tx.getEvent(r.notificationId)!));
     expect(events.map((e) => e.to)).toEqual(["failed", "passed"]); // 链式请求排在外层请求之后
@@ -82,7 +82,7 @@ describe("组 1：L0 串行队列——kernel 方法调用唯一路径，提交�
     expect(loops.errors).toHaveLength(1);
 
     loops.submit({ kind: "transition", ref: REF, verdict: "failed", occurredAt: at(1) });
-    expect(store.outboxBatch(10)).toHaveLength(1); // 队列存活，下一请求正常提交
+    expect(store.outboxUnconsumed(0)).toHaveLength(1); // 队列存活，下一请求正常提交
     expect(loops.errors).toHaveLength(1);
   });
 });
@@ -153,11 +153,11 @@ describe("组 4：ocr 评审修复——启动种子投影 / stop 解除订阅 /
       }
     });
     first.submit({ kind: "transition", ref: REF, verdict: "failed", occurredAt: at(1) });
-    expect(store.outboxBatch(10).map((r) => r.eventSeq)).toEqual([1]); // 剩余请求丢弃，不消费
+    expect(store.outboxUnconsumed(0).map((r) => r.eventSeq)).toEqual([1]); // 剩余请求丢弃，不消费
     // 重启侧 L0 重放自愈：位点接事件流尾，无重复 eventSeq
     const second = startLoops(makeCtx(store));
     second.submit({ kind: "transition", ref: REF, verdict: "waiting", occurredAt: at(3) });
-    const outbox = store.outboxBatch(Number.MAX_SAFE_INTEGER);
+    const outbox = store.outboxUnconsumed(0);
     expect(outbox.map((r) => r.eventSeq)).toEqual([1, 2]);
     expect(outbox.map((r) => store.tx((tx) => tx.getEvent(r.notificationId)!.to))).toEqual(["failed", "waiting"]);
   });
@@ -201,7 +201,7 @@ describe("组 3：startLoops 假时钟/假 store 启动 + 双轨重启恢复", (
     life1.submit({ kind: "transition", ref: REF, verdict: "waiting", occurredAt: at(1) });
     life1.submit({ kind: "transition", ref: REF, verdict: "failed", occurredAt: at(2) });
     life1.stop();
-    expect(store.outboxBatch(10).map((r) => r.eventSeq)).toEqual([1, 2]);
+    expect(store.outboxUnconsumed(0).map((r) => r.eventSeq)).toEqual([1, 2]);
 
     // 双轨分叉的意图（决策轨 7 / 写入轨 9）：经 consumeIntent 消费终点落库后重启——
     // 锁步分配 ≠ 位点相等（票 42 评审 F1）：重启后下一条 transition 必须同时接对两轨
@@ -223,7 +223,7 @@ describe("组 3：startLoops 假时钟/假 store 启动 + 双轨重启恢复", (
     const life3 = startLoops(makeCtx(store));
     life3.submit({ kind: "transition", ref: REF, verdict: "waiting", occurredAt: at(4) });
 
-    const outbox = store.outboxBatch(Number.MAX_SAFE_INTEGER).sort((a, b) => a.eventSeq - b.eventSeq);
+    const outbox = store.outboxUnconsumed(0).sort((a, b) => a.eventSeq - b.eventSeq);
     expect(outbox.map((r) => r.eventSeq)).toEqual([1, 2, 9, 10]); // 写入轨接 9 → 10（事件流尾恢复）
     const events = outbox.map((r) => store.tx((tx) => tx.getEvent(r.notificationId)!));
     expect(events.map((e) => e.eventId)).toEqual([
@@ -346,11 +346,11 @@ describe("票 26 — L1→L0 verdict 应用串行（并发回流不乱序）+ wa
     expect(exec.calls.map((c) => c.command)).toEqual(["check-a", "check-b"]);
     exec.resolve(1, { exitCode: 2 }); // B 先结算 → prober 稳序缓冲滞留，回流不交付
     await micro();
-    expect(store.outboxBatch(10)).toHaveLength(0);
+    expect(store.outboxUnconsumed(0)).toHaveLength(0);
 
     exec.resolve(0, { exitCode: 0 }); // A 结算 → A、B 依次回流，L0 串行应用
     await micro();
-    const outbox = store.outboxBatch(10);
+    const outbox = store.outboxUnconsumed(0);
     expect(outbox.map((r) => r.eventSeq)).toEqual([1, 2]);
     expect(store.tx((tx) => tx.getEvent(outbox[0].notificationId))).toMatchObject({ entityRefKey: REF.key, to: "passed" });
     expect(store.tx((tx) => tx.getEvent(outbox[1].notificationId))).toMatchObject({ entityRefKey: REF_B.key, to: "failed" });
@@ -387,14 +387,14 @@ describe("票 26 — 阈值计数评估在 L0 消费时调用（domain observeVe
 
     clock.step(0);
     await micro();
-    expect(store.outboxBatch(10)).toHaveLength(0); // 第 1 次 failed：计数 1，不翻转
+    expect(store.outboxUnconsumed(0)).toHaveLength(0); // 第 1 次 failed：计数 1，不翻转
     expect(store.getRunLedger(SLOT_KEY)?.consecutiveFails).toBe(1);
 
     loops.ingestProbeResult({ slotKey: SLOT_KEY, verdict: "failed", reason: "exit 2", evidence: "", durationMs: 1 });
-    expect(store.outboxBatch(10)).toHaveLength(0); // 第 2 次 failed：计数 2，仍在阈值内不翻转
+    expect(store.outboxUnconsumed(0)).toHaveLength(0); // 第 2 次 failed：计数 2，仍在阈值内不翻转
     loops.ingestProbeResult({ slotKey: SLOT_KEY, verdict: "failed", reason: "exit 2", evidence: "", durationMs: 1 });
     expect(store.getEntity(REF.type, REF.key)?.state).toBe("failed"); // 第 3 次 failed 到达阈值 → 翻转发事件
-    expect(store.outboxBatch(10)).toHaveLength(1);
+    expect(store.outboxUnconsumed(0)).toHaveLength(1);
     expect(store.getRunLedger(SLOT_KEY)?.consecutiveFails).toBe(3);
     loops.stop();
   });
@@ -420,7 +420,7 @@ describe("票 26 — once 自动关订阅 + 两阶段 readyCheck 切换", () => 
 
     loops.ingestProbeResult({ slotKey: SLOT_KEY, verdict: "failed", reason: "exit 2", evidence: "", durationMs: 1 });
     await micro();
-    expect(store.outboxBatch(10)).toHaveLength(1); // stale completion 丢弃（无新事件）
+    expect(store.outboxUnconsumed(0)).toHaveLength(1); // stale completion 丢弃（无新事件）
     expect(loops.errors).toHaveLength(0);
     loops.stop();
   });
@@ -467,7 +467,7 @@ describe("评审修复 — 槽 generation 隔离（B 组：重建/换参后旧�
 
     clock.step(0);
     await micro();
-    expect(store.outboxBatch(10)).toHaveLength(0); // 第 1 次 failed：计数 1 不翻转
+    expect(store.outboxUnconsumed(0)).toHaveLength(0); // 第 1 次 failed：计数 1 不翻转
     expect(store.getRunLedger(SLOT_KEY)).toMatchObject({ consecutiveFails: 1, generation: 0 });
 
     // 换参（checker 替换）→ 槽重建 generation +1，阈值计数归零
@@ -481,7 +481,7 @@ describe("评审修复 — 槽 generation 隔离（B 组：重建/换参后旧�
     exec.enqueue({ exitCode: 2 });
     clock.step(0);
     await micro();
-    expect(store.outboxBatch(10)).toHaveLength(0);
+    expect(store.outboxUnconsumed(0)).toHaveLength(0);
     expect(store.getRunLedger(SLOT_KEY)?.consecutiveFails).toBe(1);
     loops.stop();
   });
@@ -509,14 +509,14 @@ describe("评审修复 — 槽 generation 隔离（B 组：重建/换参后旧�
 
     exec.resolve(0, { exitCode: 2 }); // 旧 completion（generation 0 dispatch）回流
     await micro();
-    expect(store.outboxBatch(10)).toHaveLength(0); // 旧 generation verdict 被拒
+    expect(store.outboxUnconsumed(0)).toHaveLength(0); // 旧 generation verdict 被拒
 
     clock.step(0); // 旧 completion 结算后 in-flight 清空 → 下一代首探
     expect(exec.calls).toHaveLength(2);
     exec.resolve(1, { exitCode: 2 }); // 新 completion（generation 1）
     await micro();
     expect(store.getEntity(REF.type, REF.key)?.state).toBe("failed"); // 新 verdict 正常应用
-    expect(store.outboxBatch(10)).toHaveLength(1);
+    expect(store.outboxUnconsumed(0)).toHaveLength(1);
     loops.stop();
   });
 
@@ -530,7 +530,7 @@ describe("评审修复 — 槽 generation 隔离（B 组：重建/换参后旧�
     const loops = startLoops(makeCtx(store, { clock }));
 
     loops.submit({ kind: "probeVerdict", slotKey: SLOT_KEY, verdict: "failed", occurredAt: at(1), generation: 0 });
-    expect(store.outboxBatch(10)).toHaveLength(0); // 旧代 completion 丢弃
+    expect(store.outboxUnconsumed(0)).toHaveLength(0); // 旧代 completion 丢弃
     expect(store.getRunLedger(SLOT_KEY)?.consecutiveFails).toBe(0);
 
     loops.submit({ kind: "probeVerdict", slotKey: SLOT_KEY, verdict: "failed", occurredAt: at(2), generation: 1 });
@@ -568,7 +568,7 @@ describe("评审修复 — C 组（loops 面：关闭路径投递不丢）", () 
     clock.step(0);
     await micro();
     expect(store.getEntity(REF.type, REF.key)?.state).toBeNull(); // 未达标：不转换
-    expect(store.outboxBatch(10)).toHaveLength(0); // 无事件
+    expect(store.outboxUnconsumed(0)).toHaveLength(0); // 无事件
     expect(store.querySubscriptions({ sessionId: "session-1" })[0].closedAt).toBeUndefined(); // 不关（F6 旧缺陷在此提前关）
     loops.stop();
   });
@@ -589,7 +589,7 @@ describe("评审修复 — C 组（loops 面：关闭路径投递不丢）", () 
 
     const eventId = deterministicEventId(REF, 1);
     expect(store.getEntity(REF.type, REF.key)?.state).toBe("passed"); // 转换已提交
-    expect(store.outboxBatch(10)).toHaveLength(1);
+    expect(store.outboxUnconsumed(0)).toHaveLength(1);
     const delivery = store.getDelivery(eventId, "session-1");
     expect(delivery).toMatchObject({ state: "parked" }); // 关闭前已物化投递目标（loops 无 session runtime → parked 走 drain）
     expect(delivery?.recordEpoch).toBe(0); // I12：本 epoch 产出，drain fence 可重投
@@ -606,7 +606,7 @@ describe("评审修复 — C 组（loops 面：关闭路径投递不丢）", () 
     const preKernel = new Kernel(store, STATES, 0);
     preKernel.transition(REF, "passed", at(1));
     const eventId = deterministicEventId(REF, 1);
-    expect(store.outboxBatch(10)).toHaveLength(1);
+    expect(store.outboxUnconsumed(0)).toHaveLength(1);
 
     const clock = new FakeClock();
     const exec = new FakeExec();
@@ -616,7 +616,7 @@ describe("评审修复 — C 组（loops 面：关闭路径投递不丢）", () 
     clock.step(0);
     await micro();
 
-    expect(store.outboxBatch(10)).toHaveLength(1); // 同态：不重编号不新增事件
+    expect(store.outboxUnconsumed(0)).toHaveLength(1); // 同态：不重编号不新增事件
     expect(store.getDelivery(eventId, "session-1")).toMatchObject({ state: "parked" }); // 补物化（评审 C7「崩溃重放后也成立」）
     const row = store.querySubscriptions({ sessionId: "session-1" })[0];
     expect(row.closedReason).toBe("once-passed");
@@ -795,7 +795,7 @@ describe("终审修复② — L4 ephemeral retired 标记经 kernel.unregister�
     expect(store.getEntity(REF.type, REF.key)).toBeUndefined();
     expect(store.notifications({})).toHaveLength(0); // 派生投递残留（billboard 物化行）清零
     expect(store.tx((tx) => tx.getEvent(NID(1)))).toBeDefined(); // events 本体不删（D2 append-only 正典）
-    expect(store.outboxBatch(10)).toHaveLength(1); // outbox 行永久（decisionOrder 恢复真相源）
+    expect(store.outboxUnconsumed(0)).toHaveLength(1); // outbox 行永久（decisionOrder 恢复真相源）
     loops.stop();
   });
 });
@@ -941,7 +941,7 @@ describe("票 47 — probe evidence 落盘铸造（L1 回流 → 事件旁车 �
     subVia(loops);
 
     loops.ingestProbeResult({ slotKey: SLOT_KEY, verdict: "passed", reason: "exit 0", evidence: "probe-out-marker", durationMs: 1 });
-    const [event] = store.outboxBatch(10).map((r) => store.tx((tx) => tx.getEvent(r.notificationId)!));
+    const [event] = store.outboxUnconsumed(0).map((r) => store.tx((tx) => tx.getEvent(r.notificationId)!));
     expect(event?.evidenceRef).toMatch(/^ev:[0-9a-f]{16}$/);
     expect(store.getEvidence(event!.evidenceRef!)?.content).toBe("exit 0\nprobe-out-marker");
     expect(loops.kernel.evidence(event!.evidenceRef!)).toEqual({ content: "exit 0\nprobe-out-marker", truncated: false });
@@ -958,7 +958,7 @@ describe("票 47 — probe evidence 落盘铸造（L1 回流 → 事件旁车 �
     loops.ingestProbeResult({ slotKey: SLOT_KEY, verdict: "failed", reason: "exit 1", evidence: "same-output", durationMs: 1 });
     const evidenceRows = store.evidenceSearch("same-output");
     expect(evidenceRows).toHaveLength(1); // 内容寻址：同内容同 ref，upsert 不重复
-    const [event] = store.outboxBatch(10).map((r) => store.tx((tx) => tx.getEvent(r.notificationId)!));
+    const [event] = store.outboxUnconsumed(0).map((r) => store.tx((tx) => tx.getEvent(r.notificationId)!));
     expect(event?.evidenceRef).toBe(evidenceRows[0].evidenceRef);
     expect(loops.errors).toHaveLength(0);
     loops.stop();
@@ -971,7 +971,7 @@ describe("票 47 — probe evidence 落盘铸造（L1 回流 → 事件旁车 �
     subVia(loops);
 
     loops.ingestProbeResult({ slotKey: SLOT_KEY, verdict: "failed", reason: "exit 2", evidence: "", durationMs: 1 });
-    const [event] = store.outboxBatch(10).map((r) => store.tx((tx) => tx.getEvent(r.notificationId)!));
+    const [event] = store.outboxUnconsumed(0).map((r) => store.tx((tx) => tx.getEvent(r.notificationId)!));
     expect(event?.evidenceRef).toBeDefined();
     expect(store.getEvidence(event!.evidenceRef!)?.content).toBe("exit 2");
     loops.stop();

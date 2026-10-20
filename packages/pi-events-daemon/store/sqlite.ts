@@ -124,6 +124,12 @@ CREATE TABLE IF NOT EXISTS entity_profile (
   profile_id TEXT PRIMARY KEY,
   definition_json TEXT NOT NULL
 );
+-- 票 123（候选2）：fanOut 消费水位单行表（重启续读——A5 张力按票 42 F1 位点恢复先例显式记账）
+CREATE TABLE IF NOT EXISTS fanout_watermark (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  event_seq INTEGER NOT NULL,
+  last_notification_id TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS run_ledger (
   slot_key TEXT PRIMARY KEY,
   epoch INTEGER NOT NULL,
@@ -554,10 +560,6 @@ export class SqliteStore implements Store {
     return (this.st(sql).all(...params) as RawRow[]).map(rowToSubscription);
   }
 
-  outboxBatch(limit: number): OutboxRow[] {
-    return (this.st("SELECT notification_id, event_seq FROM outbox ORDER BY rowid LIMIT ?").all(limit) as RawRow[])
-      .map((r) => ({ notificationId: String(r.notification_id), eventSeq: Number(r.event_seq) }));
-  }
 
   outboxSeqByRef(): OutboxSeqByRefRow[] {
     return (this.st(
@@ -567,6 +569,37 @@ export class SqliteStore implements Store {
       entityRefKey: String(r.entity_ref_key),
       eventSeq: Number(r.event_seq),
     }));
+  }
+
+  // 票 123（候选2）事件级查询 seam——SQL 下推（与 MemoryStore 朴素实现 dualSuite 契约锁定）
+  latestEventIdFor(ref: { type: string; key: string }, to: string): string | undefined {
+    const r = this.st(
+      "SELECT o.notification_id AS id FROM outbox o JOIN events e ON e.event_id = o.notification_id WHERE e.entity_ref_type = ? AND e.entity_ref_key = ? AND e.to = ? ORDER BY o.event_seq DESC LIMIT 1",
+    ).get(ref.type, ref.key, to) as RawRow | undefined;
+    return r ? String(r.id) : undefined;
+  }
+
+  latestSeqForRef(ref: { type: string; key: string }): number {
+    const r = this.st("SELECT COALESCE(MAX(event_seq), 0) AS m FROM outbox WHERE notification_id LIKE ?").get(`evt:${ref.type}:${ref.key}#%`) as RawRow | undefined;
+    return Number(r?.m ?? 0);
+  }
+
+  outboxUnconsumed(afterSeq: number): OutboxRow[] {
+    return (this.st("SELECT notification_id, event_seq FROM outbox WHERE event_seq > ? ORDER BY event_seq ASC").all(afterSeq) as RawRow[]).map((r) => ({
+      notificationId: String(r.notification_id),
+      eventSeq: Number(r.event_seq),
+    }));
+  }
+
+  markFanOutConsumed(notificationId: string, eventSeq: number): void {
+    this.st(
+      "INSERT INTO fanout_watermark (id, event_seq, last_notification_id) VALUES (1, ?, ?) ON CONFLICT(id) DO UPDATE SET event_seq = MAX(event_seq, excluded.event_seq), last_notification_id = excluded.last_notification_id",
+    ).run(eventSeq, notificationId);
+  }
+
+  fanOutWatermark(): number {
+    const r = this.st("SELECT event_seq FROM fanout_watermark WHERE id = 1").get() as RawRow | undefined;
+    return Number(r?.event_seq ?? 0);
   }
 
   outboxMaxEventSeq(): number {

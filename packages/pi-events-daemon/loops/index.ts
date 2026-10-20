@@ -374,14 +374,9 @@ export function startLoops(ctx: LoopsCtx): LoopsHandle {
   /** 同态重放补物化用：实体+verdict 的最后事件 id（outbox 行 notificationId = 确定性 event id）。
    *  shortcut: O(outbox) 全扫逐行点查，仅同态翻转沿触发（崩溃重启后首个 fresh verdict）——
    *  量大时归 store 接口按实体索引查（票 10「事件流直查归 store 接口后续票精化」同面）。 */
-  const lastEventIdFor = (ref: EntityRef, to: string): string | undefined => {
-    let found: string | undefined;
-    for (const row of ctx.store.outboxBatch(Number.MAX_SAFE_INTEGER)) {
-      const ev = ctx.store.tx((tx) => tx.getEvent(row.notificationId));
-      if (ev && ev.entityRefType === ref.type && ev.entityRefKey === ref.key && ev.to === to) found = row.notificationId;
-    }
-    return found;
-  };
+  // 票 123（候选2）：N+1 裸扫下推 store.latestEventIdFor（SQL 索引查；shortcut 注释就地退役）
+  const lastEventIdFor = (ref: EntityRef, to: string): string | undefined =>
+    ctx.store.latestEventIdFor({ type: ref.type, key: ref.key }, to);
 
   // L0 串行消费：队列至空；重入提交（提交回调内再 submit，C2 编排形态）由外层收尾按 FIFO 继续。
   // stopped 检查提前到每次消费前（票 25 Finding 3）：提交回调内 stop() 后剩余请求丢弃——
@@ -596,7 +591,7 @@ export function startLoops(ctx: LoopsCtx): LoopsHandle {
     const latestEventMsByEntity = hk?.ephemeral ? new Map<string, number>() : null;
     const snapshotThreshold = hk?.snapshotThreshold;
     const eventCountByEntity = snapshotThreshold !== undefined ? new Map<string, number>() : null;
-    for (const row of ctx.store.outboxBatch(Number.MAX_SAFE_INTEGER)) {
+    for (const row of ctx.store.outboxUnconsumed(0)) { // 票 123：全量游标读（outboxBatch 退役后唯一扫面）
       const ev = ctx.store.tx((tx) => tx.getEvent(row.notificationId));
       if (!ev) continue;
       // 共享 ref 连坐守门（ocr H）：桶判定取最严格——任一非 passed 引用即 30d，后枚举的 passed

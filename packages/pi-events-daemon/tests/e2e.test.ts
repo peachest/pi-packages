@@ -340,7 +340,7 @@ describe("票 40 组 2：五条顺序约束端到端断言", () => {
     );
     await Promise.all(flips);
     const e2Events = rt.db
-      .outboxBatch(100)
+      .outboxUnconsumed(0)
       .filter((r) => r.notificationId.startsWith("evt:fixture:order:external/e2#"))
       .map((r) => ({ notificationId: r.notificationId, event: rt.db.tx((tx) => tx.getEvent(r.notificationId)) }))
       .sort((a, b) => (a.event?.eventSeq ?? 0) - (b.event?.eventSeq ?? 0));
@@ -370,7 +370,7 @@ describe("票 40 组 2：五条顺序约束端到端断言", () => {
     })) as { eventSeq: number; from: string | null; to: string };
     expect(noop).toMatchObject({ eventSeq: e2Events[3].event!.eventSeq, from: "passed", to: "passed" });
     expect(
-      rt.db.outboxBatch(100).filter((r) => r.notificationId.startsWith("evt:fixture:order:external/e2#")),
+      rt.db.outboxUnconsumed(0).filter((r) => r.notificationId.startsWith("evt:fixture:order:external/e2#")),
     ).toHaveLength(4);
     const selfT = (await client.request("publish", {
       entityRef: "fixture:order:external/e2",
@@ -379,7 +379,7 @@ describe("票 40 组 2：五条顺序约束端到端断言", () => {
     expect(selfT).toMatchObject({ from: "passed", to: "passed" });
     expect(selfT.eventSeq).toBeGreaterThan(e2Events[3].event!.eventSeq);
     expect(
-      rt.db.outboxBatch(100).filter((r) => r.notificationId.startsWith("evt:fixture:order:external/e2#")),
+      rt.db.outboxUnconsumed(0).filter((r) => r.notificationId.startsWith("evt:fixture:order:external/e2#")),
     ).toHaveLength(5);
 
     // --- epoch 拒僵尸（I12，票 119 #118 语义更新）：陈旧世代帧回错误（带期望 epoch）不断连，新世代帧照常应答 ---
@@ -476,7 +476,7 @@ describe("票 40 组 3：9 op 面收口（读侧 + cancel/drain/validate/templat
     expect(subEv.subscriptionId).toMatch(/^sub-/);
     await waitFor(() => rt.db.getEntity("fixture:ev", "external/1")?.state === "passed", "probe flip");
     const evEvent = rt.db
-      .outboxBatch(Number.MAX_SAFE_INTEGER)
+      .outboxUnconsumed(0)
       .map((r) => rt.db.tx((tx) => tx.getEvent(r.notificationId)!))
       .find((e) => e.entityRefKey === "external/1" && e.to === "passed");
     expect(evEvent?.evidenceRef).toMatch(/^ev:[0-9a-f]{16}$/);

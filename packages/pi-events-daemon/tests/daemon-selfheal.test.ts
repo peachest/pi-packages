@@ -151,8 +151,8 @@ describe("票 39 组 1：kill -9 → 重启 → run_ledger 全部槽归零重探
     // boot1：首探 → waiting→passed 事件 #1 → fanOut（无活跃 session → parked）
     const c1 = await bootChild(s);
     await waitFor(() => firingsCount(s.firings) >= 1, "boot1 probe");
-    await waitFor(() => s.db.outboxBatch(10).length === 1, "event #1");
-    expect(s.db.outboxBatch(10).map((r) => r.notificationId)).toEqual([EVENT_ID_1]);
+    await waitFor(() => s.db.outboxUnconsumed(0).length === 1, "event #1");
+    expect(s.db.outboxUnconsumed(0).map((r) => r.notificationId)).toEqual([EVENT_ID_1]);
     expect(s.db.getDelivery(EVENT_ID_1, SESSION)?.state).toBe("parked");
 
     // kill -9（崩溃矩阵 X4/X5 载体）：无优雅路径，残留 pidfile/socket 由重启侧回收
@@ -165,7 +165,7 @@ describe("票 39 组 1：kill -9 → 重启 → run_ledger 全部槽归零重探
     await waitFor(() => firingsCount(s.firings) >= 2, "boot2 re-probe");
     await new Promise((r) => setTimeout(r, 500)); // 重探余波窗口：无第二事件/无重复投递行
     expect(firingsCount(s.firings)).toBe(2); // 恰一次重探（在飞守卫 + nextDueAt 重排，无循环补探）
-    expect(s.db.outboxBatch(10).map((r) => r.notificationId)).toEqual([EVENT_ID_1]); // appendIfMissing 幂等收口
+    expect(s.db.outboxUnconsumed(0).map((r) => r.notificationId)).toEqual([EVENT_ID_1]); // appendIfMissing 幂等收口
     expect(s.db.getDelivery(EVENT_ID_1, SESSION)?.state).toBe("parked"); // I10 恰一行
     const ledger = s.db.getRunLedger(SLOT);
     expect(ledger?.lastVerdict).toBe("passed"); // verdict 刷新（A5 最新事实）
@@ -214,7 +214,7 @@ describe("票 39 组 3：X4/X5 进程级时序场景（SESSION_START drain 竞�
 
     // boot1：首探 → 事件 #1 → parked（client 未连）
     const c1 = await bootChild(s);
-    await waitFor(() => s.db.outboxBatch(10).length === 1, "event #1");
+    await waitFor(() => s.db.outboxUnconsumed(0).length === 1, "event #1");
 
     // X5：SESSION_START 长连接 → L0 drain（parked→accepted）→ wake snapshot 推送到达同一连接
     const client = await transport.connectEvents(s.sockPath, { epoch: 0 });

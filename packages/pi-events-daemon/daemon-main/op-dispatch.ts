@@ -78,15 +78,9 @@ export function createOpDispatch(deps: OpDispatchDeps): (frame: OpRequestFrame) 
   const resolveProfileId = (entityType: string): string =>
     registry.entries().find((e) => e.templates.some((t) => t.entityType === entityType))?.profileId ?? "";
 
-  /** publish 同态无事件路径的实体既有尾序（outbox 行与事件 1:1；shortcut: O(outbox) 前缀扫，同态 publish 低频）。 */
-  const latestSeqForEntity = (ref: { type: string; key: string }): number => {
-    const prefix = `evt:${entityRefKeyOf(ref)}#`;
-    let max = 0;
-    for (const row of store.outboxBatch(Number.MAX_SAFE_INTEGER)) {
-      if (row.notificationId.startsWith(prefix) && row.eventSeq > max) max = row.eventSeq;
-    }
-    return max;
-  };
+  /** publish 同态无事件路径的实体既有尾序（票 123：前缀扫下推 store.latestSeqForRef）。 */
+  const latestSeqForEntity = (ref: { type: string; key: string }): number =>
+    store.latestSeqForRef(ref);
 
   /**
    * prober 单发结果 → wire ValidateReport（票 40 评审 F6/F12）：syntaxOk 接真实静态语法校验

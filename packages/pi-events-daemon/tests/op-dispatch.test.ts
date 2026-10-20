@@ -109,7 +109,7 @@ describe("票 40 评审 F2 — status register+首转换同事务", () => {
       rig.dispatch(frame("status", { type: "fixture:widget", key: "external/1", state: "bogus" })),
     ).rejects.toThrow(/outside profile closed set/);
     expect(rig.store.getEntity("fixture:widget", "external/1")).toBeUndefined();
-    expect(rig.store.outboxBatch(10)).toHaveLength(0);
+    expect(rig.store.outboxUnconsumed(0)).toHaveLength(0);
   });
 
   it("合法 state：登记 + 首转换一请求落账（事件随响应携回）", async () => {

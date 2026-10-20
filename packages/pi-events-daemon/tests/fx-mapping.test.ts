@@ -87,10 +87,10 @@ describe("票 15：五效应类别逐一经映射表注入可达（每类一条�
     expect(store.getEntity(REF.type, REF.key)?.state).toBe("failed");
     // notificationId = 确定性 eventId（同 ref+decisionOrder 恒同 id，domain 正典）——
     // 格式断言归 kernel/domain 同位测试；此处验证映射面：经 Store 落库一行 outbox、eventSeq 对齐
-    const [outboxRow] = store.outboxBatch(10);
+    const [outboxRow] = store.outboxUnconsumed(0);
     expect(outboxRow).toMatchObject({ eventSeq: 1 });
     expect(typeof outboxRow?.notificationId).toBe("string");
-    expect(store.outboxBatch(10)).toHaveLength(1);
+    expect(store.outboxUnconsumed(0)).toHaveLength(1);
   });
 });
 
@@ -121,7 +121,7 @@ describe("票 15：X1/X2 崩溃经 Store fake 回调（injectCrash）复现（�
         tx.putOutbox({ notificationId: "n1", eventSeq: 1 }); // 注入点：outbox 写步
       }),
     ).toThrow(/X2 crash/);
-    expect(store.outboxBatch(10)).toHaveLength(0); // 事务原子：重启后由重放补齐（appendIfMissing 幂等收口）
+    expect(store.outboxUnconsumed(0)).toHaveLength(0); // 事务原子：重启后由重放补齐（appendIfMissing 幂等收口）
     expect((store as MemStore).getCommitOrder().at(-1)?.outboxPending).toEqual([
       expect.objectContaining({ notificationId: "n1", eventSeq: 1 }),
     ]);
