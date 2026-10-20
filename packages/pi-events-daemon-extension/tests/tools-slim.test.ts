@@ -23,7 +23,7 @@ describe("工具注册面：definitions 闭包内联（#50）", () => {
 
   it("校验不回归：闭包内联后 D1a 仍拒绝非法 entityRef（validateFull 走完整 opSchema）", async () => {
     const pub = defs.find((d) => d.name === "publish")!;
-    const r = await pub.execute("t1", { entityRef: "bad-shape", transition: { to: "x" } });
+    const r = await pub.execute("t1", { entityRef: "bad-shape", transition: { to: "x" } }, undefined, undefined, undefined);
     expect(JSON.stringify(r.content)).toContain("参数校验失败");
   });
 });

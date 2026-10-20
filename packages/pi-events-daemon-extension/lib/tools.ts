@@ -70,40 +70,26 @@ function buildTool(op: OpName, opSchema: JsonSchema, sender: OpSender): OpToolDe
   // 评审 H：request 内 $ref 指向根文档 definitions——host 校验只见工具级 schema，被引定义必须
   // 随抽取内联；但只内联 $ref 闭包（entityRef/adhocSchedule），response 侧定义不进工具面
   //（全量内联曾致每工具 ~1.5k tok 注册开销）；D1a validateFull 仍以 opSchema 为解析基准，不变。
-  const parameters: JsonSchema =
-    opSchema.definitions ? { ...request, definitions: collectRefDefs(opSchema.definitions, request) } : request;
+  const parameters: JsonSchema = (() => {
+    const base = opSchema.definitions
+      ? { ...request, definitions: collectRefDefs(opSchema.definitions, request) }
+      : { ...request };
+    // 票 125（候选4 形态 A'）：host 注册面剥 additionalProperties:false（宽容根级拍平键）；
+    // D1a 用原始 wire request 仍严格。仅 subscribe 有此矛盾（其余 op 无拍平需求）。
+    if (op === "subscribe") delete base.additionalProperties;
+    return base;
+  })();
 
-  // 票 119：host 注册面放宽（仅 subscribe）——oneOf/additionalProperties 硬边界从 host 层拍掉，
-  // 精校验由 execute 内 D1a 接管（文案带允许字段列表，一次报错即自纠；"schema is false" 零补救是四 scout 实证头号杀手）。
-  // 放宽仅影响 host 预检（坏帧仍被 D1a 拒、不进 daemon），DA1a 语义不变。
-  const hostLenient: JsonSchema =
-    op === "subscribe"
-      ? {
-          type: "object",
-          properties: {
-            ...parameters.properties,
-            // 根级宽容收 on/once/flip/smoke/schedule 等拍平键（模型高频误放；D1a 拒并提示归位）
-            on: true,
-            once: true,
-            flip: true,
-            smoke: true,
-            schedule: true,
-            readyCheck: true,
-            ttl: true,
-            failureThreshold: true,
-            successThreshold: true,
-            template: true,
-          },
-          definitions: parameters.definitions,
-          $schema: parameters.$schema,
-        }
-      : parameters;
+  // 票 125（候选4，形态 A'）：hostLenient 手抄清单退役——注册面仅剥 wire request 顶层的
+  // additionalProperties:false（JSON Schema 缺省即宽容，无需手抄键清单；c4 简报实证清单已漂移
+  // 缺 sessionId/origin）。D1a validateFull 仍用原始 wire request（含 false）→ 拍平帧在 execute
+  // 被拒并提示归位（票 119 语义不变）。schema 知识回归 op.schema.json 单源，新参数零登记成本。
 
   return {
     name: op,
     label: LABELS[op],
     description: node.description ?? "",
-    parameters: hostLenient,
+    parameters,
     promptSnippet: SNIPPETS[op],
     async execute(_toolCallId, params) {
       const issues = validateFull(request, params, opSchema);
