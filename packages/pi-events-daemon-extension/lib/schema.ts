@@ -113,7 +113,14 @@ function checkType(schema: JsonSchema, value: unknown, path: string, out: Issue[
   const ok = wanted.some((t) => typeof t === "string" && typeMatches(t, value));
   if (!ok) {
     const names = wanted.map((t) => (typeof t === "string" ? JSON.stringify(t) : String(t))).join("|");
-    out.push({ path, message: `期望类型 ${names}，实际 ${jsonTypeName(value)}` });
+    // 票 119：字符串化标量高频误传（模型把 boolean/number 包进引号）——文案直接给纠正动作
+    let hint = "";
+    if (typeof value === "string") {
+      const t = wanted.find((x) => x === "boolean" || x === "number");
+      if (t === "boolean" && (value === "true" || value === "false")) hint = `——JSON 里去掉引号: ${value}`;
+      else if (t === "number" && value !== "" && !Number.isNaN(Number(value))) hint = `——JSON 里去掉引号: ${value}`;
+    }
+    out.push({ path, message: `期望类型 ${names}，实际 ${jsonTypeName(value)}${hint}` });
   }
 }
 

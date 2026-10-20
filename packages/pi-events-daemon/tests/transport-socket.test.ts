@@ -119,7 +119,7 @@ describe("ticket 05: socket 路径正典（PI_EVENTS_SOCK 优先）", () => {
 });
 
 describe("ticket 05: epoch 校验（I12）", () => {
-  it("epoch 不匹配 → 静默拒：dispatch 不被调用、连接不断、进程不崩 +计数", async () => {
+  it("epoch 不匹配 → 带错误回帧（票 119 #118）：dispatch 不被调用、连接不断、进程不崩 +计数；错误携带期望 epoch", async () => {
     const seen: OpRequestFrame[] = [];
     const p = startServer({
       dispatch: (frame) => {
@@ -129,7 +129,9 @@ describe("ticket 05: epoch 校验（I12）", () => {
     });
     const socket = connectRaw(p);
     socket.write(opRequest("stale-1", "subscribe", {}, 999)); // 旧 daemon epoch 的残留帧
-    await new Promise((r) => setTimeout(r, 120)); // 静默：无响应
+    const [err] = await readLines(socket, 1);
+    expect(err).toMatchObject({ id: "stale-1", error: { code: -32001 } });
+    expect(JSON.stringify(err)).toContain(String(EPOCH)); // 错误带期望 epoch（诊断可达）
     expect(seen).toHaveLength(0);
     expect(handle!.epochMismatches()).toBe(1);
     expect(socket.destroyed).toBe(false);
@@ -248,5 +250,56 @@ describe("ticket 05: transport 薄度（源码审查）", () => {
         /\b(?:entityRef|subscriptionId|notificationId|eventSeq|verdict|billboard|drain|parked|deadLetter|profileId|backoff|retry)\b/,
       );
     }
+  });
+});
+
+describe("票 119：subscribe 缺省 sessionId = 连接声明（#117）", () => {
+  it("长连接声明 sessionId 后，subscribe 帧无 opts.sessionId → dispatch 收到注入的连接 sessionId", async () => {
+    let captured: unknown = null;
+    const p = startServer({
+      dispatch: (frame) => {
+        captured = structuredClone(frame);
+        return { ok: true };
+      },
+    });
+    const sock = connectRaw(p);
+    sock.write(JSON.stringify({ jsonrpc: "2.0", method: "session_start", params: { sessionId: "sess-declared-1" } }) + "\n");
+    await new Promise((r) => setTimeout(r, 50));
+    sock.write(
+      JSON.stringify({
+        jsonrpc: "2.0", id: 1, method: "subscribe", epoch: EPOCH,
+        params: { check: "echo ok" },
+      }) + "\n",
+    );
+    await readLines(sock, 1);
+    sock.destroy();
+    const frame = captured as { params?: { opts?: { sessionId?: string } } };
+    expect(frame?.params?.opts?.sessionId).toBe("sess-declared-1");
+  });
+
+  it("显式传 opts.sessionId 时不覆盖；非 subscribe op 不注入", async () => {
+    const captured: unknown[] = [];
+    const p = startServer({
+      dispatch: (frame) => {
+        captured.push(structuredClone(frame));
+        return { ok: true };
+      },
+    });
+    const sock = connectRaw(p);
+    sock.write(JSON.stringify({ jsonrpc: "2.0", method: "session_start", params: { sessionId: "sess-declared-2" } }) + "\n");
+    await new Promise((r) => setTimeout(r, 50));
+    sock.write(
+      JSON.stringify({
+        jsonrpc: "2.0", id: 1, method: "subscribe", epoch: EPOCH,
+        params: { check: "echo ok", opts: { sessionId: "explicit-9" } },
+      }) + "\n",
+    );
+    sock.write(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "query", epoch: EPOCH, params: {} }) + "\n");
+    await readLines(sock, 2);
+    sock.destroy();
+    const sub = captured[0] as { params?: { opts?: { sessionId?: string } } };
+    expect(sub?.params?.opts?.sessionId).toBe("explicit-9");
+    const q = captured[1] as { params?: Record<string, unknown> };
+    expect(q?.params?.opts).toBeUndefined();
   });
 });

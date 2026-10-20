@@ -382,16 +382,14 @@ describe("票 40 组 2：五条顺序约束端到端断言", () => {
       rt.db.outboxBatch(100).filter((r) => r.notificationId.startsWith("evt:fixture:order:external/e2#")),
     ).toHaveLength(5);
 
-    // --- epoch 拒僵尸（I12）：陈旧世代帧静默拒（无响应不断连），新世代帧照常应答 ---
+    // --- epoch 拒僵尸（I12，票 119 #118 语义更新）：陈旧世代帧回错误（带期望 epoch）不断连，新世代帧照常应答 ---
     const stale = await transport.connectEvents(rt.sockPath, { epoch: readEpoch(rt) - 1 });
     clients.push(stale);
-    let staleAnswered = false;
-    void stale
+    let staleError = "";
+    await stale
       .request("query", {})
-      .then(() => (staleAnswered = true))
-      .catch(() => (staleAnswered = true));
-    await new Promise((r) => setTimeout(r, 400));
-    expect(staleAnswered).toBe(false); // 僵尸帧被 epoch 门静默拒
+      .catch((e: unknown) => (staleError = String((e as { message?: string })?.message ?? e)));
+    expect(staleError).toContain("epoch mismatch"); // 僵尸帧收到诊断性错误（不再静默）
     const fresh = (await client.request("query", {})) as { entities: unknown[] };
     expect(Array.isArray(fresh.entities)).toBe(true); // 正世代服务不受影响
 

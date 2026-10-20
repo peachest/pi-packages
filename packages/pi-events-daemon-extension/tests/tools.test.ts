@@ -55,10 +55,17 @@ describe("票 34：9 op 工具注册 + 参数 schema 与 03 同源逐 op 对齐"
         Object.values(node).forEach(walk);
       };
       walk(props[tool.name].properties!.request);
-      expect(tool.parameters, `${tool.name} parameters 同源`).toEqual({
+      const wire = {
         ...props[tool.name].properties!.request,
         definitions: Object.fromEntries([...used].map((k) => [k, allDefs[k]])),
-      });
+      };
+      if (tool.name === "subscribe") {
+        // 票 119：host 面放宽特例——wire 基础上根级宽容收 opts 内键（D1a 接管精校验）
+        expect(tool.parameters).toMatchObject({ type: "object", definitions: wire.definitions });
+        expect((tool.parameters as { additionalProperties?: unknown }).additionalProperties).toBeUndefined();
+      } else {
+        expect(tool.parameters, `${tool.name} parameters 同源`).toEqual(wire);
+      }
       expect(tool.description, `${tool.name} description 来自 op schema`).toBe(props[tool.name].description);
     }
   });
@@ -86,12 +93,14 @@ describe("票 34：9 op 工具注册 + 参数 schema 与 03 同源逐 op 对齐"
     expect(validateFull(subscribe.parameters, { entityRef: "t:external/k" }, subscribe.parameters)).toEqual([]);
   });
 
-  it("flat + 显式 enums：subscribe 参数顶层字段即 request 字段，opts 枚举来自 schema（pi-fabric 教训）", () => {
+  it("flat + 显式 enums：subscribe 参数顶层字段即 request 字段，opts 枚举来自 schema（pi-fabric 教训；票 119：host 面放宽特例——宽容键额外收，D1a 接管精校验）", () => {
     const subscribe = build().find((t) => t.name === "subscribe")!;
     const parameters = subscribe.parameters as JsonSchema;
     expect(parameters.type).toBe("object");
-    expect(Object.keys(parameters.properties as object)).toEqual(["entityRef", "url", "check", "opts"]);
-    expect(parameters.additionalProperties).toBe(false);
+    const keys = Object.keys(parameters.properties as object);
+    // 四形态键在首（wire 同源），宽容键跟随（票 119 hostLenient）
+    expect(keys.slice(0, 4)).toEqual(["entityRef", "url", "check", "opts"]);
+    expect(parameters.additionalProperties).toBeUndefined();
   });
 
   it("daemon 业务错误（RpcError）以错误文本返回且带 code——不吞不包装", async () => {

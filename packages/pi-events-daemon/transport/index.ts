@@ -111,10 +111,25 @@ export function serve(path: string, handlers: TransportHandlers): TransportHandl
       if (!frame) return; // 畸形帧跳过不崩（帧型判定唯一依据 = protocol）
       switch (frame.kind) {
         case "op-request": {
-          // I12：帧携带 daemon epoch，不匹配（含缺省）静默拒+计数——不回错误、不断连
+          // I12：帧携带 daemon epoch，不匹配 +计数——带 id 的 op-request 回错误（票 119 #118：
+          // 静默拒零补救让调用方只能超时排查；错误带期望 epoch 客户端可立即自愈重连）。
+          // 连接不断；epoch 缺省视为不匹配同路径。
           if (frame.epoch !== handlers.getEpoch()) {
             mismatches++;
+            writeLine(
+              socket,
+              encodeError(frame.id, {
+                code: -32001,
+                message: `epoch mismatch: daemon=${handlers.getEpoch()} frame=${String(frame.epoch)}——重连 socket 取 .sock.epoch 旁车后重发`,
+              }),
+            );
             return;
+          }
+          // 票 119（#117）：subscribe 缺省 sessionId = 连接声明（投递归 session）。
+          // 显式传入不覆盖；长连接未声明（短连接脚本消费者）保持现状空串；非 subscribe op 不注入。
+          if (frame.op === "subscribe") {
+            const opts = (frame.params.opts ??= {}) as Record<string, unknown>;
+            if (opts.sessionId === undefined && sessionId !== null) opts.sessionId = sessionId;
           }
           // .then 包装：dispatch 同步 throw 也归入 rejection 路径（不炸 socket data 回调）；
           // dispatch 异常（含 reject(undefined)）与 success 序列化（循环引用/BigInt）都归一为配对 error 响应。

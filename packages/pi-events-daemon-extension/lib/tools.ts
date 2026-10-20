@@ -73,11 +73,37 @@ function buildTool(op: OpName, opSchema: JsonSchema, sender: OpSender): OpToolDe
   const parameters: JsonSchema =
     opSchema.definitions ? { ...request, definitions: collectRefDefs(opSchema.definitions, request) } : request;
 
+  // 票 119：host 注册面放宽（仅 subscribe）——oneOf/additionalProperties 硬边界从 host 层拍掉，
+  // 精校验由 execute 内 D1a 接管（文案带允许字段列表，一次报错即自纠；"schema is false" 零补救是四 scout 实证头号杀手）。
+  // 放宽仅影响 host 预检（坏帧仍被 D1a 拒、不进 daemon），DA1a 语义不变。
+  const hostLenient: JsonSchema =
+    op === "subscribe"
+      ? {
+          type: "object",
+          properties: {
+            ...parameters.properties,
+            // 根级宽容收 on/once/flip/smoke/schedule 等拍平键（模型高频误放；D1a 拒并提示归位）
+            on: true,
+            once: true,
+            flip: true,
+            smoke: true,
+            schedule: true,
+            readyCheck: true,
+            ttl: true,
+            failureThreshold: true,
+            successThreshold: true,
+            template: true,
+          },
+          definitions: parameters.definitions,
+          $schema: parameters.$schema,
+        }
+      : parameters;
+
   return {
     name: op,
     label: LABELS[op],
     description: node.description ?? "",
-    parameters,
+    parameters: hostLenient,
     promptSnippet: SNIPPETS[op],
     async execute(_toolCallId, params) {
       const issues = validateFull(request, params, opSchema);

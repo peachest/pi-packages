@@ -30,6 +30,9 @@ export function resolveUrl(defs: readonly ProfileDefinition[], url: string): Res
   } catch {
     host = null; // 非 URL 输入：host 未知 → 带 host 约束的模板一律不命中（零猜测）
   }
+  // 票 119：pattern 锚定在 authority 之后——剥协议前缀再匹配（host 捕获组吃 authority，
+  // 与 new URL().host 同源规范化）；无协议输入原样匹配（锚定语义不变）
+  const matchTarget = host !== null ? url.slice(url.indexOf(host)) : url;
   const candidates: { profileId: string; template: string; params: Record<string, string> }[] = [];
   for (const def of defs) {
     for (const tpl of def.templates) {
@@ -40,7 +43,7 @@ export function resolveUrl(defs: readonly ProfileDefinition[], url: string): Res
       } catch {
         continue; // load 已拒不可编译 pattern；防御双保险
       }
-      const m = re.exec(url);
+      const m = re.exec(matchTarget);
       if (!m) continue;
       if (tpl.host !== undefined && host !== tpl.host) continue;
       // 命名捕获组 → 参数字典（票 49/#114）；load 已执法组名 ⊆ 模板 params，此处仅收集非 undefined 命中

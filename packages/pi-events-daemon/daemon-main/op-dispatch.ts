@@ -212,12 +212,17 @@ export function createOpDispatch(deps: OpDispatchDeps): (frame: OpRequestFrame) 
           }
 
           // smoke 预检（syntax+live-run 失败 → {subscribed:false, validate} 不建订阅不抛错；通过 → 剥离 smoke 提交）
+          // 票 119：ad-hoc check 形态缺省启用（死订阅创建时拦截——glab-401 类永不唤醒事故）；
+          // opts.smoke:false 显式跳过（逃生口，警告责任转移给调用方）
           let smokeValidate: ValidateReport | undefined;
-          if (opts.smoke === true) {
+          const smokeRequested = opts.smoke === true;
+          const smokeSkipped = opts.smoke === false;
+          const isAdhocCheck = params.entityRef === undefined && params.url === undefined;
+          if (!smokeSkipped && (smokeRequested || isAdhocCheck)) {
             smokeValidate = await validateReport(check);
             if (smokeValidate.verdict !== "passed") return { subscribed: false, validate: smokeValidate };
-            delete opts.smoke;
           }
+          delete opts.smoke;
 
           const kernelOpts = {
             ...(opts.on !== undefined ? { on: opts.on } : {}),

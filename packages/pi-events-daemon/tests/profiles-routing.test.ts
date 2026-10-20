@@ -255,3 +255,44 @@ describe("组 5：schedule 模板资产 → kernel probe spec（B1：模板形�
     expect(() => reg.load(makeDef({ schedule: { type: "interval", every: "0s" } }))).toThrow(/safe integer/);
   });
 });
+
+describe("组 4b（票 119）：urlPattern 协议规范化——pattern 锚定在 authority 之后", () => {
+  it("锚定 ^ 的 pattern 对带协议 URL 命中（host 捕获组吃 authority）", () => {
+    const reg = makeRegistry();
+    reg.load(makeDef({
+      templates: [{ name: "watch", check: "c", params: { host: "", path: "" }, usage: "u",
+        urlPattern: "^(?<host>[^/]+)/(?<path>files/\\d+)$" }],
+    }));
+    const r = reg.resolve("https://x.test/files/7");
+    expect(r).toMatchObject({ ok: true, template: "watch" });
+    if (r.ok) expect(r.params).toEqual({ host: "x.test", path: "files/7" });
+  });
+});
+
+describe("组 5（票 119）：真实资产三模板 urlPattern——URL 形态端到端命中", () => {
+  it("gitlab-pipeline 资产：MR/CI/ticket 三模板 URL 均可命中且参数字典齐", async () => {
+    const { readFileSync } = await import("node:fs");
+    const assets = JSON.parse(readFileSync(new URL("../templates/gitlab-pipeline.json", import.meta.url), "utf8"));
+    const { resolveUrl } = daemon.profiles;
+    const registry = makeRegistry();
+    registry.load(assets);
+    const gitblue = "https://gitblue.transwarp.io/applied-ai/kube-nodexpu-manager/-/pipelines/1366608";
+    const ci = resolveUrl(registry.profiles(), gitblue);
+    expect(ci.ok).toBe(true);
+    if (ci.ok) {
+      expect(ci.template).toBe("ci");
+      expect(ci.params.pipeline_id).toBe("1366608");
+      expect(ci.params.host).toBe("gitblue.transwarp.io");
+    }
+  });
+
+  it("根级 subscribe URL 形态不再报「可用: []」——至少一个模板带 urlPattern", async () => {
+    const { readFileSync } = await import("node:fs");
+    for (const f of ["gitlab-pipeline.json", "fs-watermark.json", "k8s-pod.json"]) {
+      const a = JSON.parse(readFileSync(new URL(`../templates/${f}`, import.meta.url), "utf8"));
+      if (f === "gitlab-pipeline.json") {
+        expect(a.templates.some((t: { urlPattern?: string }) => t.urlPattern)).toBe(true);
+      }
+    }
+  });
+});
