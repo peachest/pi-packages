@@ -20,16 +20,12 @@
  *   /preset-prompt     — Dump system prompt to file
  */
 
-import type {
-  ExtensionAPI,
-  CustomEntry,
-  SessionEntry,
-} from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { PresetState } from "./src/preset-state.ts";
 import { createCommands } from "./src/commands.ts";
-import { PRESET_OP_CUSTOM_TYPE } from "./src/types.ts";
 import { readPresetsConfig } from "./src/config.ts";
-import type { PresetOpEntry } from "./src/types.ts";
+import { markWarned, recordNotify, resetScope, unseenWarned, warnedNames } from "./src/notify.ts";
+import { turnFilter } from "./src/turn-gate.ts";
 
 export default function skillPresetsExtension(pi: ExtensionAPI) {
   // Shared state
@@ -37,101 +33,109 @@ export default function skillPresetsExtension(pi: ExtensionAPI) {
   let cwd = process.cwd();
   let defaultPresetName: string | undefined;
 
+  // One-shot settings-corruption notify (ocr R11M2): while readPresetsConfig
+  // throws (corrupt settings.json), notify once per continuous failure period
+  // instead of every turn; reset on the first successful read so a later
+  // corruption notifies again.
+  let settingsErrorNotified = false;
+
+  /** Read presets config; on unreadable settings notify once and return null. */
+  const readConfigOrNotify = (
+    ui: { notify(message: string, level?: string): void } | undefined,
+  ): ReturnType<typeof readPresetsConfig> | null => {
+    try {
+      const config = readPresetsConfig(cwd);
+      settingsErrorNotified = false;
+      return config;
+    } catch (err) {
+      if (!settingsErrorNotified) {
+        settingsErrorNotified = true;
+        const reason = err instanceof Error ? err.message : String(err);
+        recordNotify(
+          ui,
+          `skill-presets: settings.json unreadable, presets inactive: ${reason}`,
+          "error",
+        );
+      }
+      return null;
+    }
+  };
+
   /**
    * Rebuild the active set from the current leaf path.
    *
-   * Path-aware replay: buildContextEntries() walks the tree from the current
-   * leaf (compaction-aware), so preset-ops on abandoned branches are excluded.
-   * For linear/v2 sessions this equals the full entry list, keeping backwards
-   * compatibility. Used by both session_start and session_tree (#64).
+   * Full-branch replay (ocr R4H): getBranch() walks root → current leaf in
+   * time order and includes compaction entries without truncation.
+   * buildContextEntries() is the right source for building the LLM context —
+   * it drops everything before the last compaction summary — but replaying
+   * state needs the full history, so preset-ops from before a compaction
+   * still restore the active set after restart or tree navigation. Preset-ops
+   * on abandoned branches are excluded either way (path-aware, #64).
    */
   const rebuildActiveSet = (sessionManager: {
-    buildContextEntries(): SessionEntry[];
+    getBranch(fromId?: string): unknown[];
   }) => {
-    // Clear active set and load default preset (always in active set)
-    state.clear();
-    if (defaultPresetName) {
-      state.load(defaultPresetName);
-    }
-
-    // Replay persistent entries to restore presets beyond the default one
-    const entries = sessionManager.buildContextEntries();
-    const presetOps: PresetOpEntry[] = entries
-      .filter(
-        (e): e is CustomEntry<PresetOpEntry> =>
-          e.type === "custom" && e.customType === PRESET_OP_CUSTOM_TYPE,
-      )
-      .map((e) => e.data as PresetOpEntry)
-      .filter(
-        (d) =>
-          d !== undefined &&
-          typeof d.action === "string" &&
-          typeof d.preset === "string",
-      );
-
-    // Replay on top of default preset (don't clear — default is already loaded)
-    for (const entry of presetOps) {
-      if (entry.action === "load") {
-        state.load(entry.preset);
-      } else if (entry.action === "offload") {
-        state.offload(entry.preset);
-      }
-    }
+    state.rebuildFromEntries(sessionManager.getBranch() as Parameters<PresetState["rebuildFromEntries"]>[0]);
   };
 
   // --- session_start: rebuild active set from current leaf path ---
   pi.on("session_start", async (_event, ctx) => {
     cwd = ctx.cwd;
 
-    // Read config to get default preset name
-    const config = readPresetsConfig(cwd);
-    defaultPresetName = config.default;
+    // Read config to get default preset name. Unreadable settings keep the
+    // previous default name and do not abort the replay (ocr R11M2).
+    const config = readConfigOrNotify(ctx.ui);
+    if (config) defaultPresetName = config.default;
 
     rebuildActiveSet(ctx.sessionManager);
+    resetScope();
   });
 
   // --- session_tree: rebuild active set after tree navigation (#64) ---
   pi.on("session_tree", async (_event, ctx) => {
     rebuildActiveSet(ctx.sessionManager);
+    resetScope();
   });
 
   // --- before_agent_start: stateless per-turn skills mutation ---
-  pi.on("before_agent_start", (event, _ctx) => {
-    const config = readPresetsConfig(cwd);
+  pi.on("before_agent_start", (event, ctx) => {
+    // Unreadable settings (ocr R11M2): conservative passthrough — no options
+    // mutation, active-set state untouched, one-time error notify.
+    const config = readConfigOrNotify(ctx.ui);
+    if (!config) return undefined;
 
     // Per-turn default refresh: settings.json can change mid-session; keep
-    // defaultPresetName and the active set in sync. state.load is idempotent
-    // and side-effect free, so calling it every turn is safe.
+    // defaultPresetName in sync. The default's skills are unioned by
+    // resolveSkills — the default name itself never enters the active set.
     defaultPresetName = config.default;
-    if (config.default) {
-      state.load(config.default);
+
+    const resolved = state.resolveSkills(config, defaultPresetName);
+
+    // Per-turn strategy (turn-gate.ts): pure computation of this turn's
+    // advertised skills + bad-reference names. Mutation and warning delivery
+    // stay here; the dedup policy lives in the notify WarningLedger.
+    const turn = turnFilter({
+      discovered: event.systemPromptOptions.skills ?? [],
+      resolved,
+      config,
+      activePresets: state.getLoaded(),
+      warnedSkillNames: warnedNames(),
+    });
+    if (turn.passthrough) return undefined;
+
+    // Bad-reference warnings: per-name incremental (ocr N4). Every turn,
+    // missing names not yet warned in this replay cycle fire the warning —
+    // so config changes introducing NEW missing names still warn.
+    if (turn.unseenMissing.length > 0) {
+      markWarned(turn.unseenMissing);
+      recordNotify(
+        ctx.ui,
+        `Active presets reference unavailable skills (missing or disabled): ${turn.unseenMissing.join(", ")}`,
+        "warning",
+      );
     }
 
-    const resolved = state.resolveSkills(config);
-
-    // Zero-config passthrough (strict): only when no presets are configured
-    // AND the active set is empty. A configured preset that resolves to zero
-    // skills (empty skills list or all-missing) still writes back an empty
-    // array to clear pi's advertised skills.
-    const noPresetsConfigured =
-      Object.keys(config.definitions).length === 0 && config.default === undefined;
-    if (noPresetsConfigured && state.getLoaded().length === 0) return undefined;
-
-    const allowed = new Set(resolved.skillNames);
-    const present = new Set<string>();
-    // Dedup by name (a skill listed by multiple presets renders once); keep
-    // pi's discovery order for the skills pi already found.
-    const nextSkills = (event.systemPromptOptions.skills ?? []).filter((skill) => {
-      if (!allowed.has(skill.name) || present.has(skill.name)) return false;
-      present.add(skill.name);
-      return true;
-    });
-
-    // Bad-reference collection: preset-listed names absent from pi discovery.
-    // Data structure only — warning surfacing lands with #63.
-    const missingSkillNames = [...allowed].filter((name) => !present.has(name));
-
-    event.systemPromptOptions.skills = nextSkills;
+    event.systemPromptOptions.skills = turn.skills;
     return undefined;
   });
 
@@ -140,12 +144,10 @@ export default function skillPresetsExtension(pi: ExtensionAPI) {
     pi,
     state,
     () => cwd,
-    () => defaultPresetName,
-    // A load-time bad-reference warning consumes the pending replay warning
-    // so the next turn does not repeat it.
-    () => {
-      replayWarningPending = false;
-    },
+    // Fresh at interaction time (ocr N2): settings.json's default can change
+    // between turns; the turn-boundary-cached defaultPresetName would go stale
+    // in long-lived interactions (dialog window, command round-trip).
+    () => readPresetsConfig(cwd).default,
   );
 
   pi.registerCommand("preset", {
@@ -179,6 +181,8 @@ export default function skillPresetsExtension(pi: ExtensionAPI) {
 // rule 3: no deep imports into src/). Selected exports, not a barrel.
 export { PresetState } from "./src/preset-state.ts";
 export { createCommands } from "./src/commands.ts";
+export { showPresetDialog } from "./src/dialog.ts";
+export { findBadRefs } from "./src/bad-refs.ts";
 export {
   getAgentDir,
   getDefaultPresetName,
