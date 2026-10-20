@@ -53,6 +53,12 @@
 
 - launcher stderr 吞没（10-19 首部署事故放大器）：**已修**（票 125 批候选5）——spawn stderr 重定向 `<socket>.daemon.log` 旁车，拉起超时错误文案附日志路径；extension 侧 launcher-log.test 断言文案与真崩溃落盘。
 
+## 架构批遗留观察（2026-10-20，票 122-126）
+
+- **票 123 水位崩溃窗口**：fanOut 成功与 markFanOutConsumed 之间崩溃 → 重启重放该事件，I10 幂等兑底（多一次幂等 fanOut 不丢投递）——by design 非缺陷；观测点：dead-letter 与重复 wake 报告若出现，先查窗口。
+- **票 123 A5 张力**：consumedOutbox 持久水位与 A5"重启归零"字面冲突，已按票 42 F1 位点恢复先例显式记账（commit 6502bc1）；若未来 A5 语义复审需连带此处。
+- **票 126 旁车日志无轮转**：<socket>.daemon.log 追加无上限——daemon 稳态几乎零 stderr，仅崩溃场景写入，量级可忽略；若出现异常增长再立轮转票。
+
 ## 后续调研票注记
 
 - **QuickJS-WASI 沙箱（终审裁定④衍生）**：用 pi v1.0 codemode / quickjs-wasi（独立 npm 包、纯库可嵌入

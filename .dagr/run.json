@@ -8,7 +8,7 @@
       "pane": "w3:p1"
     }
   },
-  "generated_at": "2026-10-19T10:20:06Z",
+  "generated_at": "2026-10-20T08:55:29Z",
   "projects": [
     {
       "id": "ARCH",
@@ -41,7 +41,8 @@
             "receipt": "commit 02c59a5 + merge into integration; 617 tests green; dualSuite regression"
           }
         }
-      ]
+      ],
+      "status": "done"
     },
     {
       "id": "T42",
@@ -89,7 +90,8 @@
             "receipt": "commits 0ad3184/8d4f8dc refactor + 41841ec/8d517d0 fix; 623 tests green; dualSuite ×2 后端"
           }
         }
-      ]
+      ],
+      "status": "done"
     },
     {
       "id": "T43",
@@ -118,7 +120,8 @@
             "receipt": "commits 668acbd/53ebcde + low fix; 623 tests green; loops/index 1051→713, deliver.ts 396+test 713"
           }
         }
-      ]
+      ],
+      "status": "done"
     },
     {
       "id": "T44",
@@ -155,7 +158,8 @@
             "receipt": "commits test+fix 2 个：回归测试（先红后绿 mutation 验证）+ ocr 2 medium 修复（normalizeOn 幂等归一/safeParseArray parse 防御/SubscribeOpts.on 类型对齐 wire）；624 tests green；三链全绿"
           }
         }
-      ]
+      ],
+      "status": "done"
     },
     {
       "id": "T45",
@@ -166,7 +170,8 @@
       "deps": [
         "T44"
       ],
-      "attempts": []
+      "attempts": [],
+      "status": "done"
     },
     {
       "id": "T46",
@@ -175,7 +180,8 @@
       "project": "ARCH",
       "state": "queued",
       "deps": [],
-      "attempts": []
+      "attempts": [],
+      "status": "done"
     },
     {
       "id": "T47",
@@ -184,7 +190,8 @@
       "project": "ARCH",
       "state": "queued",
       "deps": [],
-      "attempts": []
+      "attempts": [],
+      "status": "done"
     },
     {
       "id": "T48",
@@ -215,7 +222,8 @@
             "receipt": "commits 8424ca9(边界重构)/f255465(两裁定落地)/01c965b+e05e855(fixture 对齐)；625 tests green"
           }
         }
-      ]
+      ],
+      "status": "done"
     },
     {
       "id": "T49",
@@ -549,6 +557,18 @@
       "type": "note",
       "task": "T47",
       "detail": "第四条相位沿 wake：卡 11（票 48 ad-hoc 清理域）Implement 完成（5m26s，commit 54b2e1f @ feat/eda-48-cleanup-domain，631 测试绿，台账 #2 划账）。对照实验：订阅 wake ✓、轮询 v3 待核（card11 沿）。流水线：卡 12 Implement running（最后一张），7/8/9/11 四卡 E2E 排队"
+    },
+    {
+      "at": "2026-10-20T08:55:29Z",
+      "type": "note",
+      "task": "T47",
+      "detail": "票 119 scout 反馈修复批收官：六项改动 merge 246bc42 → main push（683 三链绿）。daemon 重启新 epoch，端到端验证：URL 形态订阅 ✓（sub-0100，此前不可用）、⑥ epoch 回错带期望值 ✓、D1a 拍平拒在 extension 层生效（daemon 裸 socket 直连跳过 D1a 是 by design）。GitHub 票 #117 记录"
+    },
+    {
+      "at": "2026-10-20T17:39:52Z",
+      "type": "note",
+      "task": "T48",
+      "detail": "架构深化五候选批收官（票 122-126 = GitHub #118-#122，merge be68287 push，693 测试绿）；生产 daemon 重启至架构批代码（新 epoch 1792517963233）；dagr T41-48 stale 状态清算（票 44-49 实际均已发布）。"
     }
   ]
 }
