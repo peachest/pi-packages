@@ -8,8 +8,10 @@
 #
 # What it does:
 #   1. Verifies upstream/ is currently clean (patch fully applied) — abort otherwise.
-#   2. Replaces build/ + server.bundle.mjs + node_modules/ + package.json from the
-#      extracted upstream dir (skills/ intentionally never copied — lite drops all 8 skills).
+#   2. Replaces build/ + server.bundle.mjs + package.json from the
+#      extracted upstream dir (skills/ intentionally never copied — lite drops all 8 skills;
+#      node_modules/ not copied either — zod is only needed by build/server.js source path,
+#      the pi chain and the fully-bundled server.bundle.mjs run without it, verified 2026-10-20).
 #   3. Replays lite.patch. Conflict => exit 1 loudly; resolve by hand, regenerate patch.
 #
 # The installed npm copy also works as <src>: ~/.pi/agent/npm/node_modules/context-mode
@@ -28,8 +30,8 @@ git -C "$HERE" diff --quiet -- upstream/ || {
 }
 
 # 2. refresh upstream payload
-rm -rf "$UP/build" "$UP/node_modules" "$UP/server.bundle.mjs" "$UP/package.json"
-cp -a "$SRC/build" "$SRC/node_modules" "$SRC/server.bundle.mjs" "$SRC/package.json" "$UP/"
+rm -rf "$UP/build" "$UP/server.bundle.mjs" "$UP/package.json"
+cp -a "$SRC/build" "$SRC/server.bundle.mjs" "$SRC/package.json" "$UP/"
 [ -f "$SRC/LICENSE" ] && cp -a "$SRC/LICENSE" "$UP/"
 
 # 3. replay the patch; fail loudly on conflict
