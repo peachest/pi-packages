@@ -1,0 +1,10 @@
+{
+  "name": "pi-context-mode-lite",
+  "version": "1.0.169-lite.1",
+  "private": true,
+  "description": "Vendored context-mode (mksglu, npm 1.0.169) with a lite patch: only ctx_execute / ctx_batch_execute / ctx_search / ctx_index are registered; fetch_and_index, execute_file, stats are dropped per the 2026-10-20 full-history audit. Upstream is stale (last release 2026-06-29) so this patch is long-term, not transitional.",
+  "pi": {
+    "extensions": ["./upstream/build/adapters/pi/extension.js"],
+    "skills": []
+  }
+}

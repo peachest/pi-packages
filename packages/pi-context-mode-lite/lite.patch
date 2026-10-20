@@ -1,0 +1,48 @@
+--- a/build/adapters/pi/mcp-bridge.js
++++ b/build/adapters/pi/mcp-bridge.js
+@@ -853,12 +853,26 @@
+     if (lastError !== undefined)
+         throw lastError;
+     const tools = await client.listTools();
++    // pi-context-mode-lite: 2026-10-20 全历史审计（8109 调用/552 session）后裁剪。
++    // 禁 ctx_fetch_and_index（49.6% 错误率、错误不缓存跨 session 重打）、
++    // ctx_execute_file（44.8% 错误率=path scope 拦截+language 必填）、ctx_stats（全史 3 调用）。
++    // 上游 context-mode 1.0.169 已停更（2026-06-29），此过滤为长期状态而非过渡。
++    const KEEP_TOOLS = new Set(["ctx_execute", "ctx_batch_execute", "ctx_search", "ctx_index"]);
++    // 审计建议：给保留工具写量化触发判据 + 小输出反例，压 echo/sleep 类小输出旁路（62% 调用 <2KB）。
++    const DESCRIPTION_OVERRIDES = {
++        "ctx_execute":
++            "Run code over data when ordinary tools do not fit. Use ONLY when: (a) a command's raw output exceeds ~5KB and would flood context, or (b) you need to filter/aggregate/parse large output and print only a small derived summary. Do NOT use for short fixed outputs (single lines, small listings) — call bash/read directly; the sandbox wrapper costs more tokens than it saves there. Multiple related commands → prefer ctx_batch_execute.",
++        "ctx_batch_execute":
++            "Run 3+ related commands in ONE call and query their combined output. Use ONLY when: total raw output exceeds ~5KB, or you would otherwise run several sequential greps/reads over large artifacts. Do NOT use for a single short command — call bash directly. Pass `queries` covering every question you have about the output.",
++    };
+     const registered = [];
+     for (const tool of tools) {
++        if (!KEEP_TOOLS.has(tool.name))
++            continue;
+         pi.registerTool({
+             name: tool.name,
+             label: tool.name,
+-            description: tool.description ?? "",
++            description: DESCRIPTION_OVERRIDES[tool.name] ?? tool.description ?? "",
+             // MCP tools/list returns JSON Schema; Pi validates against JSON
+             // Schema (TypeBox is just JSON Schema with extra Symbol metadata
+             // for type inference). Empty-object fallback keeps tools that
+--- a/build/adapters/pi/extension.js
++++ b/build/adapters/pi/extension.js
+@@ -576,10 +576,11 @@
+             // already tell the model what each tool does. This anchor gives the
+             // deliberate choice (which tool for which scenario) without the full
+             // block/redirect/memory/tool-selection hierarchy.
+-            parts.push("context-mode active. Hierarchy: ctx_batch_execute > ctx_execute > ctx_execute_file > ctx_search. " +
+-                "Read/edit files → ctx_execute_file. Multi-command research → ctx_batch_execute. " +
+-                "Web pages → ctx_fetch_and_index then ctx_search. Index docs → ctx_index. " +
+-                "Stats → ctx_stats. Doctor → ctx_doctor. Upgrade → ctx_upgrade. Purge → ctx_purge.");
++            // pi-context-mode-lite: hierarchy 锚点同步收敛到保留的四个工具。
++            parts.push("context-mode active. Hierarchy: ctx_batch_execute > ctx_execute > ctx_search. " +
++                "Large/multi-command output → ctx_batch_execute. One heavy command → ctx_execute. " +
++                "Query indexed knowledge → ctx_search; index docs → ctx_index. " +
++                "Web pages and single-file processing: NOT covered — use bash/curl/read directly.");
+             // Pi-3 + Pi-4: Always build active_memory (not just post-compact),
+             // capped at 500 tokens via buildAutoInjection. Falls back to inline
+             // budget loop if the helper is unavailable.
