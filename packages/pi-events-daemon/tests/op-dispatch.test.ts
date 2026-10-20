@@ -253,10 +253,10 @@ describe("票 40 评审 F11 — ad-hoc 幂等哈希 canonical（键序不裂实�
   it("同 check 同 schedule（键序异形）→ 同一 adhoc 实体；store 单实体", async () => {
     const rig = makeRig();
     const a = (await rig.dispatch(
-      frame("subscribe", { check: "cond-a", opts: { schedule: { type: "interval", every: 60_000 } } }),
+      frame("subscribe", { check: "cond-a", opts: { smoke: false, schedule: { type: "interval", every: 60_000 } } }),
     )) as { subscribed: boolean; entityRef: string };
     const b = (await rig.dispatch(
-      frame("subscribe", { check: "cond-a", opts: { schedule: { every: 60_000, type: "interval" } } }),
+      frame("subscribe", { check: "cond-a", opts: { smoke: false, schedule: { every: 60_000, type: "interval" } } }),
     )) as { subscribed: boolean; entityRef: string };
     expect(a.subscribed).toBe(true);
     expect(b.entityRef).toBe(a.entityRef);
@@ -334,5 +334,29 @@ describe("票 44 — query wire 订阅行明细", () => {
         createdAt: "1970-01-01T00:00:00.000Z",
       },
     ]);
+  });
+});
+
+describe("票 119：ad-hoc check 默认 smoke——死订阅创建时拦截", () => {
+  it("check 形态不带 smoke 标志 → 默认跑 smoke；失败返回 {subscribed:false, validate} 不建订阅", async () => {
+    const rig = makeRig();
+    rig.exec.enqueue({ exitCode: 0 }); // 语法检查
+    rig.exec.enqueue({ exitCode: 2 }); // live-run 失败
+    const r = (await rig.dispatch(frame("subscribe", { check: "exit 2" }))) as { subscribed: boolean };
+    expect(r.subscribed).toBe(false);
+  });
+
+  it("check 形态 + smoke 通过 → 正常建订阅（默认链路不阻塞健康 check）", async () => {
+    const rig = makeRig();
+    rig.exec.enqueue({ exitCode: 0 }); // 语法检查
+    rig.exec.enqueue({ exitCode: 0, stdout: "ok" }); // live-run
+    const r = (await rig.dispatch(frame("subscribe", { check: "echo ok", opts: { once: true } }))) as { subscribed: boolean };
+    expect(r.subscribed).toBe(true);
+  });
+
+  it("opts.smoke === false 显式跳过（逃生口，不执行任何 checker）", async () => {
+    const rig = makeRig();
+    const r = (await rig.dispatch(frame("subscribe", { check: "exit 2", opts: { smoke: false } }))) as { subscribed: boolean };
+    expect(r.subscribed).toBe(true);
   });
 });
