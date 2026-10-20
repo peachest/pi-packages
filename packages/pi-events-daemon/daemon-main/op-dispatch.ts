@@ -5,8 +5,9 @@
  * 结果管道选型（commit 记录）：写侧 op（subscribe/cancel/publish/drain/status/register）全部经
  * loops.submit 返回 Promise<SubmitOutcome>（消费即结算，错误携回提交方；票 40 评审 F1：变更类
  * 只经 L0 单一写路径，stopped 后结算拒绝）；读侧 query/evidence 经 LoopsHandle.kernel 直调
- * （票 42 Pick 收窄至读侧）；templates/validate 静态面经 ProfileRegistry 组合根直调（票 42
- * owner 归位 profiles）；validate live-run 与 subscribe smoke 预检经组合根持有的 Prober 单发
+ * （票 42 Pick 收窄至读侧）；validate op 静态面经 validateReport staticCtx → registry.validate
+ * 直调（票 122 候选1 接线——此前该注释假声明"已直调"而实际零调用，audit B-1 错账就此清算）；
+ * validate live-run 与 subscribe smoke 预检经组合根持有的 Prober 单发
  * 路径（exec 异步，kernel probeSync 同步注入不可达）。
  *
  * 错误面：kernel 域拒绝原样上抛（transport toRpcError 归一 -32603，原因随 message 可见）——
@@ -26,7 +27,7 @@ import type {
 import { entityRefKeyOf } from "../domain/index.ts";
 import type { Store } from "../store/index.ts";
 import type { Clock } from "../fx/index.ts";
-import { ephemeralRef, instantiateProfile, type ProfileRegistry } from "../profiles/index.ts";
+import { ephemeralRef, instantiateProfile, staticLint, type ProfileRegistry } from "../profiles/index.ts";
 import type { Prober } from "../prober/index.ts";
 
 export interface OpDispatchDeps {
@@ -92,14 +93,34 @@ export function createOpDispatch(deps: OpDispatchDeps): (frame: OpRequestFrame) 
    * （sh -n 与执行同解释器族 shell:true；base64 管道免引用地狱）——syntax 坏即报告失败不 live-run，
    * 不再无依据宣称 syntaxOk=true。smoke 预检与 validate op 共用同一报告形。
    */
-  const validateReport = async (check: string): Promise<ValidateReport> => {
+  // 票 122（候选1）：静态 ctx {profileId,template,params} 存在时先过 registry.validate（profile
+  // 静态面复活——票 42 半成品接线），静态拒即失败报告不 spawn；静态 warnings 并入 live 报告。
+  // 无 ctx（ad-hoc/纯 check）走 staticLint（零 profile 依赖的 exit 启发式同源警告）。
+  const validateReport = async (
+    check: string,
+    staticCtx?: { profileId?: string; template?: string; params?: Record<string, unknown>; sideEffectPatterns?: string[] },
+  ): Promise<ValidateReport> => {
+    let staticWarnings: string[] = [];
+    if (staticCtx?.profileId !== undefined) {
+      const st = registry.validate({ profile: staticCtx.profileId, template: staticCtx.template, params: staticCtx.params, check: staticCtx.template === undefined ? check : undefined });
+      if (!st.ok) {
+        return { syntaxOk: false, verdict: "waiting", reason: `静态校验拒绝: ${st.reason}`, evidence: "", durationMs: 0, warnings: [] };
+      }
+      staticWarnings = st.warnings;
+    } else {
+      const lint = staticLint(check);
+      if (!lint.ok) {
+        return { syntaxOk: false, verdict: "waiting", reason: `静态校验拒绝: ${lint.reason}`, evidence: "", durationMs: 0, warnings: [] };
+      }
+      staticWarnings = lint.warnings;
+    }
     const b64 = Buffer.from(check, "utf8").toString("base64");
     const syn = await prober.runOnce(`printf %s ${b64} | base64 -d | sh -n`);
     if (syn.verdict !== "passed") {
-      return { syntaxOk: false, verdict: "waiting", reason: `syntax error: ${syn.reason}`, evidence: syn.evidence, durationMs: syn.durationMs, warnings: [] };
+      return { syntaxOk: false, verdict: "waiting", reason: `syntax error: ${syn.reason}`, evidence: syn.evidence, durationMs: syn.durationMs, warnings: staticWarnings };
     }
     const r = await prober.runOnce(check);
-    return { syntaxOk: true, verdict: r.verdict, reason: r.reason, evidence: r.evidence, durationMs: r.durationMs, warnings: [] };
+    return { syntaxOk: true, verdict: r.verdict, reason: r.reason, evidence: r.evidence, durationMs: r.durationMs, warnings: staticWarnings };
   };
 
   /** kernel SmokeValidate（probeSync 回流形状，无语法信息）→ wire ValidateReport（防御路径：dispatch 自身 smoke 已剥 opts.smoke）。 */
@@ -223,6 +244,10 @@ export function createOpDispatch(deps: OpDispatchDeps): (frame: OpRequestFrame) 
             if (smokeValidate.verdict !== "passed") return { subscribed: false, validate: smokeValidate };
           }
           delete opts.smoke;
+          // 票 122（候选1 D2b）：全形态统一过 staticLint（纯文本零 spawn）——模板 check 忘写 exit
+          // 同样值得预警（模板作者与 ad-hoc 作者共享同源警告）
+          const lint = staticLint(check);
+          const subWarnings = lint.ok ? lint.warnings : [];
 
           const kernelOpts = {
             ...(opts.on !== undefined ? { on: opts.on } : {}),
@@ -259,7 +284,7 @@ export function createOpDispatch(deps: OpDispatchDeps): (frame: OpRequestFrame) 
             entityRef: entityRefKeyOf(result.entityRef),
             state: result.state,
             ...(validate !== undefined ? { validate } : {}),
-            warnings: [...result.warnings],
+            warnings: [...result.warnings, ...subWarnings], // 票 122：staticLint 警告并入（模板/ad-hoc 同源）
           };
         })();
 
@@ -366,8 +391,12 @@ export function createOpDispatch(deps: OpDispatchDeps): (frame: OpRequestFrame) 
           if (typeof params.check !== "string" || params.check.trim() === "") {
             throw new Error("validate rejected: check 必须为非空命令文本");
           }
-          // 票 40 评审 F12：syntaxOk 接真实静态语法校验（sh -n），不再是 runOnce 分类结果的无依据标注
-          return validateReport(params.check);
+          // 票 40 评审 F12：syntaxOk 接真实静态语法校验（sh -n）。
+          // 票 122（候选1）：带 profile → registry.validate 静态拒/warnings；无 profile → staticLint。
+          const staticCtx = typeof params.profile === "string"
+            ? { profileId: params.profile, template: typeof params.template === "string" ? params.template : undefined, params: (params.params ?? undefined) as Record<string, unknown> | undefined }
+            : undefined;
+          return validateReport(params.check, staticCtx);
         })();
 
       case "templates": {

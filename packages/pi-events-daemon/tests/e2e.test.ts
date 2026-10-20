@@ -187,7 +187,7 @@ describe("票 40 组 1：两段式 ack 双路径 e2e + extension→daemon 全链
       subscriptionId: "sub-0001",
       entityRef: "fixture:widget:external/1",
       state: "waiting",
-      warnings: [],
+      warnings: [expect.stringContaining("未显式声明 exit")], // 票 122：entityRef+check 形态 staticLint 警告并入
     });
 
     // probe 翻转（extension→daemon 全链路：pi 会话订阅 → 状态翻转 → wake 注入到达）
@@ -460,7 +460,7 @@ describe("票 40 组 3：9 op 面收口（读侧 + cancel/drain/validate/templat
     expect(dfFree!.params.path).toContain("被监视目录");
 
     // validate：check 体检 live-run（真执行，三态语义名）
-    const vOk = (await client.request("validate", { check: "echo validate-ok" })) as { syntaxOk: boolean; verdict: string; reason: string; warnings: string[] };
+    const vOk = (await client.request("validate", { check: "echo validate-ok; exit 0" })) as { syntaxOk: boolean; verdict: string; reason: string; warnings: string[] };
     expect(vOk).toMatchObject({ syntaxOk: true, verdict: "passed", reason: "exit 0", warnings: [] });
     const vFail = (await client.request("validate", { check: "exit 2" })) as { verdict: string };
     expect(vFail.verdict).toBe("failed");
