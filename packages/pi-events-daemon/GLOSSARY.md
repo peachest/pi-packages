@@ -63,7 +63,7 @@ _Avoid_: topic subscription, listener（注册永远经 daemon，绝无 pub/sub 
 _Avoid_: worker, probe instance, runner pool
 
 **Checker**:
-probe 执行的 shell 级原语，产出三态语义 verdict（**passed / failed / waiting**——#31 正典语义名；退出码 0=passed、2=waiting、其他=failed）加 evidence。
+probe 执行的 shell 级原语，产出三态语义 verdict（**passed / failed / waiting**——#31 正典语义名；退出码 0=passed、2=failed、其他=waiting）加 evidence。
 _Avoid_: script, command
 
 **Evidence ref（evidence 指针）**:

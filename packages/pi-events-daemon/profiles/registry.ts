@@ -319,10 +319,10 @@ export function validateEntry(
     .filter((p) => (check ?? "").includes(p))
     .map((p) => `check 命中已知副作用 pattern "${p}"（ADR 0004：探测零副作用，不阻断）`);
   // 语义启发式（生产反馈 2026-10-19：regen-gov converge check 自然退出误报 passed）：checker 无
-  // 显式 exit 语句时末命令退出码即语义——提醒声明三态语义（0=passed/2=waiting/其他=failed）
+  // 显式 exit 语句时末命令退出码即语义——提醒声明三态语义（0=passed/2=failed/其他=waiting）
   const c = check ?? "";
   if (c.trim() !== "" && !/exit\s+\d|exit\s+\$/.test(c)) {
-    warnings.push("check 未显式声明 exit——末命令退出码即三态语义（0=passed / 2=waiting / 其他=failed），自然结束将被判 passed；建议末行显式 exit 或使用 wait/flip 形态");
+    warnings.push("check 未显式声明 exit——末命令退出码即三态语义（0=passed / 2=failed / 其他=waiting），自然结束将被判 passed；建议末行显式 exit 或使用 wait/flip 形态");
   }
   return { ok: true, warnings };
 }

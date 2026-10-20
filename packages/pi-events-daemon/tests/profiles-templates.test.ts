@@ -78,3 +78,13 @@ describe("组 2：validate 静态面——三类错误数据 + ADR 0004 warning 
     expect(clean).toEqual({ ok: true, warnings: [expect.stringContaining("exit")] });
   });
 });
+
+describe("票 121：validate 三态启发式文案与 prober 正典对齐（0=passed/2=failed/其他=waiting）", () => {
+  it("无显式 exit warning 不得写反三态（f255465 文案 bug 回归门）", () => {
+    const reg = loadBuiltin();
+    const clean = reg.validate({ profile: "k8s-pod", check: "kubectl get pod x -n ns" });
+    const w = clean.ok ? clean.warnings.join(" ") : "";
+    expect(w).toContain("0=passed / 2=failed / 其他=waiting");
+    expect(w).not.toContain("2=waiting");
+  });
+});
