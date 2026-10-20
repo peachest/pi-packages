@@ -647,7 +647,7 @@ describe("ticket 22: 真 SQLite（B 层）", () => {
 
 describe("票 123（候选2）：事件级查询 seam + fanOut 消费水位", () => {
   it("latestEventIdFor(ref,to)：下推 lastEventIdFor N+1（returns undefined when none）", () => {
-    const s = createMemoryStore();
+    const s: Store & { close?(): void } = createMemoryStore();
     s.tx((tx) => {
       tx.putEvent({ ...ev(1), eventId: "evt:x:external/1#1", entityRefType: "x", entityRefKey: "external/1", to: "passed" });
       tx.putEvent({ ...ev(2), eventId: "evt:x:external/1#2", entityRefType: "x", entityRefKey: "external/1", to: "failed" });
@@ -662,7 +662,7 @@ describe("票 123（候选2）：事件级查询 seam + fanOut 消费水位", ()
   });
 
   it("latestSeqForRef(ref)：publish 尾序下推", () => {
-    const s = createMemoryStore();
+    const s: Store & { close?(): void } = createMemoryStore();
     s.tx((tx) => {
       tx.putEvent({ ...ev(1), eventId: "evt:y:project/k#1", entityRefType: "y", entityRefKey: "project/k" });
       tx.putEvent({ ...ev(2), eventId: "evt:y:project/k#2", entityRefType: "y", entityRefKey: "project/k" });
@@ -678,18 +678,18 @@ describe("票 123（候选2）：事件级查询 seam + fanOut 消费水位", ()
 
   it("fanOut 消费水位：markFanOutConsumed 推进 / fanOutWatermark 读回；重启（重开 store）水位仍在", () => {
     const dbPath = tmpDbPath();
-    const s = new SqliteStore(dbPath);
+    const s: Store & { close?(): void } = new SqliteStore(dbPath);
     s.markFanOutConsumed("evt:a#1", 10);
     s.markFanOutConsumed("evt:a#2", 20);
     expect(s.fanOutWatermark()).toBe(20);
     s.close?.();
-    const s2 = new SqliteStore(dbPath); // 重启恢复
+    const s2: Store & { close?(): void } = new SqliteStore(dbPath); // 重启恢复
     expect(s2.fanOutWatermark()).toBe(20);
     s2.close?.();
   });
 
   it("outboxUnconsumed(afterSeq)：游标增量读（deliverScan 尾部重放面）", () => {
-    const s = createMemoryStore();
+    const s: Store & { close?(): void } = createMemoryStore();
     s.tx((tx) => {
       tx.putOutbox({ notificationId: "n1", eventSeq: 1 });
       tx.putOutbox({ notificationId: "n2", eventSeq: 2 });

@@ -100,7 +100,7 @@ export function createOpDispatch(deps: OpDispatchDeps): (frame: OpRequestFrame) 
       if (!st.ok) {
         return { syntaxOk: false, verdict: "waiting", reason: `静态校验拒绝: ${st.reason}`, evidence: "", durationMs: 0, warnings: [] };
       }
-      staticWarnings = st.warnings;
+      staticWarnings = [...st.warnings];
     } else {
       const lint = staticLint(check);
       if (!lint.ok) {

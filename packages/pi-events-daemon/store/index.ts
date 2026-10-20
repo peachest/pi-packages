@@ -435,7 +435,7 @@ export class MemoryStore implements Store {
   latestEventIdFor(ref: { type: string; key: string }, to: string): string | undefined {
     let found: string | undefined;
     for (const o of this.tables.outbox.values() as IterableIterator<OutboxRow>) {
-      const ev = this.tables.events.get(o.notificationId);
+      const ev = this.tables.events.get(o.notificationId) as EventRow | undefined;
       if (ev && ev.entityRefType === ref.type && ev.entityRefKey === ref.key && ev.to === to) found = o.notificationId;
     }
     return found;
