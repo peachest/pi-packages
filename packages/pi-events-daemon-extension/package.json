@@ -18,7 +18,7 @@
   },
   "license": "MIT",
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "^0.81.1"
+    "@earendil-works/pi-coding-agent": "*"
   },
   "peerDependenciesMeta": {
     "@earendil-works/pi-coding-agent": {
