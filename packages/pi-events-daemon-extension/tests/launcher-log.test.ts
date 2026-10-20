@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { defaultDaemonLauncher } from "../lib/client.ts";
+import { defaultDaemonLauncher } from "../index.ts";
 
 const dirs: string[] = [];
 afterEach(() => {
