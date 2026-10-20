@@ -12,7 +12,7 @@
  *  - daemon 业务错误（RpcError）不重试：错误文案已列可用选项，重试只会复读。
  */
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { closeSync, existsSync, openSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { readFileSync } from "node:fs";
@@ -87,16 +87,28 @@ export function defaultDaemonLauncher(socketPath: string, env: NodeJS.ProcessEnv
     if (!existsSync(entry)) {
       throw new Error(`daemon 拉起失败：入口缺失 ${entry}（票 38 bootstrap 落地前请手动启动 daemon）`);
     }
+    // 票 126（候选5）：stderr 重定向旁车日志（10-19 首部署事故放大器清算——daemon 崩溃根因
+    // 不再被 ignore 吞掉，超时错误直接给出日志路径）；stdout 仍 ignore（守护进程无标准输出语义）。
+    const logPath = `${socketPath}.daemon.log`;
+    let stderrFd: number | undefined;
+    try {
+      stderrFd = openSync(logPath, "a");
+    } catch {
+      stderrFd = undefined; // 旁车日志开不了不阻断拉起（降级为原 stdio:ignore 行为）
+    }
     spawn(process.execPath, ["--experimental-transform-types", entry], {
       detached: true,
-      stdio: "ignore",
+      stdio: ["ignore", "ignore", stderrFd ?? "ignore"],
       env: { ...env, PI_EVENTS_SOCK: socketPath },
     }).unref();
+    if (stderrFd !== undefined) closeSync(stderrFd); // fd 交给子进程继承，父侧即关
     for (let i = 0; i < 50; i++) {
       if (existsSync(socketPath)) return;
       await sleep(100);
     }
-    throw new Error(`daemon 拉起超时（socket 未出现）: ${socketPath} — 检查入口日志或手动启动`);
+    throw new Error(
+      `daemon 拉起超时（socket 未出现）: ${socketPath} — 崩溃根因见 ${logPath}（票 126 旁车），或手动启动`,
+    );
   };
 }
 
