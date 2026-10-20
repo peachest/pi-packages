@@ -180,7 +180,16 @@ export interface TxView extends TxOps {
   // 查询（fake 语义钉死：evidenceSearch 朴素子串匹配、notifications/deadLetters/queryEntities 按 filter 字段直过滤）
   queryEntities(filter: EntityFilter): EntityRow[];
   querySubscriptions(filter: SubscriptionFilter): SubscriptionRow[];
-  outboxBatch(limit: number): OutboxRow[];
+  /** 票 123（候选2）下推：实体+终态的 outbox 最新事件 id（lastEventIdFor N+1 替代；无命中 undefined）。 */
+  latestEventIdFor(ref: { type: string; key: string }, to: string): string | undefined;
+  /** 票 123 下推：实体既有尾序（publish 同态 latestSeqForEntity 前缀扫替代；空 = 0）。 */
+  latestSeqForRef(ref: { type: string; key: string }): number;
+  /** 票 123 下推：eventSeq > afterSeq 的 outbox 行升序（deliverScan 游标增量读，尾部重放面）。 */
+  outboxUnconsumed(afterSeq: number): OutboxRow[];
+  /** 票 123：fanOut 消费水位推进（notificationId 审计留痕 + eventSeq 高水位）。 */
+  markFanOutConsumed(notificationId: string, eventSeq: number): void;
+  /** 票 123：fanOut 消费水位读回（重启续读——A5 张力按票 42 F1 位点恢复先例显式记账）。 */
+  fanOutWatermark(): number;
   /** 票 42 下推：outbox⨝events 每实体最新 eventSeq（kernel query latestSeq join 专用，替代 MAX_SAFE_INTEGER 全表拉）。 */
   outboxSeqByRef(): OutboxSeqByRefRow[];
   /** 票 42 下推：outbox eventSeq 全局尾迹（max，空库 = 0）——写入轨（eventSeq）位点恢复专用
@@ -422,8 +431,36 @@ export class MemoryStore implements Store {
     );
   }
 
-  outboxBatch(limit: number): OutboxRow[] {
-    return [...this.tables.outbox.values() as IterableIterator<OutboxRow>].slice(0, limit);
+  // 票 123（候选2）：fake 朴素实现（语义钉死与 sqlite 同形——dualSuite 契约锁定）
+  latestEventIdFor(ref: { type: string; key: string }, to: string): string | undefined {
+    let found: string | undefined;
+    for (const o of this.tables.outbox.values() as IterableIterator<OutboxRow>) {
+      const ev = this.tables.events.get(o.notificationId) as EventRow | undefined;
+      if (ev && ev.entityRefType === ref.type && ev.entityRefKey === ref.key && ev.to === to) found = o.notificationId;
+    }
+    return found;
+  }
+
+  latestSeqForRef(ref: { type: string; key: string }): number {
+    const prefix = `evt:${ref.type}:${ref.key}#`;
+    let max = 0;
+    for (const o of this.tables.outbox.values() as IterableIterator<OutboxRow>) {
+      if (o.notificationId.startsWith(prefix) && o.eventSeq > max) max = o.eventSeq;
+    }
+    return max;
+  }
+
+  outboxUnconsumed(afterSeq: number): OutboxRow[] {
+    return [...(this.tables.outbox.values() as IterableIterator<OutboxRow>)].filter((r) => r.eventSeq > afterSeq).sort((a, b) => a.eventSeq - b.eventSeq);
+  }
+
+  private fanOutWatermarkSeq = 0;
+  markFanOutConsumed(_notificationId: string, eventSeq: number): void {
+    if (eventSeq > this.fanOutWatermarkSeq) this.fanOutWatermarkSeq = eventSeq;
+  }
+
+  fanOutWatermark(): number {
+    return this.fanOutWatermarkSeq;
   }
 
   outboxSeqByRef(): OutboxSeqByRefRow[] {

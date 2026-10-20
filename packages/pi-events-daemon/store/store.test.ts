@@ -171,7 +171,7 @@ function dualSuite(label: string, make: () => Store & { close?(): void }): void 
       s.close?.();
     });
 
-    it("outboxBatch：limit 截断", () => {
+    it("outboxUnconsumed：游标增量读（票 123 契约，替代 outboxBatch limit 截断）", () => {
       const s = make();
       s.tx((tx) => {
         tx.putEvent(ev(1));
@@ -179,8 +179,9 @@ function dualSuite(label: string, make: () => Store & { close?(): void }): void 
         tx.putOutbox({ notificationId: "n2", eventSeq: 2 });
         tx.putOutbox({ notificationId: "n3", eventSeq: 3 });
       });
-      expect(s.outboxBatch(2)).toHaveLength(2);
-      expect(s.outboxBatch(10)).toHaveLength(3);
+      expect(s.outboxUnconsumed(0)).toHaveLength(3);
+      expect(s.outboxUnconsumed(1).map((r) => r.notificationId)).toEqual(["n2", "n3"]);
+      expect(s.outboxUnconsumed(3)).toHaveLength(0);
       s.close?.();
     });
 
@@ -247,7 +248,7 @@ function dualSuite(label: string, make: () => Store & { close?(): void }): void 
         "tx", "appendEventIfMissing",
         "getEntity", "putEntity", "getSubscription", "putSubscription",
         "getDelivery", "putDelivery", "getProbeSpec", "putProbeSpec",
-        "queryEntities", "outboxBatch", "outboxSeqByRef", "outboxMaxEventSeq", "outboxMaxDecisionOrder", "pendingDeliveries", "evidenceSearch",
+        "queryEntities", "outboxUnconsumed", "latestEventIdFor", "latestSeqForRef", "fanOutWatermark", "outboxSeqByRef", "outboxMaxEventSeq", "outboxMaxDecisionOrder", "pendingDeliveries", "evidenceSearch",
         "notifications", "deadLetters",
         "getRunLedger", "putRunLedger", "listRunLedger",
         "onWrite",
@@ -422,7 +423,7 @@ function dualSuite(label: string, make: () => Store & { close?(): void }): void 
       // 事件行本体永久保留（D2 append-only 正典——fake 无触发器，契约同形）
       expect(s.tx((tx) => tx.getEvent(ev(1).eventId))).toBeDefined();
       // outbox 行永久保留（decisionOrder 恢复真相源，R1 双轨）
-      expect(s.outboxBatch(10).map((r) => r.notificationId)).toEqual([ev(1).eventId, ev(2).eventId]);
+      expect(s.outboxUnconsumed(0).map((r) => r.notificationId)).toEqual([ev(1).eventId, ev(2).eventId]);
       expect(s.deleteEventsBefore("gitlab:mr", "external/none", 9e15)).toBe(0); // 无事件幂等
       s.close?.();
     });
@@ -470,7 +471,7 @@ describe("ticket 09: X1/X2 崩溃注入（fake only）", () => {
       }),
     ).toThrowError(/X2 crash/);
     // 事务原子：outbox 未落库（重启后由重放补齐，appendIfMissing 幂等收口）
-    expect(s.outboxBatch(10)).toHaveLength(0);
+    expect(s.outboxUnconsumed(0)).toHaveLength(0);
     expect((s as MemoryStore).getCommitOrder().at(-1)?.outboxPending).toHaveLength(1);
   });
 });
@@ -488,7 +489,7 @@ describe("ticket 22: 真 SQLite（B 层）", () => {
     });
     const s2 = new SqliteStore(p);
     expect(s2.getEntity("gitlab:mr", "external/123")?.state).toBe("passed");
-    expect(s2.outboxBatch(10)).toHaveLength(1);
+    expect(s2.outboxUnconsumed(0)).toHaveLength(1);
     expect(s2.getRunLedger("k")).toBeUndefined();
     s1.close();
     s2.close();
@@ -641,5 +642,61 @@ describe("ticket 22: 真 SQLite（B 层）", () => {
     const s2 = new SqliteStore(p);
     expect(s2.getEntity("t", "k")).toMatchObject({ state: "failed", contentIdentity: "digest-9" });
     s2.close();
+  });
+});
+
+describe("票 123（候选2）：事件级查询 seam + fanOut 消费水位", () => {
+  it("latestEventIdFor(ref,to)：下推 lastEventIdFor N+1（returns undefined when none）", () => {
+    const s: Store & { close?(): void } = createMemoryStore();
+    s.tx((tx) => {
+      tx.putEvent({ ...ev(1), eventId: "evt:x:external/1#1", entityRefType: "x", entityRefKey: "external/1", to: "passed" });
+      tx.putEvent({ ...ev(2), eventId: "evt:x:external/1#2", entityRefType: "x", entityRefKey: "external/1", to: "failed" });
+      tx.putEvent({ ...ev(3), eventId: "evt:x:external/1#3", entityRefType: "x", entityRefKey: "external/1", to: "passed" });
+      tx.putOutbox({ notificationId: "evt:x:external/1#1", eventSeq: 1 });
+      tx.putOutbox({ notificationId: "evt:x:external/1#2", eventSeq: 2 });
+      tx.putOutbox({ notificationId: "evt:x:external/1#3", eventSeq: 3 });
+    });
+    expect(s.latestEventIdFor({ type: "x", key: "external/1" }, "passed")).toBe("evt:x:external/1#3");
+    expect(s.latestEventIdFor({ type: "x", key: "external/1" }, "waiting")).toBeUndefined();
+    s.close?.();
+  });
+
+  it("latestSeqForRef(ref)：publish 尾序下推", () => {
+    const s: Store & { close?(): void } = createMemoryStore();
+    s.tx((tx) => {
+      tx.putEvent({ ...ev(1), eventId: "evt:y:project/k#1", entityRefType: "y", entityRefKey: "project/k" });
+      tx.putEvent({ ...ev(2), eventId: "evt:y:project/k#2", entityRefType: "y", entityRefKey: "project/k" });
+      tx.putEvent({ ...ev(3), eventId: "evt:z:project/k#3", entityRefType: "z", entityRefKey: "project/k" });
+      tx.putOutbox({ notificationId: "evt:y:project/k#1", eventSeq: 1 });
+      tx.putOutbox({ notificationId: "evt:y:project/k#2", eventSeq: 2 });
+      tx.putOutbox({ notificationId: "evt:z:project/k#3", eventSeq: 3 });
+    });
+    expect(s.latestSeqForRef({ type: "y", key: "project/k" })).toBe(2);
+    expect(s.latestSeqForRef({ type: "nope", key: "project/x" })).toBe(0);
+    s.close?.();
+  });
+
+  it("fanOut 消费水位：markFanOutConsumed 推进 / fanOutWatermark 读回；重启（重开 store）水位仍在", () => {
+    const dbPath = tmpDbPath();
+    const s: Store & { close?(): void } = new SqliteStore(dbPath);
+    s.markFanOutConsumed("evt:a#1", 10);
+    s.markFanOutConsumed("evt:a#2", 20);
+    expect(s.fanOutWatermark()).toBe(20);
+    s.close?.();
+    const s2: Store & { close?(): void } = new SqliteStore(dbPath); // 重启恢复
+    expect(s2.fanOutWatermark()).toBe(20);
+    s2.close?.();
+  });
+
+  it("outboxUnconsumed(afterSeq)：游标增量读（deliverScan 尾部重放面）", () => {
+    const s: Store & { close?(): void } = createMemoryStore();
+    s.tx((tx) => {
+      tx.putOutbox({ notificationId: "n1", eventSeq: 1 });
+      tx.putOutbox({ notificationId: "n2", eventSeq: 2 });
+      tx.putOutbox({ notificationId: "n3", eventSeq: 3 });
+    });
+    expect(s.outboxUnconsumed(1).map((r) => r.notificationId)).toEqual(["n2", "n3"]);
+    expect(s.outboxUnconsumed(3)).toEqual([]);
+    s.close?.();
   });
 });

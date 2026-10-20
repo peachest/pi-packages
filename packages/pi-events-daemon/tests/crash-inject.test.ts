@@ -54,7 +54,7 @@ const makeCtx = (s: store.Store): loops.LoopsCtx => ({
 /** store 观测面快照：实体态 + 事件语义面（outbox 与 transition 1:1）+ 提交序（孤儿半事务留痕检查）。 */
 const snapshot = (s: MemStore) => ({
   entity: s.getEntity(REF.type, REF.key)?.state,
-  events: s.outboxBatch(Number.MAX_SAFE_INTEGER).map((r) => {
+  events: s.outboxUnconsumed(0).map((r) => {
     const e = s.tx((tx) => tx.getEvent(r.notificationId)!);
     return { eventId: e.eventId, eventSeq: e.eventSeq, from: e.from, to: e.to };
   }),
@@ -126,7 +126,7 @@ describe("票 23 组 2：X2 已提交未写 outbox → 重启补齐、无重复�
 
     // 崩溃现场（fake 原子语义）：outbox 缺席、事件/实体回滚；outboxPending 留重放输入
     // （标记断言须先于任何只读 tx——只读提交也入 commitOrder，会顶掉 .at(-1)）
-    expect(s.outboxBatch(10)).toHaveLength(0);
+    expect(s.outboxUnconsumed(0)).toHaveLength(0);
     expect(s.getEntity(REF.type, REF.key)?.state).toBe("passed");
     expect(s.getCommitOrder().at(-1)?.outboxPending).toEqual([
       { notificationId: EVENT_ID_1, eventSeq: 1 },
@@ -138,7 +138,7 @@ describe("票 23 组 2：X2 已提交未写 outbox → 重启补齐、无重复�
     rebooted.submit({ kind: "transition", ref: REF, verdict: "failed", occurredAt: at(1) });
 
     // 补齐：outbox 行落地、实体推进；重放不重新编号（同确定性 eventId、同 eventSeq）
-    expect(s.outboxBatch(10)).toEqual([{ notificationId: EVENT_ID_1, eventSeq: 1 }]);
+    expect(s.outboxUnconsumed(0)).toEqual([{ notificationId: EVENT_ID_1, eventSeq: 1 }]);
     expect(s.tx((tx) => tx.getEvent(EVENT_ID_1))).toMatchObject({
       eventId: EVENT_ID_1,
       eventSeq: 1,
@@ -161,7 +161,7 @@ describe("票 23 组 2：X2 已提交未写 outbox → 重启补齐、无重复�
         decisionOrder: 1,
       },
     });
-    expect(s.outboxBatch(10)).toHaveLength(1); // 事件流仍恰一行（outbox 与 transition 1:1）
+    expect(s.outboxUnconsumed(0)).toHaveLength(1); // 事件流仍恰一行（outbox 与 transition 1:1）
     expect(rebooted.errors).toEqual([]);
   });
 
@@ -173,7 +173,7 @@ describe("票 23 组 2：X2 已提交未写 outbox → 重启补齐、无重复�
     l.submit({ kind: "transition", ref: REF, verdict: "failed", occurredAt: at(1) });
 
     expect(l.errors).toEqual([]); // kernel 重试吸收（F1：游标只在提交成功后推进，重排同 id）
-    expect(s.outboxBatch(10)).toEqual([{ notificationId: EVENT_ID_1, eventSeq: 1 }]);
+    expect(s.outboxUnconsumed(0)).toEqual([{ notificationId: EVENT_ID_1, eventSeq: 1 }]);
     expect(s.getEntity(REF.type, REF.key)?.state).toBe("failed");
   });
 });
@@ -214,7 +214,7 @@ describe("票 23 组 3：链 C 里程碑 e2e（B 层进程外）——probe → 
       { slotKey: "slot-1", verdict: "failed", reason: "exit 2", evidence: "FAIL: widget missing\n", durationMs: 0 },
     ]);
     // store 落盘：transition 语义面（事件+实体+outbox）
-    const [outbox] = s.outboxBatch(1);
+    const [outbox] = s.outboxUnconsumed(0);
     const notificationId = outbox!.notificationId; // daemon 铸造（I1 与 transition 1:1）
     expect(s.tx((tx) => tx.getEvent(notificationId)!)).toMatchObject({
       eventId: notificationId,

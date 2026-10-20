@@ -8,6 +8,7 @@
 export {
   ProfileRegistry,
   profileTemplates,
+  staticLint,
   validateEntry,
   type ProfileRegistryEntry,
   type ProfileRegistryOpts,

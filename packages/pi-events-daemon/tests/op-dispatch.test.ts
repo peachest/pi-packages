@@ -109,7 +109,7 @@ describe("票 40 评审 F2 — status register+首转换同事务", () => {
       rig.dispatch(frame("status", { type: "fixture:widget", key: "external/1", state: "bogus" })),
     ).rejects.toThrow(/outside profile closed set/);
     expect(rig.store.getEntity("fixture:widget", "external/1")).toBeUndefined();
-    expect(rig.store.outboxBatch(10)).toHaveLength(0);
+    expect(rig.store.outboxUnconsumed(0)).toHaveLength(0);
   });
 
   it("合法 state：登记 + 首转换一请求落账（事件随响应携回）", async () => {
@@ -270,14 +270,14 @@ describe("票 40 评审 F6/F12 — validate 报告接真实静态语法校验（
     const rig = makeRig();
     rig.exec.enqueue({ exitCode: 0 }); // sh -n 语法检查
     rig.exec.enqueue({ exitCode: 0, stdout: "ok" }); // live-run
-    const r = (await rig.dispatch(frame("validate", { check: "echo validate-ok" }))) as Record<string, unknown>;
+    const r = (await rig.dispatch(frame("validate", { check: "echo validate-ok; exit 0" }))) as Record<string, unknown>;
     expect(r).toEqual({
       syntaxOk: true,
       verdict: "passed",
       reason: "exit 0",
       evidence: "ok",
       durationMs: expect.any(Number),
-      warnings: [],
+      warnings: [], // 显式 exit → staticLint 零警告（票 122：ad-hoc 静态面同源）
     });
     expect(rig.exec.calls[0]!.command).toContain("sh -n"); // 静态语法校验真实发生
     expect(validateValue(VALIDATE_REPORT_SCHEMA, r)).toEqual([]); // validate op 响应同过 op.schema
@@ -358,5 +358,33 @@ describe("票 119：ad-hoc check 默认 smoke——死订阅创建时拦截", ()
     const rig = makeRig();
     const r = (await rig.dispatch(frame("subscribe", { check: "exit 2", opts: { smoke: false } }))) as { subscribed: boolean };
     expect(r.subscribed).toBe(true);
+  });
+});
+
+describe("票 122：validate 双 seam 接线——profile 静态面复活（候选1）", () => {
+  it("D1a：staticLint 纯函数零 profile 依赖——ad-hoc check 无 exit 出启发式 warning", async () => {
+    const rig = makeRig();
+    rig.exec.enqueue({ exitCode: 0 }); // live-run
+    const r = (await rig.dispatch(frame("validate", { check: "echo hi" }))) as { warnings: string[] };
+    expect(r.warnings.some((w) => w.includes("未显式声明 exit"))).toBe(true);
+  });
+
+  it("D2a：validate op 带 profile/template → 静态拒先于 live（不 spawn checker）", async () => {
+    const rig = makeRig();
+    const r = (await rig.dispatch(frame("validate", { check: "echo hi", profile: "nope" }))) as { syntaxOk: boolean; verdict: string; reason: string };
+    expect(r.syntaxOk).toBe(false);
+    expect(r.verdict).toBe("waiting");
+    expect(r.reason).toContain("静态校验拒绝");
+    expect(r.reason).toContain("nope");
+  });
+
+  it("D2b：url 形态命中模板 → registry.validate 静态面参与（warnings 并入 subscribe 响应）", async () => {
+    const rig = makeRig();
+    rig.exec.enqueue({ exitCode: 0 }); // smoke 语法
+    rig.exec.enqueue({ exitCode: 0, stdout: "ok" }); // smoke live-run
+    const r = (await rig.dispatch(frame("subscribe", { url: "https://gl.a.com/merge_requests/42", opts: { once: true } }))) as { subscribed: boolean; warnings?: string[] };
+    expect(r.subscribed).toBe(true);
+    // "glab mr status" 无 exit → staticLint 启发式 warning 并入（静态面复活的生产证据）
+    expect((r.warnings ?? []).some((w) => w.includes("未显式声明 exit"))).toBe(true);
   });
 });

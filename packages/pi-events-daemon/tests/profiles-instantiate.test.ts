@@ -176,7 +176,7 @@ describe("组 3：链 B 复用——instantiate 产出经 kernel 可 register/su
 
     const t = kernel.transition(inst.entityRef, "failed", at(1));
     expect(t).toMatchObject({ from: null, to: "failed", eventSeq: 1 });
-    const rows = store.outboxBatch(Number.MAX_SAFE_INTEGER);
+    const rows = store.outboxUnconsumed(0);
     expect(rows).toHaveLength(1);
     expect(store.getEntity(inst.entityRef.type, inst.entityRef.key)?.state).toBe("failed");
   });

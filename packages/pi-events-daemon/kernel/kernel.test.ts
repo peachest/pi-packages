@@ -33,7 +33,7 @@ const snapshot = (store: MemStore) => ({
     .map((e) => [e.type, e.key, e.state, e.payload ?? null])
     .sort(),
   trail: store
-    .outboxBatch(Number.MAX_SAFE_INTEGER)
+    .outboxUnconsumed(0)
     .map((r) => [r.eventSeq, r.notificationId] as const)
     .sort((a, b) => a[0] - b[0]),
 });
@@ -69,7 +69,7 @@ describe("组 1：kernel.transition 唯一写路径——校验（domain）→ �
       occurredAt: at(1),
     });
     // I1 组合面：outbox 行与事件同事务 1:1（notificationId = 确定性 event id）
-    expect(store.outboxBatch(10)).toEqual([{ notificationId: deterministicEventId(REF, 1), eventSeq: 1 }]);
+    expect(store.outboxUnconsumed(0)).toEqual([{ notificationId: deterministicEventId(REF, 1), eventSeq: 1 }]);
   });
 
   it("双轨游标连续：第二次 transition decisionOrder/eventSeq 接续不重号", () => {
@@ -86,7 +86,7 @@ describe("组 1：kernel.transition 唯一写路径——校验（domain）→ �
     seedEntity(store, "failed");
     const kernel = new Kernel(store, VERDICT_STATES, 0);
     expect(kernel.transition(REF, "failed", at(1))).toBeNull();
-    expect(store.outboxBatch(10)).toHaveLength(0);
+    expect(store.outboxUnconsumed(0)).toHaveLength(0);
     expect(store.getEntity(REF.type, REF.key)?.state).toBe("failed");
   });
 
@@ -102,7 +102,7 @@ describe("组 1：kernel.transition 唯一写路径——校验（domain）→ �
     seedEntity(store, null);
     const kernel = new Kernel(store, new Set(["passed", "failed"]), 0);
     expect(() => kernel.transition(REF, "waiting", at(1))).toThrow(/outside profile closed set/);
-    expect(store.outboxBatch(10)).toHaveLength(0);
+    expect(store.outboxUnconsumed(0)).toHaveLength(0);
   });
 
   it("retired 拒 transition（不复活）；未知实体拒绝", () => {
@@ -126,7 +126,7 @@ describe("组 1：kernel.transition 唯一写路径——校验（domain）→ �
     // 终审裁定②验收面：unregister 后 publish 拒绝（retired 拒 publish 已在 domain publish 执法）
     expect(() => kernel.publish(REF, "failed", { occurredAt: at(1) })).toThrow(/retired/);
     expect(() => kernel.transition(REF, "failed", at(2))).toThrow(/retired/);
-    expect(store.outboxBatch(10)).toHaveLength(0); // 拒绝路径零事件零烧号
+    expect(store.outboxUnconsumed(0)).toHaveLength(0); // 拒绝路径零事件零烧号
     // 幂等：重复 unregister 不抛不双写（对齐 cancel 契约：已终态 → false）；未知实体同面
     expect(kernel.unregister(REF)).toEqual({ unregistered: false });
     expect(kernel.unregister({ type: "fixture:ghost", key: "external/none" })).toEqual({ unregistered: false });
@@ -144,7 +144,7 @@ describe("组 3：B7 状态改名 = 显式迁移 TransitionEvent（唯一写路�
       to: "beta",
     });
     expect(store.getEntity(REF.type, REF.key)?.state).toBe("beta");
-    expect(store.outboxBatch(10)).toEqual([{ notificationId: deterministicEventId(REF, 1), eventSeq: 1 }]);
+    expect(store.outboxUnconsumed(0)).toEqual([{ notificationId: deterministicEventId(REF, 1), eventSeq: 1 }]);
   });
 
   it("实体不在旧名态 → null（幂等不产第二事件，零残留）", () => {
@@ -152,7 +152,7 @@ describe("组 3：B7 状态改名 = 显式迁移 TransitionEvent（唯一写路�
     seedEntity(store, "beta"); // 已在新名态
     const kernel = new Kernel(store, RENAME_STATES, 0);
     expect(kernel.migrateState(REF, { from: "alpha", to: "beta" }, at(1))).toBeNull();
-    expect(store.outboxBatch(10)).toHaveLength(0);
+    expect(store.outboxUnconsumed(0)).toHaveLength(0);
   });
 
   it("新名不在封闭集 → I3 同步拒绝；迁移瞬时故障耗尽 → dead-letter + I1 零残留", () => {
@@ -171,7 +171,7 @@ describe("组 3：B7 状态改名 = 显式迁移 TransitionEvent（唯一写路�
     const broken = new Kernel(down, RENAME_STATES, 0);
     expect(() => broken.migrateState(REF, { from: "alpha", to: "beta" }, at(2))).toThrow(/dead-letter/);
     expect(store.getEntity(REF.type, REF.key)?.state).toBe("alpha");
-    expect(store.outboxBatch(10)).toHaveLength(0);
+    expect(store.outboxUnconsumed(0)).toHaveLength(0);
   });
 });
 
@@ -225,7 +225,7 @@ describe("组 2：Intent 串行消费——崩溃重放一致（顺序约束）+
     expect(() => kernel.transition(REF, "failed", at(1))).toThrow(/dead-letter/);
     expect(() => kernel.transition(REF, "failed", at(1))).toThrow(/3 consume attempts/);
     expect(store.getEntity(REF.type, REF.key)?.state).toBe("passed");
-    expect(store.outboxBatch(10)).toHaveLength(0);
+    expect(store.outboxUnconsumed(0)).toHaveLength(0);
   });
 
   it("重试界内恢复：第 3 次尝试成功且决策序未被失败烧掉", () => {
@@ -288,7 +288,7 @@ describe("组 4：评审修复回归——提交成功后推进游标（F1）/ �
     expect(kernel.transition(REF, "failed", at(1))).toMatchObject({ eventSeq: 1, from: "passed", to: "failed" });
     // 同 eventId 单事件 + outbox 1:1：重试没有用推进后的序号重排出新事件
     expect(store.tx((tx) => tx.getEvent(deterministicEventId(REF, 1)))).toMatchObject({ eventSeq: 1, to: "failed" });
-    expect(store.outboxBatch(10)).toEqual([{ notificationId: deterministicEventId(REF, 1), eventSeq: 1 }]);
+    expect(store.outboxUnconsumed(0)).toEqual([{ notificationId: deterministicEventId(REF, 1), eventSeq: 1 }]);
     // 游标未被失败烧掉：下一 transition 续接 seq 2
     expect(kernel.transition(REF, "waiting", at(2))).toMatchObject({ eventSeq: 2, from: "failed", to: "waiting" });
   });
@@ -308,7 +308,7 @@ describe("组 4：评审修复回归——提交成功后推进游标（F1）/ �
     const restored = new Kernel(store, new Set(["beta"]), 2);
     expect(restored.consumeIntent(replay(1, null, "alpha", at(1)))).toEqual({ kind: "skipped" }); // 修复前：抛 outside closed set
     expect(restored.consumeIntent(replay(2, "alpha", "beta", at(2)))).toEqual({ kind: "skipped" }); // 迁移事件重放
-    expect(store.outboxBatch(10)).toHaveLength(2); // 重放零新写入
+    expect(store.outboxUnconsumed(0)).toHaveLength(2); // 重放零新写入
     // 新追加仍受封闭集执法（重放豁免不等于全面豁免）
     expect(() => restored.consumeIntent(replay(3, "beta", "alpha", at(3)))).toThrow(/outside profile closed set/);
   });
@@ -320,7 +320,7 @@ describe("组 4：评审修复回归——提交成功后推进游标（F1）/ �
     const postRename = new Kernel(store, new Set(["passed", "failed"]), 0);
     // 修复前：普通 transition 直写 from=waiting 的事件，绕过显式迁移入口
     expect(() => postRename.transition(REF, "failed", at(1))).toThrow(/outside profile closed set/);
-    expect(store.outboxBatch(10)).toHaveLength(0);
+    expect(store.outboxUnconsumed(0)).toHaveLength(0);
     // 显式迁移是唯一出口（from 为历史名，不校验封闭集）
     expect(postRename.migrateState(REF, { from: "waiting", to: "passed" }, at(1))).toMatchObject({
       eventSeq: 1,
@@ -1141,7 +1141,7 @@ describe("票 40 评审 F3 — kernel.publish edge-trigger 归 domain publish �
     });
     // 同对二次：edge-trigger → null，无事件无游标推进（修复前：只查 to 不查身份 → 重复发事件）
     expect(kernel.publish(REF, "passed", { contentIdentity: "digest-1", occurredAt: at(2) })).toBeNull();
-    expect(store.outboxBatch(10)).toHaveLength(1);
+    expect(store.outboxUnconsumed(0)).toHaveLength(1);
     // 异身份同态：真实对变化 → 新事件 + 身份写回
     expect(kernel.publish(REF, "passed", { contentIdentity: "digest-2", occurredAt: at(3) })).toMatchObject({
       eventSeq: 2,
@@ -1149,7 +1149,7 @@ describe("票 40 评审 F3 — kernel.publish edge-trigger 归 domain publish �
       to: "passed",
     });
     expect(store.getEntity(REF.type, REF.key)?.contentIdentity).toBe("digest-2");
-    expect(store.outboxBatch(10)).toHaveLength(2);
+    expect(store.outboxUnconsumed(0)).toHaveLength(2);
   });
 
   it("身份对随 probe 转换保留：绕行 probe 后回到同 (state, contentIdentity) 对仍不重发", () => {
@@ -1160,7 +1160,7 @@ describe("票 40 评审 F3 — kernel.publish edge-trigger 归 domain publish �
     kernel.transition(REF, "failed", at(2)); // probe 路径无身份字段 → 保留既有值
     kernel.transition(REF, "passed", at(3));
     expect(kernel.publish(REF, "passed", { contentIdentity: "digest-1", occurredAt: at(4) })).toBeNull();
-    expect(store.outboxBatch(10)).toHaveLength(3);
+    expect(store.outboxUnconsumed(0)).toHaveLength(3);
   });
 
   it("payload 保真：publish 不携带 payload 不清既有快照（与 probe 路径同形）", () => {
@@ -1180,7 +1180,7 @@ describe("票 40 评审 F9 — kernel.publish from 封闭集执法（B7 绕行�
     store.putEntity({ type: REF.type, key: REF.key, state: "legacy" });
     const kernel = new Kernel(store, VERDICT_STATES, 0);
     expect(() => kernel.publish(REF, "passed", { occurredAt: at(1) })).toThrow(/outside profile closed set/);
-    expect(store.outboxBatch(10)).toHaveLength(0);
+    expect(store.outboxUnconsumed(0)).toHaveLength(0);
     expect(store.getEntity(REF.type, REF.key)?.state).toBe("legacy");
     // to 侧执法保持（既有面）
     store.putEntity({ type: REF.type, key: REF.key, state: "passed" });
@@ -1198,11 +1198,11 @@ describe("票 40 评审 F2 — register firstTransition 同事务（status op �
     expect(r.created).toBe(true);
     expect(r.event).toMatchObject({ eventSeq: 1, from: null, to: "waiting" });
     expect(store.getEntity(REF.type, REF.key)?.state).toBe("waiting");
-    expect(store.outboxBatch(10)).toHaveLength(1);
+    expect(store.outboxUnconsumed(0)).toHaveLength(1);
     const again = kernel.register({ entityRef: REF, profileId: "p", firstTransition: { to: "waiting", occurredAt: at(2) } });
     expect(again.created).toBe(false);
     expect(again.event).toBeUndefined();
-    expect(store.outboxBatch(10)).toHaveLength(1);
+    expect(store.outboxUnconsumed(0)).toHaveLength(1);
   });
 
   it("无效 state：register+transition 整体回滚，无残留实体（半注册收口）", () => {
@@ -1212,7 +1212,7 @@ describe("票 40 评审 F2 — register firstTransition 同事务（status op �
       kernel.register({ entityRef: REF, profileId: "p", firstTransition: { to: "bogus", occurredAt: at(1) } }),
     ).toThrow(/outside profile closed set/);
     expect(store.getEntity(REF.type, REF.key)).toBeUndefined();
-    expect(store.outboxBatch(10)).toHaveLength(0);
+    expect(store.outboxUnconsumed(0)).toHaveLength(0);
     // 既有无 profileId 遗留实体同理：E16 补写随事务回滚
     store.putEntity({ type: REF.type, key: REF.key, state: "passed" });
     expect(() =>
@@ -1227,7 +1227,7 @@ describe("票 40 评审 F2 — register firstTransition 同事务（status op �
     kernel.register({ entityRef: REF, profileId: "p", firstTransition: { to: "waiting", occurredAt: at(1) } });
     expect(kernel.publish(REF, "passed", { occurredAt: at(2) })).toMatchObject({ eventSeq: 2 });
     expect(store.tx((tx) => tx.getEvent(deterministicEventId(REF, 2)))).toMatchObject({ to: "passed" });
-    expect(store.outboxBatch(10).map((r) => r.eventSeq)).toEqual([1, 2]);
+    expect(store.outboxUnconsumed(0).map((r) => r.eventSeq)).toEqual([1, 2]);
   });
 });
 

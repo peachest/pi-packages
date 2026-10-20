@@ -1,5 +1,6 @@
 /** 票 119：注册 schema 放宽 + D1a 接管——host AJV 不再拒拍平帧，D1a 层产自纠文案 */
-import Ajv from "ajv";
+// @ts-expect-error ajv d.ts ESM interop（票 119 遗留类型环境问题，运行时正常）
+import Ajv2020 from "ajv/dist/2020";
 import { describe, expect, it } from "vitest";
 import { buildToolDefs, loadOpSchema } from "../index.ts";
 
@@ -7,7 +8,7 @@ const defs = buildToolDefs({ opSchema: loadOpSchema(), sender: async () => ({}) 
 const sub = defs.find((d) => d.name === "subscribe")!;
 
 const hostValidate = (params: unknown): { ok: boolean; errors: string } => {
-  const ajv = new Ajv({ coerceTypes: true, allowUnionTypes: true, strict: false, allErrors: true });
+  const ajv = new Ajv2020({ coerceTypes: true, allowUnionTypes: true, strict: false, allErrors: true });
   const v = ajv.compile(sub.parameters);
   return { ok: v(params) as boolean, errors: JSON.stringify(v.errors ?? []) };
 };
@@ -24,7 +25,7 @@ describe("票 119：注册面放宽 + D1a 接管", () => {
   });
 
   it("D1a 层拒绝拍平帧且文案带允许列表（execute 路径）", async () => {
-    const r = await sub.execute("t1", { check: "echo ok", on: "passed", once: true });
+    const r = await sub.execute("t1", { check: "echo ok", on: "passed", once: true }, undefined, undefined, undefined);
     const text = JSON.stringify(r.content);
     expect(text).toContain("不允许的字段");
     expect(text).toContain("opts");
@@ -32,14 +33,14 @@ describe("票 119：注册面放宽 + D1a 接管", () => {
   });
 
   it("正确形态仍通过 D1a（check + opts.on/once）", async () => {
-    const r = await sub.execute("t1", { check: "echo ok", opts: { on: "passed", once: true } });
+    const r = await sub.execute("t1", { check: "echo ok", opts: { on: "passed", once: true } }, undefined, undefined, undefined);
     expect(JSON.stringify(r.content)).not.toContain("参数校验失败");
   });
 });
 
 describe("票 119：D1a 类型提示——字符串化标量给纠正动作", () => {
   it("opts.once 传 \"true\" → 文案含「去掉引号」", async () => {
-    const r = await sub.execute("t1", { check: "echo ok", opts: { once: "true" } });
+    const r = await sub.execute("t1", { check: "echo ok", opts: { once: "true" } }, undefined, undefined, undefined);
     expect(JSON.stringify(r.content)).toContain("去掉引号");
   });
 });

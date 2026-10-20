@@ -274,7 +274,9 @@ export function createDeliver(ctx: LoopsCtx, deps: DeliverDeps) {
     // outbox 消费（票 11 落点：投递循环消费 outbox → L0 队列内 fanOut 编址；fire-once，fanOut 幂等兑底重启重放）。
     // 评审 H6：in-progress 防重入（fanOut 提交回调 onWrite 同 tick 重入）+ 成功才消费（apply fanOut 分支）——
     // withRetry 耗尽（临时 Store 故障）只进 errors，未决标记清除后由下个兜底 tick 重试，投递不丢。
-    for (const row of ctx.store.outboxBatch(Number.MAX_SAFE_INTEGER)) {
+    // 票 123（候选2 D1 拍板：持久水位入 store）：游标增量读替代 O(历史) 全扫；重启续读水位，
+    // 崩溃窗口（fanOut 成功与 mark 之间）重放由 I10 幂等兑底（多一次幂等 fanOut 不丢投递）。
+    for (const row of ctx.store.outboxUnconsumed(ctx.store.fanOutWatermark())) {
       if (consumedOutbox.has(row.notificationId) || inProgressOutbox.has(row.notificationId)) continue;
       inProgressOutbox.add(row.notificationId);
       submit({ kind: "fanOut", notificationId: row.notificationId });
@@ -359,6 +361,9 @@ export function createDeliver(ctx: LoopsCtx, deps: DeliverDeps) {
     try {
       const result = fanOut(notificationId, { activeSessions: fanOutSessions() });
       consumedOutbox.add(notificationId);
+      // 票 123：持久水位推进（eventSeq 从事件行读——outbox.notificationId 1:1 eventSeq）
+      const evRow = ctx.store.tx((tx) => tx.getEvent(notificationId));
+      if (evRow) ctx.store.markFanOutConsumed(notificationId, evRow.eventSeq);
       // 票 44：Transitioned 沿广播——每次事件消费后向全部注册连接推一行观测沿（best-effort）。
       // 观察面板（herdr 订阅面板）靠它做沿驱动刷新：离线 session 的投递行进 parked 不推 wake，
       // 无此沿则面板对离线订阅永无刷新触发。沿是刷新触发非投递：0 送达不重试，面板下一沿/手动刷新追平。

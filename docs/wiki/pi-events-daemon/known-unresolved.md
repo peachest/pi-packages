@@ -49,6 +49,10 @@
   FTS5 索引面 evidenceSearch 保留作搜索。spec 已同步：spec-modules/kernel.md evidence 方法行。
 - **known-unresolved 台账**：本文件即第三笔——已知遗留集中登记处，此后新遗留先裁定后入账。
 
+## 票 126 处置（2026-10-20）
+
+- launcher stderr 吞没（10-19 首部署事故放大器）：**已修**（票 125 批候选5）——spawn stderr 重定向 `<socket>.daemon.log` 旁车，拉起超时错误文案附日志路径；extension 侧 launcher-log.test 断言文案与真崩溃落盘。
+
 ## 后续调研票注记
 
 - **QuickJS-WASI 沙箱（终审裁定④衍生）**：用 pi v1.0 codemode / quickjs-wasi（独立 npm 包、纯库可嵌入

@@ -327,6 +327,21 @@ export function validateEntry(
   return { ok: true, warnings };
 }
 
+/** staticLint（票 122，候选1 D1a）：零 profile 依赖的 check 静态体检——空声明拒绝 + exit 三态
+ *  启发式。ad-hoc check 与 validate op（无 profile 归属）经此面获得与 validateEntry 同源的
+ *  警告；validateEntry 内部不重复实现（单一事实源）。 */
+export function staticLint(check: string | undefined): { ok: false; reason: string } | { ok: true; warnings: string[] } {
+  if (check === undefined || check.trim() === "") {
+    return { ok: false, reason: "check 声明为空或缺失" };
+  }
+  const warnings: string[] = [];
+  // 语义启发式（regen-gov 事故同款）：无显式 exit 时末命令退出码即三态语义
+  if (!/exit\s+\d|exit\s+\$/.test(check)) {
+    warnings.push("check 未显式声明 exit——末命令退出码即三态语义（0=passed / 2=failed / 其他=waiting），自然结束将被判 passed；建议末行显式 exit 或使用 wait/flip 形态");
+  }
+  return { ok: true, warnings };
+}
+
 /** templates（票 11）：模板元数据清单，全部来自注入 entries（渐进式披露面）。 */
 export function profileTemplates(
   entries: ReadonlyArray<ProfileRegistryEntry>,
