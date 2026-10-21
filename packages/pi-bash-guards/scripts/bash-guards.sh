@@ -385,13 +385,18 @@ for _s in _wt_segments(cmd):
 #   skills:   edit ~/skills source -> commit (post-commit hook reinstalls)
 #   packages: edit ~/skills extensions + package.json manifest -> pi install
 import shlex
-for l in code:
-    if not re.match(r"^(ln|cp)\s", l):
+for _seg in _wt_segments(cmd):
+    # rolling-r2 L340: judge each cp/ln command segment's own argument list —
+    # the whole line is not one argv (`cp x ~/.pi/… && echo done` made `done`
+    # the destination; `mkdir -p … && cp x ~/.pi/…` was skipped wholesale).
+    # Segments come pre-stripped by _cmd_strip, so env/sudo-wrapped copies
+    # land here too; heredoc bodies are already gone.
+    if not re.match(r"^(ln|cp)\s", _seg):
         continue
     try:
-        argv = shlex.split(l)[1:]
+        argv = shlex.split(_seg)[1:]
     except ValueError:
-        argv = l.split()[1:]
+        argv = _seg.split()[1:]
     # rolling-r1 L279: -t/--target-directory redirects the destination; the
     # generic flag filter dropped it and judged a source argument instead.
     target_dir = None

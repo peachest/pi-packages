@@ -244,6 +244,12 @@ expect 2 "commit with its own -n still blocked"       "$PROJ" "git commit -n -m 
 expect 2 "commit with its own --no-verify still blocked" "$PROJ" "git commit --no-verify -m x"
 expect 2 "push with its own --no-verify still blocked" "$PROJ" "git push --no-verify origin main"
 
+echo "== G1 destination is per cp/ln segment (rolling-r2 L340) =="
+expect 2 "cp into extensions not masked by trailing echo" "$PROJ" "cp x ~/.pi/agent/extensions/x && echo done"
+expect 2 "cp into extensions caught after mkdir segment"  "$PROJ" "mkdir -p ~/.pi/agent/extensions && cp x ~/.pi/agent/extensions/x"
+expect 0 "benign cp then echo still allowed"              "$PROJ" "cp x ~/tmp/x && echo done"
+expect 0 "env cp to tmp still allowed"                    "$PROJ" "env cp x ~/tmp/x"
+
 echo
 echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" = 0 ]
