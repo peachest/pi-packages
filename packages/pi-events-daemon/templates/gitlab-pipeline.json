@@ -74,7 +74,7 @@
     {
       "name": "mr",
       "entityType": "gitlab:mr",
-      "check": "glab api --hostname {host} projects/{project}/merge_requests/{mr_iid} --jq .state",
+      "check": "glab api --hostname {host} projects/{project}/merge_requests/{mr_iid} | jq -r .state",
       "states": [
         "passed",
         "failed",
@@ -91,7 +91,7 @@
     {
       "name": "ci",
       "entityType": "gitlab:pipeline",
-      "check": "glab api --hostname {host} projects/{project}/pipelines/{pipeline_id} --jq .status",
+      "check": "glab api --hostname {host} projects/{project}/pipelines/{pipeline_id} | jq -r .status",
       "states": [
         "passed",
         "failed",
@@ -112,7 +112,7 @@
     {
       "name": "ticket",
       "entityType": "gitlab:ticket",
-      "check": "glab api --hostname {host} projects/{project}/issues/{issue_iid} --jq .state",
+      "check": "glab api --hostname {host} projects/{project}/issues/{issue_iid} | jq -r .state",
       "states": [
         "passed",
         "failed",
