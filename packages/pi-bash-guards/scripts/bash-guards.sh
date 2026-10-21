@@ -521,59 +521,106 @@ if in_projects:
     #   b) allow when the configured email matches the expected identity of
     #      ANY configured remote — a repo-local user.email is a deliberate
     #      choice, only an email matching NO remote's platform blocks.
-    if re.search(r"\bgit\s+(?:-\S+\s+\S+\s+)*commit(\s|$)", cmd) and not re.search(r"(^|\s)(--no-verify|-n)(\s|$)", cmd):
-        try:
-            email = subprocess.run(["git", "config", "user.email"], capture_output=True,
-                                   text=True, timeout=5).stdout.strip()
-        except Exception:
-            email = ""
+    # P6. Commit identity must match the repo's remote platform (pi-arena: 35
+    # commits one day split across two identities; base-charts: 4/5 commits
+    # with the wrong author, fixed by history rewrite).
+    #
+    # Multi-remote repos (ascend-device-plugin family: origin=github fork,
+    # push target=internal gitblue): a single-remote origin lookup is a false
+    # positive generator. Two mechanisms:
+    #   a) push-remote resolution chain: branch.<cur>.pushRemote →
+    #      remote.pushDefault → origin;
+    #   b) allow when the configured email matches the expected identity of
+    #      ANY configured remote — a repo-local user.email is a deliberate
+    #      choice, only an email matching NO remote's platform blocks.
+    #
+    # rolling-r2 L410: every probe runs against the repo the commit TARGETS —
+    # -C/--git-dir global options of the segment, cwd tracked through cd
+    # segments (_cwd_walk) — not the hook process cwd. The old process-cwd
+    # probes let `git -C /other commit` and `cd /other && git commit` read
+    # the session repo's identity/remotes. The full-text `--no-verify` gate
+    # exclusion is gone: guard 4 already blocks those commits before this
+    # point, and the old exclusion let a later `git push -n` silence the
+    # check for an earlier clean commit. No fallback outside command
+    # positions (the old full-text-matched fallback re-probed the hook cwd
+    # and false-blocked string literals like echo 'git commit').
+    if re.search(r"\bgit\s+(?:-\S+\s+\S+\s+)*commit(\s|$)", cmd):
         expected = {"gitblue": "yuxi.hou@transwarp.io", "transwarp": "yuxi.hou@transwarp.io",
                     "github": "1938913473@qq.com"}
         DEFAULT_EMAIL = "yuxi.hou@transwarp.io"
-        try:
-            remotes = subprocess.run(["git", "remote", "-v"], capture_output=True,
-                                     text=True, timeout=5).stdout
-        except Exception:
-            remotes = ""
-        remote_urls = sorted({m.group(1).lower() for m in re.finditer(r"^\S+\s+(\S+)\s+\(fetch\)$", remotes, re.M)})
-        want_any = {v for url in remote_urls for k, v in expected.items() if k in url}
-        if remote_urls:
-            if not want_any:
-                sys.exit(0)  # rolling-r1 L350: unknown remote platform — fail
-                # open, never block every commit in the repo for it
-            # push-remote resolution chain, for naming the platform in the
-            # message. rolling-r1 L352: same fail-open as the other probes —
-            # a timeout/missing git here must not raise out of the hook.
+
+        def _p6_judge(seg, cur):
+            # Identity verdict for one commit segment, probed in the repo it
+            # targets. Returns without blocking when the target is not a
+            # resolvable repo or its remote platform is unknown — fail open,
+            # never block on our own probe failure (rolling-r1 L350/L352).
+            _mg = re.match(r"^git\s+((?:-\S+\s+\S+\s+)*)commit(\s|$)", seg)
+            if not _mg:
+                return
             try:
-                branch = subprocess.run(["git", "branch", "--show-current"], capture_output=True,
-                                        text=True, timeout=5, check=False).stdout.strip()
-                push_remote = subprocess.run(["git", "config", f"branch.{branch}.pushRemote"],
-                                             capture_output=True, text=True, timeout=5, check=False).stdout.strip() \
-                    or subprocess.run(["git", "config", "remote.pushDefault"], capture_output=True,
-                                      text=True, timeout=5, check=False).stdout.strip() or "origin"
-            except (OSError, subprocess.SubprocessError):
-                sys.exit(0)
-            push_url = next((u for u in remote_urls if push_remote and push_remote in
-                             {r.group(1) for r in re.finditer(rf"^{re.escape(push_remote)}\s+(\S+)\s+\(fetch\)$", remotes, re.M)}),
-                            remote_urls[0])
-            platform = next((k for k in expected if k in push_url), push_remote or "the default")
-        else:
-            platform = "the default"
-            want_any = {DEFAULT_EMAIL}  # no remote: default identity is the only match
-        suggest = next(iter(sorted(want_any)), DEFAULT_EMAIL)
-        # rolling-r1 L334: scan only real `git -c user.email=…` arguments at
-        # command positions — a literal inside a -m message body is not an
-        # identity override. Per commit segment: with an inline override the
-        # commit runs under it; without one it runs under the configured email.
-        _saw_commit = False
-        for _s in _wt_segments(cmd):
-            if not re.match(r"^git\s+(?:-\S+\s+\S+\s+)*commit(\s|$)", _s):
-                continue
-            _saw_commit = True
-            try:
-                _argv = shlex.split(_s)
+                _gt = shlex.split(_mg.group(1))
             except ValueError:
-                _argv = _s.split()
+                _gt = _mg.group(1).split()
+            _pre, _i, _dir = [], 0, cur
+            while _i < len(_gt):
+                _a = _gt[_i]
+                if _a == "-C" and _i + 1 < len(_gt):
+                    _d = os.path.expanduser(_gt[_i + 1])
+                    _dir = os.path.normpath(_d if os.path.isabs(_d) else os.path.join(_dir, _d))
+                    _pre += ["-C", _dir]
+                    _i += 2
+                elif _a.startswith("--git-dir="):
+                    _d = os.path.expanduser(_a.split("=", 1)[1])
+                    _d = os.path.normpath(_d if os.path.isabs(_d) else os.path.join(_dir, _d))
+                    _pre += ["--git-dir=" + _d]
+                    _i += 1
+                else:
+                    _pre.append(_a)   # -c key=val and friends pass through
+                    _i += 1
+            try:
+                _pe = subprocess.run(["git"] + _pre + ["config", "user.email"],
+                                     capture_output=True, text=True, timeout=5, cwd=_dir)
+                _pr = subprocess.run(["git"] + _pre + ["remote", "-v"],
+                                     capture_output=True, text=True, timeout=5, cwd=_dir)
+            except (OSError, subprocess.SubprocessError):
+                return
+            if _pe.returncode not in (0, 1) or _pr.returncode != 0:
+                return  # rc 1 = email unset (legal); other rc = not a resolvable repo
+            email = _pe.stdout.strip()
+            remotes = _pr.stdout
+            remote_urls = sorted({m.group(1).lower() for m in re.finditer(r"^\S+\s+(\S+)\s+\(fetch\)$", remotes, re.M)})
+            want_any = {v for url in remote_urls for k, v in expected.items() if k in url}
+            if remote_urls:
+                if not want_any:
+                    return  # rolling-r1 L350: unknown remote platform — fail open
+                # push-remote resolution chain, for naming the platform in the
+                # message. rolling-r1 L352: same fail-open as the other probes —
+                # a timeout/missing git here must not raise out of the hook.
+                try:
+                    branch = subprocess.run(["git"] + _pre + ["branch", "--show-current"],
+                                            capture_output=True, text=True, timeout=5, check=False, cwd=_dir).stdout.strip()
+                    push_remote = subprocess.run(["git"] + _pre + ["config", f"branch.{branch}.pushRemote"],
+                                                 capture_output=True, text=True, timeout=5, check=False, cwd=_dir).stdout.strip() \
+                        or subprocess.run(["git"] + _pre + ["config", "remote.pushDefault"],
+                                          capture_output=True, text=True, timeout=5, check=False, cwd=_dir).stdout.strip() or "origin"
+                except (OSError, subprocess.SubprocessError):
+                    return
+                push_url = next((u for u in remote_urls if push_remote and push_remote in
+                                 {r.group(1) for r in re.finditer(rf"^{re.escape(push_remote)}\s+(\S+)\s+\(fetch\)$", remotes, re.M)}),
+                                remote_urls[0])
+                platform = next((k for k in expected if k in push_url), push_remote or "the default")
+            else:
+                platform = "the default"
+                want_any = {DEFAULT_EMAIL}  # no remote: default identity is the only match
+            suggest = next(iter(sorted(want_any)), DEFAULT_EMAIL)
+            # rolling-r1 L334: scan only real `git -c user.email=…` arguments —
+            # a literal inside a -m message body is not an identity override.
+            # With an inline override the commit runs under it; without one it
+            # runs under the configured email of the target repo.
+            try:
+                _argv = shlex.split(seg)
+            except ValueError:
+                _argv = seg.split()
             _inline = None
             _i = 0
             while _i < len(_argv):
@@ -602,14 +649,10 @@ if in_projects:
                       f"(pi-arena, 35 commits in two identities). Fix first: "
                       f"`git config user.email {suggest}` (repo-local), or "
                       f"commit with `git -c user.email={suggest} commit …`.")
-        if not _saw_commit and email not in want_any:
-            block(f"committing as {email or '(no email configured)'} — matches no "
-                  f"remote platform of this repo ({platform} is the push target; "
-                  f"expected {', '.join(sorted(want_any))}) — "
-                  f"mixed identities forced a history rewrite once already "
-                  f"(pi-arena, 35 commits in two identities). Fix first: "
-                  f"`git config user.email {suggest}` (repo-local), or "
-                  f"commit with `git -c user.email={suggest} commit …`.")
+
+        for _seg, _cur in _cwd_walk(_wt_pairs(cmd), os.getcwd()):
+            if re.match(r"^git\s+(?:-\S+\s+\S+\s+)*commit(\s|$)", _seg):
+                _p6_judge(_seg, _cur)
 
 sys.exit(0)
 PY

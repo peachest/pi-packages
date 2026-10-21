@@ -259,6 +259,19 @@ expect 0 "git -C main checkout allowed"                   "$PROJ" "git -C $MAIN 
 expect 0 "git -C main subdir switch allowed"              "$PROJ" "git -C $MAIN/src switch main" "$MAIN"
 expect 0 "cwd in main subdir switch allowed"              "$PROJ" "git switch main" "$MAIN/src"
 
+echo "== P6 probes the repo the commit targets (rolling-r2 L410) =="
+# p6-b: github remote + transwarp identity (wrong for github). Committing
+# INTO it from a cleanly-configured session repo must be judged by p6-b's
+# own config, not the hook-process cwd's repo.
+P6B="$FX/p6-b-wrong"
+git init -q "$P6B"
+git -C "$P6B" config user.email yuxi.hou@transwarp.io
+git -C "$P6B" remote add origin https://github.com/x/y.git
+expect 2 "git -C wrong-repo commit judged by target repo"  "$PROJ" "git -C $P6B commit -m x" "$P6GH"
+expect 2 "cd wrong-repo commit judged by target repo"      "$PROJ" "cd $P6B && git commit -m x" "$P6GH"
+expect 0 "git -C right-repo commit judged by target repo"  "$PROJ" "git -C $P6GH commit -m x" "$MAIN"
+expect 0 "git -C wrong-repo + inline matching identity ok" "$PROJ" "git -C $P6B -c user.email=1938913473@qq.com commit -m x" "$MAIN"
+
 echo
 echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" = 0 ]
