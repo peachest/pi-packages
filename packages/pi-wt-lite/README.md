@@ -51,3 +51,10 @@ diff -u --label a/upstream/package.json --label b/upstream/package.json <pristin
 ## 已知债（spec#137 review 裁定）
 
 - **上游双注册**：pristine worktrunk.ts 在模块顶层与 session_start 各调一次 registerTool()（L1563/L1585）——上游既有行为，pi 实测容忍；按 vendor 纪律不写注释进 pristine，记录于此。若 pi 未来严格化重复注册，需在 lite.patch 加幂等守卫。
+
+## Language
+
+- **upstream/**：npm pristine 的 pi-worktrunk 源（worktrunk.ts/package.json/LICENSE 三文件），只由 sync.sh 写入，禁手改。
+- **lite.patch**：upstream → 发布产物的全部增量的唯一真身（紧凑命令参考、工具描述压缩、自保逻辑、peer 版本收紧）。增量埋进产物而不进 patch = 漂移。
+- **sync.sh / verify.sh**：升级（pack→copy→apply）与证明（pristine+patch==upstream 逐字节 + 行为断言）分离；verify.sh 是发布门，sync 后必跑。
+- **发布产物（upstream/worktrunk.ts 加载形态）**：pi.extensions 指向 patched 产物；"pristine + patch == 产物"是本包的核心不变量，verify.sh 是它的可执行形态。
