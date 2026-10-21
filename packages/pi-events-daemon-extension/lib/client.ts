@@ -35,24 +35,7 @@ export interface OpClientConfig {
   launcher?: () => Promise<void>;
   /** 重试间隔（缺省固定 100ms；测试注入记录器）。 */
   retryDelayMs?: (ms: number) => Promise<void>;
-  /** 票 136：投递类 op（subscribe）的缺省 sessionId——短连接不发 session_start（transport
-   *  不注入），脚本消费者挂订阅时经此面把 wake 目标带上。缺省读 env.PI_SESSION_ID。 */
-  sessionId?: string;
   env?: NodeJS.ProcessEnv;
-}
-
-/** 票 136：投递类 op 的 opts.sessionId 缺省并入（显式传入不覆盖；非投递类 op 不动）。
- *  纯函数导出供契约测试（peer 01a13d86 事故根因2：短连接订阅 sessionId="" → wake 无目标 → 通知滞留 backlog）。 */
-export const DELIVERY_OPS = new Set<string>(["subscribe"]);
-export function withDefaultSessionId(
-  op: string,
-  params: Record<string, unknown>,
-  sessionId: string | undefined,
-): Record<string, unknown> {
-  if (!sessionId || !DELIVERY_OPS.has(op)) return params;
-  const opts = (params.opts ??= {}) as Record<string, unknown>;
-  if (opts.sessionId === undefined) opts.sessionId = sessionId;
-  return params;
 }
 
 export interface OpClient {
@@ -156,7 +139,6 @@ export function createOpClient(cfg: OpClientConfig = {}): OpClient {
   const timeoutMs = cfg.timeoutMs ?? 10_000;
   const launcher = cfg.launcher ?? defaultDaemonLauncher(socketPath, cfg.env ?? process.env);
   const delay = cfg.retryDelayMs ?? sleep;
-  const defaultSessionId = cfg.sessionId ?? cfg.env?.PI_SESSION_ID;
 
   /** 单次尝试：一条短连接（连接→请求→关闭）；非业务失败带 phase 标记供重试策略消费。 */
   const once = async (op: OpName, params: Record<string, unknown>): Promise<unknown> => {
@@ -185,7 +167,6 @@ export function createOpClient(cfg: OpClientConfig = {}): OpClient {
 
   return {
     async request(op, params) {
-      params = withDefaultSessionId(op, params, defaultSessionId); // 票 136：投递类 op 缺省并入
       const maxAttempts = cfg.maxAttempts ?? MAX_OP_ATTEMPTS;
       let lastErr: unknown;
       for (let attempt = 1; attempt <= maxAttempts; attempt++) {

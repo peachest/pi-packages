@@ -1,0 +1,38 @@
+{
+	"name": "pi-secret-store",
+	"version": "0.1.0",
+	"private": true,
+	"description": "Pi extension: 持久化凭证存储（供给正道 secret_ensure/secret_query/secret_env）+ 泄漏执法（P1 凭证检测）+ bash env 注入 + 双层脱敏",
+	"keywords": [
+		"pi-package",
+		"pi",
+		"secrets",
+		"credentials",
+		"redaction"
+	],
+	"license": "MIT",
+	"author": "",
+	"type": "module",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/hyx/pi-mypackage.git",
+		"directory": "packages/pi-secret-store"
+	},
+	"peerDependencies": {
+		"@earendil-works/pi-coding-agent": "^1.3.0",
+		"typebox": "^1.4.2"
+	},
+	"devDependencies": {
+		"@earendil-works/pi-coding-agent": "^1.3.0",
+		"typebox": "^1.4.2",
+		"vitest": "^3.0.0"
+	},
+	"pi": {
+		"extensions": [
+			"./index.ts"
+		]
+	},
+	"scripts": {
+		"test": "vitest run"
+	}
+}

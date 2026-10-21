@@ -65,12 +65,6 @@
 - **记账**：lockfile 回收窗口缩至最小但仍非原子（O_EXCL 设计边界；完全原子需 flock-on-pidfile，post-MVP）
 - **P2**：intent.ts sameEventContent 嵌套 ===（死代码语义陷阱，无生产消费）；sqlite latestSeqForRef LIKE 未转义 %/_（ref 含 % 时误匹配——entity key 是 sha/url，含 % 概率极低）
 
-## 票 136-137 处置（2026-10-21，peer 模板订阅事故批）
-
-- **registry 快照语义（文档化）**：daemon 的 profile registry 是启动时快照——改 templates/*.json 后必须重启 daemon 才生效（subscribe 烘焙启动时版本的 check）。已记 SKILL.md 订阅节；post-MVP 候选：templates 热重载或 subscribe 时 mtime 重读。
-- **ci/mr/ticket 模板三态 case 映射**（票 137）：check 已改为 status→退出码映射（success→0/failed,canceled→2/其他→1），pipeline failed 不再判 passed。
-- **createOpClient cfg.sessionId**（票 136）：短连接脚本消费者挂订阅的 wake 目标缺省并入（env.PI_SESSION_ID）。
-
 ## 后续调研票注记
 
 - **QuickJS-WASI 沙箱（终审裁定④衍生）**：用 pi v1.0 codemode / quickjs-wasi（独立 npm 包、纯库可嵌入

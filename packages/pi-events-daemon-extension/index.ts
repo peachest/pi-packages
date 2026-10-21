@@ -247,7 +247,7 @@ export type { DaemonStatus } from "./lib/footer.ts";
 export type { JsonSchema, Issue } from "./lib/schema.ts";
 export { buildToolDefs } from "./lib/tools.ts";
 export type { OpToolDef, OpSender, ToolResult } from "./lib/tools.ts";
-export { createOpClient, readDaemonEpoch, defaultDaemonLauncher, withDefaultSessionId, DELIVERY_OPS, MAX_OP_ATTEMPTS, OP_RETRY_DELAY_MS } from "./lib/client.ts";
+export { createOpClient, readDaemonEpoch, defaultDaemonLauncher, MAX_OP_ATTEMPTS, OP_RETRY_DELAY_MS } from "./lib/client.ts";
 export type { OpClient, OpClientConfig } from "./lib/client.ts";
 export {
   declareAutoSubscriptions,

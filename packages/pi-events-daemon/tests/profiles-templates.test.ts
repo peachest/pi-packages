@@ -88,29 +88,3 @@ describe("票 121：validate 三态启发式文案与 prober 正典对齐（0=pa
     expect(w).not.toContain("2=waiting");
   });
 });
-
-describe("票 137（scan-A）：gitlab-pipeline ci 模板三态 case 映射——failed 不再判 passed", () => {
-  const loadCi = () => {
-    const d = JSON.parse(readFileSync(new URL("../templates/gitlab-pipeline.json", import.meta.url), "utf8"));
-    return d.templates.find((t: { name: string }) => t.name === "ci")!;
-  };
-  it("check 含 status→退出码 case 映射（success→0 / failed,canceled→2 / 其他→1）", () => {
-    const check = loadCi().check as string;
-    expect(check).toContain("case");
-    expect(check).toContain("success");
-    expect(check).toContain("failed");
-    expect(check).toContain("canceled");
-    // failed/canceled 分支必须 exit 2（failed 断言沿），success 分支 exit 0（顺序无关结构断言）
-    expect(check).toContain("success) echo pipeline-success; exit 0");
-    expect(check).toContain("failed|canceled) echo pipeline-$st; exit 2");
-  });
-  it("fs-watermark 模板 check 同样不含裸 jq 管道（jq 恒 exit 0 语义缺陷族）", () => {
-    const d = JSON.parse(readFileSync(new URL("../templates/fs-watermark.json", import.meta.url), "utf8"));
-    for (const t of d.templates) {
-      // 裸 `| jq` 管道结尾 = jq exit 0 语义（除非有 case/exit 映射）
-      if ((t.check as string).includes("| jq")) {
-        expect(t.check as string).toMatch(/case|exit [12]/);
-      }
-    }
-  });
-});
