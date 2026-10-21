@@ -31,7 +31,7 @@ R1/R2/R3/R4 只在**命令位置**锚定匹配（行首 token 序列，经 rtk/s
 
 ### Override 通道
 
-命令文本含显式标记注释 `# guard-override: <理由>` → 本条命令放行全部守卫，stderr 留一行警告作审计痕。仅对当次调用生效；守卫永不永久阻断正当抢救。
+命令文本含显式标记注释 `# guard-override: <理由>` → 本条命令放行全部守卫，stderr 留一行警告作审计痕。仅对当次调用生效；守卫永不永久阻断正当抢救。**仅限应急**——worktrunk 工具不可用需 bash 旁路抢救等场景；常规操作一律走守卫指的正路，不留 override。约定见 spec #137（worktree 生命周期错误路径防线）；动机是 2026-10-21 fix-eda-scan-fixes 事故（bash 自删 session cwd → `spawn bash ENOENT` 卡死 2h，见 R1 行）——守卫误伤正当抢救时留此逃生门，滥用时留痕可追。
 
 ## 安装
 
