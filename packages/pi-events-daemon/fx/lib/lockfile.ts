@@ -48,8 +48,30 @@ export class FileLock {
           if (this.alive(holder)) {
             throw new Error(`daemon already running (pid ${holder}, pidfile ${this.path})`);
           }
-          rmSync(this.path, { force: true }); // 死进程残留：回收后重取（活持有者不会走到这——活性已验）
-          continue;
+          // 票 134（scan-⑦）TOCTOU 修复：unlink 前重读确认内容仍是同一死 pid（A 回收+建锁后
+          // B 的旧读到文件已被替换——重读见 A 的活 pid → 正确拒绝，不再误删新锁）。剩余窗口
+          // （重读后 A 恰好建锁前的亚微秒级）由 open(wx) EEXIST 回环兜底；shortcut: 完全原子
+          // 需 flock-on-pidfile，O_EXCL 设计下窗口已缩至最小（记账 known-unresolved）。
+          try {
+            const recheck = readFileSync(this.path, "utf8");
+            if (Number(recheck.trim()) !== holder) continue; // 内容已变（他人接管）：重读重判
+          } catch (readErr) {
+            if ((readErr as NodeJS.ErrnoException).code === "ENOENT") continue; // 已被他人移除
+            throw readErr;
+          }
+          rmSync(this.path, { force: true });
+          try {
+            const fd = openSync(this.path, "wx");
+            try {
+              writeSync(fd, `${this.pid}\n`);
+            } finally {
+              closeSync(fd);
+            }
+            return;
+          } catch (e) {
+            if ((e as NodeJS.ErrnoException).code === "EEXIST") continue; // 被 A 抢先：重读重判
+            throw e;
+          }
         }
         // 空/不可解析 = 持有者创建后尚未写 pid 的交错窗口（或损坏文件）：无法验证死亡，
         // 回收会误删真持有者的锁（评审 ③）——fail-safe 拒取不回收

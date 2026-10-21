@@ -23,9 +23,18 @@ export class ShellExec implements Exec {
       let timedOut = false;
       let settled = false;
       let graceTimer: NodeJS.Timeout | null = null;
-      // shortcut: stdout/stderr 无上限累积（旧 exec maxBuffer 1MB 语义未保留）——probe evidence 均为短文本；出现大输出 checker 需补上限
-      child.stdout.on("data", (d: Buffer) => void (stdout += d));
-      child.stderr.on("data", (d: Buffer) => void (stderr += d));
+      // 票 133（scan-⑥）：输出上限回归（旧 exec maxBuffer 1MB 语义恢复）——异常 checker 快速
+      // 输出可在超时前 OOM daemon；超限截断并标注（evidence 面可见 truncation）。
+      const MAX_OUTPUT = 1_000_000;
+      let truncated = false;
+      child.stdout.on("data", (d: Buffer) => {
+        if (stdout.length < MAX_OUTPUT) stdout += d;
+        else truncated = true;
+      });
+      child.stderr.on("data", (d: Buffer) => {
+        if (stderr.length < MAX_OUTPUT) stderr += d;
+        else truncated = true;
+      });
       const settle = (finish: () => void) => {
         if (settled) return;
         settled = true;
@@ -33,7 +42,15 @@ export class ShellExec implements Exec {
         finish();
       };
       child.on("close", (exitCode, signal) =>
-        settle(() => resolve({ exitCode, signal: signal ?? null, stdout, stderr, timedOut })),
+        settle(() =>
+          resolve({
+            exitCode,
+            signal: signal ?? null,
+            stdout: truncated ? `${stdout}\n[output truncated at ${MAX_OUTPUT} bytes]` : stdout,
+            stderr,
+            timedOut,
+          }),
+        ),
       );
       child.on("error", (err) => settle(() => reject(err)));
       if (opts?.timeoutMs === undefined) return;
