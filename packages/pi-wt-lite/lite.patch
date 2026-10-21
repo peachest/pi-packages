@@ -1,5 +1,5 @@
 diff --git a/upstream/worktrunk.ts b/upstream/worktrunk.ts
-index cf4d3d2..8619f67 100644
+index cf4d3d2..f5e0f60 100644
 --- a/upstream/worktrunk.ts
 +++ b/upstream/worktrunk.ts
 @@ -1,7 +1,7 @@
@@ -11,12 +11,13 @@ index cf4d3d2..8619f67 100644
  import { existsSync, realpathSync, statSync, writeFileSync } from "node:fs";
  import { basename, resolve, join, isAbsolute } from "node:path";
  import { pathToFileURL } from "node:url";
-@@ -168,7 +168,15 @@ const CONTINUATION_MESSAGE_TYPE = "pi-worktrunk-continuation";
+@@ -168,7 +168,16 @@ const CONTINUATION_MESSAGE_TYPE = "pi-worktrunk-continuation";
  const MAX_CONTINUATION_OUTPUT = 50_000;
  const CONTINUATION_ARG_PREFIX = "__pi_worktrunk_continuation=";
  const WORKTRUNK_ALIAS_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
 -const MAX_REFERENCE_BYTES = 30_000;
 +const REMOVE_SELF_GUARD_MESSAGE = "目标 worktree 是当前 session 所在目录。先 wt switch main 迁出，再 remove。（headless session 无 recover 网，此拦截是唯一防线）";
++const REMOVE_SELF_LIST_FAILURE_MESSAGE = "无法核实 remove 目标：worktree 列表获取失败。先跑 wt list 确认目标不含当前 session 目录，再重试。";
 +const HEADLESS_MIGRATION_NOTICE = "本 session 为 headless 模式，session 自动迁移不可用；如需收尾请用 merge --no-remove 并向父 session 报告";
 +const COMPACT_REFERENCE = `Worktrunk command reference (subset; run \`wt <cmd> --help\` via bash for full detail)
 +- switch [BRANCH] [-c] [-b BASE] [-C REPO] — switch to or create a worktree; checkouts live at ~/projects/<repo>-<branch>. -c creates the branch (-b sets its base, default main). -C targets another repo checkout (bare repos).
@@ -28,7 +29,7 @@ index cf4d3d2..8619f67 100644
  const MAX_EXAMPLES_PER_COMMAND = 3;
  const HELP_DESCRIPTION_INDENT = 10;
  const HELP_PROBE_CONCURRENCY = 8;
-@@ -850,6 +858,34 @@ function isBareCommand(invocation: Invocation, command: string): boolean {
+@@ -850,6 +859,48 @@ function isBareCommand(invocation: Invocation, command: string): boolean {
    return invocation.command === command && invocation.commandArgs.length === 0;
  }
  
@@ -60,22 +61,38 @@ index cf4d3d2..8619f67 100644
 +  });
 +}
 +
++/** Guard decision for `wt remove` given the discovery outcome; list === undefined means
++ * worktree discovery failed. Explicit targets then reject (fail-closed — an unverified
++ * target must not be removed); a bare remove still blocks via the cwd fallback above. */
++export function removeSelfGuardDecision(
++  list: readonly WorktreeItem[] | undefined,
++  commandArgs: readonly string[],
++  cwd: string,
++): string | undefined {
++  if (list === undefined && commandArgs.some((arg) => !arg.startsWith("-"))) {
++    return REMOVE_SELF_LIST_FAILURE_MESSAGE;
++  }
++  return removeTargetsSelf(list ?? [], commandArgs, cwd) ? REMOVE_SELF_GUARD_MESSAGE : undefined;
++}
++
  function relationText(relation?: Relation): string { return `ahead ${relation?.ahead ?? 0}, behind ${relation?.behind ?? 0}`; }
  function changeText(item: WorktreeItem): string {
    const changes = item.worktree?.changes ?? {};
-@@ -1064,6 +1100,11 @@ export default function extension(
+@@ -1064,6 +1115,13 @@ export default function extension(
    async function safeList(cwd: string, signal?: AbortSignal): Promise<WorktreeItem[]> {
      try { return await client.list(cwd, signal); } catch { return []; }
    }
 +  async function removeSelfGuard(invocation: Invocation, cwd: string, signal?: AbortSignal): Promise<string | undefined> {
 +    if (invocation.command !== "remove") return undefined;
-+    const blocked = removeTargetsSelf(await safeList(cwd, signal), invocation.commandArgs, cwd);
-+    return blocked ? REMOVE_SELF_GUARD_MESSAGE : undefined;
++    // Strict list (not safeList): a failed discovery must not open the guard for explicit targets.
++    let items: WorktreeItem[] | undefined;
++    try { items = await client.list(cwd, signal); } catch { items = undefined; }
++    return removeSelfGuardDecision(items, invocation.commandArgs, cwd);
 +  }
    async function readWorktreeIdentity(cwd: string): Promise<RepositoryIdentity | undefined> {
      try {
        const result = await pi.exec("git", ["rev-parse", "--absolute-git-dir"], { cwd, timeout: 5000 });
-@@ -1135,27 +1176,17 @@ export default function extension(
+@@ -1135,27 +1193,17 @@ export default function extension(
      installedCommands = parseWorktrunkCommands(rootOutput);
      for (const { name } of installedCommands) commandNames.add(name);
  
@@ -106,7 +123,7 @@ index cf4d3d2..8619f67 100644
      if (settings !== undefined) aliases = parseWorktrunkAliases(settings);
      for (const { name } of aliases) aliasNames.add(name);
    }
-@@ -1356,6 +1387,11 @@ export default function extension(
+@@ -1356,6 +1404,11 @@ export default function extension(
        }
        args = ["switch", selected.worktree.path];
      }
@@ -118,7 +135,7 @@ index cf4d3d2..8619f67 100644
  
      const scope = approvalScope(invocation, ctx.cwd);
      const canPrompt = interactive && ctx.hasUI;
-@@ -1409,6 +1445,10 @@ export default function extension(
+@@ -1409,6 +1462,10 @@ export default function extension(
        output = [output, await describeApprovalFailure(output, scope, ctx.cwd, ctx.signal)].filter(Boolean).join("\n");
      }
      output = [...notes, output].filter(Boolean).join("\n\n");
@@ -129,7 +146,7 @@ index cf4d3d2..8619f67 100644
      progress.hide();
      displayCommand(ctx, args, output, result.code !== 0 || Boolean(result.killed), modelOrigin);
      const base: Execution = { result, output, moved: false, canContinue: false };
-@@ -1539,12 +1579,12 @@ export default function extension(
+@@ -1539,12 +1596,12 @@ export default function extension(
      pi.registerTool({
        name: "worktrunk",
        label: "Worktrunk",
@@ -146,7 +163,7 @@ index cf4d3d2..8619f67 100644
          "Never pass -y/--yes to worktrunk; approving project commands is the user's decision, and Pi asks the user when Worktrunk needs approval.",
        ],
        parameters: Type.Object({
-@@ -1591,6 +1631,8 @@ export default function extension(
+@@ -1591,6 +1648,8 @@ export default function extension(
                `Command not run: Pi's working directory is no longer usable. Restart Pi in ${target?.path ?? "a surviving worktree"}.`);
            }
            if (ctx.mode === "print" || ctx.mode === "json" || (usable && canRunInline(invocation, aliasNames.has(params.command)))) {
@@ -155,7 +172,7 @@ index cf4d3d2..8619f67 100644
              let result: WtResult;
              try { result = await invoke(args, { cwd: ctx.cwd, signal }); }
              catch (error) {
-@@ -1601,6 +1643,10 @@ export default function extension(
+@@ -1601,6 +1660,10 @@ export default function extension(
                ? await pendingApprovals(approvalScope(invocation, ctx.cwd), ctx.cwd, signal)
                : undefined;
              const approval = approvalFailureDetails(output, pending);
@@ -166,7 +183,7 @@ index cf4d3d2..8619f67 100644
              let stopReason: string | undefined;
              try {
                const destination = await directedDestination(result.directive, identity);
-@@ -1624,14 +1670,14 @@ export default function extension(
+@@ -1624,14 +1687,14 @@ export default function extension(
              }
              if (stopReason) {
                ctx.abort();

@@ -5,7 +5,7 @@ import { homedir } from "node:os";
 import assert from "node:assert/strict";
 
 register("./stub-loader.mjs", import.meta.url);
-const { removeTargetsSelf, parseWtInvocation } = await import(
+const { removeTargetsSelf, removeSelfGuardDecision, parseWtInvocation } = await import(
   "../upstream/worktrunk.ts"
 );
 
@@ -44,6 +44,22 @@ assert.equal(
   blocked(["x"], [{ branch: "x", worktree: { path: "/home/u/projects" } }]),
   true,
   "target is an ancestor directory of cwd",
+);
+
+// Discovery failure (rolling-r2 #1): list === undefined models client.list() throwing.
+// Explicit targets must fail closed; bare remove keeps blocking via the cwd fallback.
+const listFailure = removeSelfGuardDecision(undefined, ["repo-main"], cwd);
+assert.equal(typeof listFailure, "string", "discovery failure + explicit target: rejected");
+assert.match(listFailure, /wt list/, "rejection points at wt list verification");
+assert.equal(
+  removeSelfGuardDecision(undefined, [], cwd),
+  removeSelfGuardDecision(items, ["repo-main"], cwd),
+  "bare remove under discovery failure still blocks with the standard guard message",
+);
+assert.equal(
+  removeSelfGuardDecision([], ["nope"], cwd),
+  undefined,
+  "known-empty list keeps historical fail-open for unknown branches (wt errors itself)",
 );
 
 // Other worktrees / unknown branches -> not blocked (wt handles those itself).

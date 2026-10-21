@@ -169,6 +169,7 @@ const MAX_CONTINUATION_OUTPUT = 50_000;
 const CONTINUATION_ARG_PREFIX = "__pi_worktrunk_continuation=";
 const WORKTRUNK_ALIAS_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
 const REMOVE_SELF_GUARD_MESSAGE = "目标 worktree 是当前 session 所在目录。先 wt switch main 迁出，再 remove。（headless session 无 recover 网，此拦截是唯一防线）";
+const REMOVE_SELF_LIST_FAILURE_MESSAGE = "无法核实 remove 目标：worktree 列表获取失败。先跑 wt list 确认目标不含当前 session 目录，再重试。";
 const HEADLESS_MIGRATION_NOTICE = "本 session 为 headless 模式，session 自动迁移不可用；如需收尾请用 merge --no-remove 并向父 session 报告";
 const COMPACT_REFERENCE = `Worktrunk command reference (subset; run \`wt <cmd> --help\` via bash for full detail)
 - switch [BRANCH] [-c] [-b BASE] [-C REPO] — switch to or create a worktree; checkouts live at ~/projects/<repo>-<branch>. -c creates the branch (-b sets its base, default main). -C targets another repo checkout (bare repos).
@@ -886,6 +887,20 @@ export function removeTargetsSelf(
   });
 }
 
+/** Guard decision for `wt remove` given the discovery outcome; list === undefined means
+ * worktree discovery failed. Explicit targets then reject (fail-closed — an unverified
+ * target must not be removed); a bare remove still blocks via the cwd fallback above. */
+export function removeSelfGuardDecision(
+  list: readonly WorktreeItem[] | undefined,
+  commandArgs: readonly string[],
+  cwd: string,
+): string | undefined {
+  if (list === undefined && commandArgs.some((arg) => !arg.startsWith("-"))) {
+    return REMOVE_SELF_LIST_FAILURE_MESSAGE;
+  }
+  return removeTargetsSelf(list ?? [], commandArgs, cwd) ? REMOVE_SELF_GUARD_MESSAGE : undefined;
+}
+
 function relationText(relation?: Relation): string { return `ahead ${relation?.ahead ?? 0}, behind ${relation?.behind ?? 0}`; }
 function changeText(item: WorktreeItem): string {
   const changes = item.worktree?.changes ?? {};
@@ -1102,8 +1117,10 @@ export default function extension(
   }
   async function removeSelfGuard(invocation: Invocation, cwd: string, signal?: AbortSignal): Promise<string | undefined> {
     if (invocation.command !== "remove") return undefined;
-    const blocked = removeTargetsSelf(await safeList(cwd, signal), invocation.commandArgs, cwd);
-    return blocked ? REMOVE_SELF_GUARD_MESSAGE : undefined;
+    // Strict list (not safeList): a failed discovery must not open the guard for explicit targets.
+    let items: WorktreeItem[] | undefined;
+    try { items = await client.list(cwd, signal); } catch { items = undefined; }
+    return removeSelfGuardDecision(items, invocation.commandArgs, cwd);
   }
   async function readWorktreeIdentity(cwd: string): Promise<RepositoryIdentity | undefined> {
     try {
