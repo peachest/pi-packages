@@ -74,7 +74,7 @@
     {
       "name": "mr",
       "entityType": "gitlab:mr",
-      "check": "glab api --hostname {host} projects/{project}/merge_requests/{mr_iid} | jq -r .state",
+      "check": "glab api --hostname {host} \"projects/$(jq -rn --arg p '{project}' '$p|@uri')/merge_requests/{mr_iid}\" | jq -r .state",
       "states": [
         "passed",
         "failed",
@@ -91,7 +91,7 @@
     {
       "name": "ci",
       "entityType": "gitlab:pipeline",
-      "check": "glab api --hostname {host} projects/{project}/pipelines/{pipeline_id} | jq -r .status",
+      "check": "glab api --hostname {host} \"projects/$(jq -rn --arg p '{project}' '$p|@uri')/pipelines/{pipeline_id}\" | jq -r .status",
       "states": [
         "passed",
         "failed",
@@ -103,7 +103,7 @@
       },
       "params": {
         "host": "GitLab 实例 host（双实例显式填）",
-        "project": "项目 id（数字或 URL 编码路径）",
+        "project": "项目 id（数字，如 21548——gitblue 对未编码路径 404；urlPattern 里 project 段建议直接用 id）",
         "pipeline_id": "pipeline id"
       },
       "usage": "CI pipeline 判定：终态 success→passed / failed/canceled→failed，进行中→waiting；节奏比 mr 密（30s）",
@@ -112,7 +112,7 @@
     {
       "name": "ticket",
       "entityType": "gitlab:ticket",
-      "check": "glab api --hostname {host} projects/{project}/issues/{issue_iid} | jq -r .state",
+      "check": "glab api --hostname {host} \"projects/$(jq -rn --arg p '{project}' '$p|@uri')/issues/{issue_iid}\" | jq -r .state",
       "states": [
         "passed",
         "failed",
