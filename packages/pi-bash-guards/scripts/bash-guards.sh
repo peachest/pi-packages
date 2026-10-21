@@ -61,27 +61,8 @@ if "__PI_SECRET_STORE__" in cmd:
     cmd = re.sub(r"^:\s*__PI_SECRET_STORE__\s*;.*?\bfi\s*;\s*", "", cmd, count=1, flags=re.S)
     code = [l.strip() for l in cmd.split("\n") if l.strip() and not l.strip().startswith("#")]
 
-# Override escape hatch (#138): an explicit marker comment in the command
-# text bypasses ALL guards for this one invocation, with a stderr warning as
-# the audit trail. Guards must never permanently block legitimate rescue
-# work; misuse of the marker still leaves this line behind.
-if re.search(r"#\s*guard-override\b", cmd):
-    print("guard-override: explicit marker found — guards bypassed for this "
-          "command (audit trail).", file=sys.stderr)
-    sys.exit(0)
-
-# ---- global guards (every session cwd) ----
-
-# 1. Whole command is a bare cd — a no-op, bash tool uses a fresh shell.
-if code and all(re.fullmatch(r"cd(\s+\S+)?", l) for l in code):
-    block("bare `cd <dir>` is a no-op: the bash tool runs each command in a "
-          "fresh shell, so the working directory does not persist. "
-          "Re-run as: (cd <dir> && <command>) — e.g. "
-          "(cd /mnt/disk1/hyx/projects/HAMi && git status) — or use absolute paths.")
-
-# 2. docker in command position — use sudo nerdctl (AGENTS.md).
-#    Probes (which/grep/systemctl/…) are allowed; only running docker blocks.
-PROBE = r"^(which|type|command\s+-v|whereis|grep|egrep|rg|ls|cat|tail|head|less|systemctl|journalctl|apt|apt-get|dpkg|nix|snap|find|stat)\b"
+# ---- command-position parsing (one shared model: override marker, guard 2,
+# R1-R4, guard 4, G1, P6) ----
 
 def _cmd_strip(s):
     # Shared command-position prefix normalization (guard 2 and _wt_segments
@@ -129,40 +110,6 @@ def _split_punct(line):
         out.append(("".join(buf), pend))
     return out
 
-for l in code:
-    for seg, _d in _split_punct(l):           # command positions in the line
-        s = seg.strip()
-        if re.match(r"^(ssh|scp|rsync)\b", s):
-            continue  # remote segment: quoted remote args (e.g. ssh host
-            # 'docker ps') mis-split below, and remote hosts manage their own
-            # docker — AGENTS.md rule is local-only. Later segments still scan.
-        s = _cmd_strip(s)
-        if not s or re.match(PROBE, s):
-            continue
-        if re.match(r"^docker(\s|$)", s):
-            block("docker is forbidden on this node (AGENTS.md). "
-                  "Re-run with nerdctl, same subcommand: `sudo nerdctl "
-                  + s[len("docker"):].strip() + "` — e.g. docker pull X → "
-                  "sudo nerdctl pull X. Images/containers are managed via "
-                  "sudo nerdctl; base images auto-pull to the buildkit namespace.")
-
-# 3. Raw worktree creation — wt owns worktree lifecycle (AGENTS.md).
-if re.search(r"\bgit\s+worktree\s+add\b", cmd):
-    block("raw `git worktree add` is forbidden (AGENTS.md): worktrees are "
-          "managed by wt, which computes sibling paths (~/projects/<repo>-"
-          "<branch-slug>) and runs dependency hooks. Re-run as: "
-          "`wt switch -c <branch>` — e.g. wt switch -c feat/x. Removal: "
-          "wt remove <branch>, never delete the directory by hand.")
-
-# ---- R1-R4: worktree lifecycle guards (#138, spec #137) ----
-# Matching discipline (spec #137 lesson): first-token-sequence anchored at
-# command positions only — never full-text substring. Rule 3 above matches
-# full-text and false-blocked heredoc document bodies twice during the spec
-# #137 creation (the body quoted the command literal); these rules must not
-# repeat that. Known limit: single-token global opts before the subcommand
-# (`git --git-dir=x worktree remove`) escape the pair-form opt skip — upgrade
-# if ever seen in the wild.
-
 def _wt_lines(text):
     # Lines with heredoc BODIES removed: body lines are document text, not
     # commands. The opener line is kept (it is a real command). Fail-open
@@ -198,6 +145,87 @@ def _wt_pairs(text):
 def _wt_segments(text):
     # Command positions within each line (same segment model as guard 2).
     return [seg for seg, _d in _wt_pairs(text) if seg]
+
+# Override escape hatch (#138): an explicit marker comment in the command
+# text bypasses ALL guards for this one invocation, with a stderr warning as
+# the audit trail. Guards must never permanently block legitimate rescue
+# work; misuse of the marker still leaves this line behind. rolling-r2 L68:
+# the marker is honored only where bash itself would start a comment — '#'
+# outside quotes, at line start or after whitespace, on a line that is not a
+# heredoc body (_wt_lines drops bodies). A marker quoted inside an argument
+# or pasted into documentation is text, not authorization.
+def _comment_start(line):
+    # Index where a real bash comment begins on this line, or None: '#'
+    # outside single/double quotes, preceded by line start or whitespace (a
+    # '#' glued to a word is part of that word in bash).
+    q = None
+    for i, ch in enumerate(line):
+        if q:
+            if ch == q:
+                q = None
+        elif ch in ("'", '"'):
+            q = ch
+        elif ch == "#" and (i == 0 or line[i - 1] in " \t"):
+            return i
+    return None
+
+_override = False
+for _l in _wt_lines(cmd):
+    _ci = _comment_start(_l)
+    if _ci is not None and re.match(r"#\s*guard-override\b", _l[_ci:]):
+        _override = True
+        break
+if _override:
+    print("guard-override: explicit marker found — guards bypassed for this "
+          "command (audit trail).", file=sys.stderr)
+    sys.exit(0)
+
+# ---- global guards (every session cwd) ----
+
+# 1. Whole command is a bare cd — a no-op, bash tool uses a fresh shell.
+if code and all(re.fullmatch(r"cd(\s+\S+)?", l) for l in code):
+    block("bare `cd <dir>` is a no-op: the bash tool runs each command in a "
+          "fresh shell, so the working directory does not persist. "
+          "Re-run as: (cd <dir> && <command>) — e.g. "
+          "(cd /mnt/disk1/hyx/projects/HAMi && git status) — or use absolute paths.")
+
+# 2. docker in command position — use sudo nerdctl (AGENTS.md).
+#    Probes (which/grep/systemctl/…) are allowed; only running docker blocks.
+PROBE = r"^(which|type|command\s+-v|whereis|grep|egrep|rg|ls|cat|tail|head|less|systemctl|journalctl|apt|apt-get|dpkg|nix|snap|find|stat)\b"
+
+for l in code:
+    for seg, _d in _split_punct(l):           # command positions in the line
+        s = seg.strip()
+        if re.match(r"^(ssh|scp|rsync)\b", s):
+            continue  # remote segment: quoted remote args (e.g. ssh host
+            # 'docker ps') mis-split below, and remote hosts manage their own
+            # docker — AGENTS.md rule is local-only. Later segments still scan.
+        s = _cmd_strip(s)
+        if not s or re.match(PROBE, s):
+            continue
+        if re.match(r"^docker(\s|$)", s):
+            block("docker is forbidden on this node (AGENTS.md). "
+                  "Re-run with nerdctl, same subcommand: `sudo nerdctl "
+                  + s[len("docker"):].strip() + "` — e.g. docker pull X → "
+                  "sudo nerdctl pull X. Images/containers are managed via "
+                  "sudo nerdctl; base images auto-pull to the buildkit namespace.")
+
+# 3. Raw worktree creation — wt owns worktree lifecycle (AGENTS.md).
+if re.search(r"\bgit\s+worktree\s+add\b", cmd):
+    block("raw `git worktree add` is forbidden (AGENTS.md): worktrees are "
+          "managed by wt, which computes sibling paths (~/projects/<repo>-"
+          "<branch-slug>) and runs dependency hooks. Re-run as: "
+          "`wt switch -c <branch>` — e.g. wt switch -c feat/x. Removal: "
+          "wt remove <branch>, never delete the directory by hand.")
+
+# ---- R1-R4: worktree lifecycle guards (#138, spec #137) ----
+# Matching discipline (spec #137 lesson): first-token-sequence anchored at
+# command positions only — never full-text substring. Rule 3 above matches
+# full-text and false-blocked heredoc document bodies twice during the spec
+# #137 creation (the body quoted the command literal); these rules must not
+# repeat that. Known limit: single-token global opts before the subcommand
+# (`git --git-dir=x worktree remove`) escape the pair-form opt skip — upgrade
+# if ever seen in the wild.
 
 # R1. Deleting/pruning worktrees by raw git — wt owns removal (it refuses to
 # remove the worktree the session sits in; raw git happily self-deletes the

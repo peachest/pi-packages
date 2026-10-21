@@ -225,6 +225,17 @@ expect 0 "quoted && literal is not a container cmd"   "$PROJ" "printf '%s\\n' 'a
 expect 0 "quoted remote cmd with ; still allowed"     "$PROJ" "ssh host 'true; ${D} ps'"
 expect 2 "genuine chained merge still blocked"        "$PROJ" "echo start; git merge origin/main"
 
+echo "== override marker only where a real bash comment starts (rolling-r2 L68) =="
+expect 2 "marker inside quoted string is not authorization" "$PROJ" "printf '%s\\n' '# guard-override: example'; git worktree prune"
+expect 2 "marker inside double quotes is not authorization" "$PROJ" "echo \"see # guard-override: docs\"; git worktree prune"
+expect 2 "marker inside heredoc body is not authorization"  "$PROJ" "cat <<'EOF'
+# guard-override: docs claim this bypasses
+EOF
+git worktree prune"
+expect 0 "trailing real comment still bypasses"       "$PROJ" "git worktree prune # guard-override: rescue"
+expect 0 "own-line comment marker still bypasses"     "$PROJ" "# guard-override: deliberate cleanup
+git worktree prune"
+
 echo
 echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" = 0 ]
