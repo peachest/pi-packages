@@ -204,6 +204,11 @@ expect 2 "while-wrapped container cmd blocked"       "$PROJ" "while ${D} ps; do 
 expect 2 "negated container cmd blocked"             "$PROJ" "! ${D} ps"
 expect 2 "brace-group container cmd blocked"          "$PROJ" "{ ${D} ps; }"
 expect 0 "if with probe cmd allowed"                  "$PROJ" "if grep -q x /f; then echo ok; fi"
+expect 2 "env-wrapped raw merge blocked"               "$PROJ" "env git merge origin/main"
+expect 2 "env-wrapped container cmd blocked"          "$PROJ" "env ${D} run x"
+expect 2 "nohup-wrapped container cmd blocked"        "$PROJ" "nohup ${D} ps"
+expect 2 "command-wrapped container cmd blocked"      "$PROJ" "command ${D} ps"
+expect 0 "command -v probe still allowed"             "$PROJ" "command -v ${D}"
 expect 2 "if-wrapped raw merge blocked"               "$PROJ" "if true; then git merge origin/main; fi"
 
 echo

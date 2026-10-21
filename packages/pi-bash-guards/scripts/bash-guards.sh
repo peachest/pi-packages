@@ -95,7 +95,7 @@ def _cmd_strip(s):
         s = re.sub(r"^(?:if|while|until|elif|then|else|do)\s+", "", s)  # compound keyword
         s = re.sub(r"^!\s*", "", s)                                     # negation
         s = re.sub(r"^(?:\w+=\S*\s+)+", "", s)   # env-var prefix
-        s = re.sub(r"^sudo\s+", "", s)
+        s = re.sub(r"^(?:sudo|env|command|nohup)\s+", "", s)  # transparent wrappers
         if s == _prev:
             break
     return s
