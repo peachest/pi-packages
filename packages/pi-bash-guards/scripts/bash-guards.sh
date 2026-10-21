@@ -29,7 +29,7 @@
 
 read -r payload
 python3 - "$payload" <<'PY'
-import json, os, re, subprocess, sys
+import json, os, re, shlex, subprocess, sys
 
 try:
     payload = json.loads(sys.argv[1])
@@ -60,6 +60,15 @@ cmd = re.sub(r"^rtk\s+", "", cmd)
 if "__PI_SECRET_STORE__" in cmd:
     cmd = re.sub(r"^:\s*__PI_SECRET_STORE__\s*;.*?\bfi\s*;\s*", "", cmd, count=1, flags=re.S)
     code = [l.strip() for l in cmd.split("\n") if l.strip() and not l.strip().startswith("#")]
+
+# Override escape hatch (#138): an explicit marker comment in the command
+# text bypasses ALL guards for this one invocation, with a stderr warning as
+# the audit trail. Guards must never permanently block legitimate rescue
+# work; misuse of the marker still leaves this line behind.
+if re.search(r"#\s*guard-override\b", cmd):
+    print("guard-override: explicit marker found — guards bypassed for this "
+          "command (audit trail).", file=sys.stderr)
+    sys.exit(0)
 
 # ---- global guards (every session cwd) ----
 
@@ -98,6 +107,138 @@ if re.search(r"\bgit\s+worktree\s+add\b", cmd):
           "<branch-slug>) and runs dependency hooks. Re-run as: "
           "`wt switch -c <branch>` — e.g. wt switch -c feat/x. Removal: "
           "wt remove <branch>, never delete the directory by hand.")
+
+# ---- R1-R4: worktree lifecycle guards (#138, spec #137) ----
+# Matching discipline (spec #137 lesson): first-token-sequence anchored at
+# command positions only — never full-text substring. Rule 3 above matches
+# full-text and false-blocked heredoc document bodies twice during the spec
+# #137 creation (the body quoted the command literal); these rules must not
+# repeat that. Known limit: single-token global opts before the subcommand
+# (`git --git-dir=x worktree remove`) escape the pair-form opt skip — upgrade
+# if ever seen in the wild.
+
+def _wt_lines(text):
+    # Lines with heredoc BODIES removed: body lines are document text, not
+    # commands. The opener line is kept (it is a real command). Fail-open
+    # direction only: a quoted "<<" in a non-heredoc line can fake a delimiter
+    # and hide later lines from these rules — missed block, never false block.
+    out, delim = [], None
+    for raw in text.split("\n"):
+        if delim is not None:
+            if raw.strip() == delim:
+                delim = None
+            continue
+        m = re.search(r"(?<!\S)<<-?\s*(['\"]?)([A-Za-z_]\w*)\1", raw)
+        if m:
+            delim = m.group(2)
+        out.append(raw)
+    return out
+
+def _wt_segments(text):
+    # Command positions within each line (same segment model as guard 2),
+    # after rtk-prefix strip, comment-line drop, env-prefix and sudo strip.
+    segs = []
+    for l in _wt_lines(text):
+        l = re.sub(r"^rtk\s+", "", l.strip())
+        if not l or l.startswith("#"):
+            continue
+        for seg in re.split(r"[|;()&]+", l):
+            s = seg.strip()
+            s = re.sub(r"^(?:\w+=\S*\s+)+", "", s)   # env-var prefix
+            s = re.sub(r"^sudo\s+", "", s)
+            if s:
+                segs.append(s)
+    return segs
+
+# R1. Deleting/pruning worktrees by raw git — wt owns removal (it refuses to
+# remove the worktree the session sits in; raw git happily self-deletes the
+# cwd: MR !688 HAMi cleanup, 2026-10-21 fix-eda-scan-fixes — bash deleted its
+# own cwd, spawn ENOENT, session stuck 2h).
+for _s in _wt_segments(cmd):
+    if re.match(r"^git\s+(?:-\S+\s+\S+\s+)*worktree\s+(?:remove|prune)(\s|$)", _s):
+        block("raw `git worktree remove/prune` destroys worktrees without the "
+              "safety checks wt has — twice this has deleted the directory a "
+              "running session sat in (MR !688 HAMi cleanup; 2026-10-21 "
+              "fix-eda-scan-fixes: bash deleted its own cwd → spawn ENOENT, "
+              "session dead 2h). Re-run with wt: `wt remove <branch>` — e.g. "
+              "`wt remove feat/x` (it refuses the worktree you are sitting "
+              "in). If this is documentation quoting the command, rephrase "
+              "the wording or base64 it — the guard reads command position "
+              "only. Genuine rescue need: append `# guard-override: <reason>`.")
+
+# R2. Merges by raw git bypass the merge discipline (pre-merge verify gate; a
+# session that dies mid-merge leaves conflict state behind). Canonical paths:
+# personal repos merge via the worktrunk tool; remote-already-merged syncs
+# via pull --ff-only. The git pull family is fully allowed.
+for _s in _wt_segments(cmd):
+    if re.match(r"^git\s+(?:-\S+\s+\S+\s+)*merge(\s|$)", _s) \
+            and not re.search(r"(^|\s)--ff-only(\s|$)", _s) \
+            and not re.search(r"(^|\s)--(?:abort|continue|quit)(\s|$)", _s):
+        block("raw `git merge` bypasses the merge discipline (pre-merge verify "
+              "gate; sessions have died mid-merge leaving conflict state "
+              "behind). Personal repos: merge with the worktrunk tool — "
+              "`wt merge` (verify + merge + session migration). If the remote "
+              "already contains the branch, sync instead: `git pull --ff-only` "
+              "— e.g. `git pull --ff-only origin main`. Genuine rescue need: "
+              "append `# guard-override: <reason>`.")
+
+# R3. Cross-branch checkout inside a linked worktree strands the session (the
+# worktree belongs to its branch; wt switch migrates the session along). The
+# trigger is cwd-based: in a linked worktree .git is a FILE; a main checkout
+# has a .git DIRECTORY and is never touched by this rule. File restores
+# (checkout -- <path>, checkout <rev> -- <path>, checkout <existing path>)
+# and new-branch creation (-b/-B/-c/-C/--orphan) stay allowed.
+if os.path.isfile(".git"):
+    for _s in _wt_segments(cmd):
+        _m = re.match(r"^git\s+(?:-\S+\s+\S+\s+)*(checkout|switch)(\s|$)", _s)
+        if not _m:
+            continue
+        try:
+            _args = shlex.split(_s[_m.end():])
+        except ValueError:
+            _args = _s[_m.end():].split()
+        _branch = None
+        _i = 0
+        while _i < len(_args):
+            _a = _args[_i]
+            if _a == "--":
+                break  # pathspec from here on: file restore
+            if _a in ("-b", "-B", "-c", "-C", "--orphan"):
+                break  # new branch in this tree: allowed
+            if _a in ("-t", "--track"):
+                _i += 2
+                continue
+            if _a.startswith("-"):
+                _i += 1
+                continue
+            _branch = _a
+            break
+        if _branch is None or ("--" in _args and _m.group(1) == "checkout"):
+            continue
+        if _m.group(1) == "checkout" and os.path.exists(_branch):
+            continue  # bare <path> restore — the path exists in this tree
+        block("`git checkout <branch>`/`git switch <branch>` inside a linked "
+              "worktree moves this tree off its branch and strands the "
+              "session (processes anchored to the old branch break — same "
+              "class as the !688 / 2026-10-21 cwd-deletion incidents). "
+              "Re-run with wt: `wt switch <branch>` — e.g. `wt switch main` "
+              "— which migrates the session with the checkout. File restores "
+              "(`git checkout -- <path>`) and new branch creation "
+              "(`git checkout -b <name>`) stay allowed. Genuine rescue need: "
+              "append `# guard-override: <reason>`.")
+
+# R4. wt merge -y/--yes skips the approval prompt — merging is the user's
+# decision (AGENTS.md); headless workers report the pending merge to the
+# parent instead of approving it themselves.
+for _s in _wt_segments(cmd):
+    if re.match(r"^wt\s+merge(\s|$)", _s) and re.search(r"(^|\s)(-y|--yes)(\s|$)", _s):
+        block("`wt merge -y/--yes` auto-approves the merge — merge approval is "
+              "the user's decision (AGENTS.md), not the agent's. Re-run "
+              "without -y/--yes and answer the prompt (`wt merge`), or stop "
+              "and report the pending merge to the parent/user session for "
+              "approval (headless convention: `wt merge --no-remove` + "
+              "report, never -y). Genuine rescue need: append "
+              "`# guard-override: <reason>`.")
 
 # 4. Skipping repo hooks: commit --no-verify|-n, push --no-verify.
 #    (git push -n means --dry-run, NOT --no-verify — do not blanket-match -n.)

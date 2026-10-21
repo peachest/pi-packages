@@ -15,6 +15,13 @@
  * multi-remote any-match semantics (github fork vs transwarp internal),
  * rtk wrapping, secret-store injection interplay, degrade paths.
  *
+ * Suite C (test-wt-lifecycle.sh): worktree lifecycle guards R1-R4 (#138,
+ * spec #137) — raw `git worktree remove/prune` -> wt remove, raw `git merge`
+ * -> wt merge / pull --ff-only, cross-branch checkout/switch in a linked
+ * worktree (.git is a file) -> wt switch, `wt merge -y` approval flag,
+ * `# guard-override:` bypass with stderr audit trail, rtk prefix, main vs
+ * linked worktree boundary, heredoc-body literal false-positive regression.
+ *
  * GUARD env override points the fixtures at any guard script; default is the
  * packaged source (scripts/bash-guards.sh), NOT the live synced copy — the
  * package tests its own source, `npm run sync` is responsible for parity.
@@ -97,6 +104,24 @@ describe("bash-guards fixture suite B (P6 multi-remote matrix)", () => {
 		// Fixture self-count: 29 t-calls minus 1 re-judged pair (PASS-1/FAIL-1
 		// in the pushDefault section documents the any-match semantic) = 27.
 		expect(r.pass).toBeGreaterThanOrEqual(27);
+	});
+});
+
+describe("bash-guards fixture suite C (worktree lifecycle R1-R4)", () => {
+	let sandbox: string;
+	beforeAll(() => {
+		// Suite C git-inits a main checkout + a linked worktree under
+		// $HOME/tmp/guardc-fixtures; point HOME at a sandbox like suite A.
+		sandbox = mkdtempSync(join(tmpdir(), "pi-bash-guards-c-"));
+		mkdirSync(join(sandbox, "tmp"), { recursive: true });
+	});
+	afterAll(() => rmSync(sandbox, { recursive: true, force: true }));
+
+	it("39 cases, zero failures", () => {
+		const r = runSuite("test-wt-lifecycle.sh", { HOME: sandbox });
+		console.log(r.output.split("\n").filter((l) => l.startsWith("FAIL")).join("\n"));
+		expect(r.fail, `suite C failures:\n${r.output.split("\n").filter((l) => l.includes("FAIL")).join("\n")}`).toBe(0);
+		expect(r.pass).toBeGreaterThanOrEqual(39);
 	});
 });
 

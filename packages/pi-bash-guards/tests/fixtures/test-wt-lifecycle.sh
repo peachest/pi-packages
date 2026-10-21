@@ -1,0 +1,167 @@
+#!/usr/bin/env bash
+# Fixture suite C — worktree lifecycle guards R1-R4 (#138, spec #137).
+# Pattern follows suite A (test-bash-guards.sh): table-driven, self-reporting
+# PASS/FAIL summary, exit non-zero on any failure. GUARD env points at the
+# guard under test (vitest injects the packaged source).
+#
+# Covers (issue #138):
+#   R1  raw `git worktree remove/prune` -> wt remove
+#       (incidents: MR !688 HAMi cleanup; 2026-10-21 fix-eda-scan-fixes —
+#        bash deleted its own cwd, spawn ENOENT, session stuck 2h)
+#   R2  raw `git merge` (non --ff-only) -> wt merge / git pull --ff-only;
+#       git pull family fully allowed
+#   R3  cross-branch `git checkout <branch>` / `git switch <branch>` inside a
+#       LINKED worktree (.git is a file) -> wt switch; main checkout (.git is
+#       a dir) never touched; file restores and -b/-c creation allowed
+#   R4  `wt merge -y/--yes` -> block (merge approval is the user's decision)
+#   override channel: `# guard-override:` marker comment -> allow + stderr
+#   audit warning
+#   rtk prefix penetration for every rule
+#   heredoc-body literal regression: document text quoting the guarded
+#   command literals must NOT block (spec #137 was false-blocked twice by
+#   full-text matching during its own creation)
+set -u
+GUARD="${GUARD:-$HOME/.pi/agent/kendex/hooks/bash-guards.sh}"
+PASS=0; FAIL=0
+
+PROJ="$HOME/.pi/agent/sessions/--mnt-disk1-hyx-projects--/2026-10-21T00-00-00-000Z_c.jsonl"
+
+json_for() {
+  python3 -c "
+import json,sys
+print(json.dumps({'tool_input':{'command':sys.argv[1]},'transcript_path':sys.argv[2],'session_id':'test'}))" "$1" "$2"
+}
+
+# All three helpers take an optional 5th cwd arg (suite B's t() pattern):
+# the cd happens inside the command-substitution subshell so PASS/FAIL stay
+# in this shell — R3's boundary cases need a real main-checkout vs linked-
+# worktree cwd, and counting them from a `( cd … && expect … )` subshell
+# would silently drop them from the self-report.
+
+# expect <exit> <label> <transcript_path> <command> [cwd]
+expect() {
+  local want="$1" label="$2" tp="$3" cmd="$4" dir="${5:-.}"
+  local out rc
+  out=$(json_for "$cmd" "$tp" | (cd "$dir" && bash "$GUARD") 2>&1)
+  rc=$?
+  if [ "$rc" = "$want" ]; then
+    PASS=$((PASS+1)); echo "PASS  $label"
+  else
+    FAIL=$((FAIL+1)); echo "FAIL  $label (want=$want got=$rc)"; echo "      out: ${out:0:160}"
+  fi
+}
+
+# expect_msg <label> <output-pattern> <transcript_path> <command> [cwd]
+# blocked (exit 2) AND the message names the correct replacement command
+# (acceptance: reason + correct command + example in every block message).
+expect_msg() {
+  local label="$1" pattern="$2" tp="$3" cmd="$4" dir="${5:-.}"
+  local out rc
+  out=$(json_for "$cmd" "$tp" | (cd "$dir" && bash "$GUARD") 2>&1)
+  rc=$?
+  if [ "$rc" = 2 ] && printf '%s' "$out" | grep -q -- "$pattern"; then
+    PASS=$((PASS+1)); echo "PASS  $label"
+  else
+    FAIL=$((FAIL+1)); echo "FAIL  $label (rc=$rc pattern='$pattern')"; echo "      out: ${out:0:160}"
+  fi
+}
+
+# expect_out <label> <exit> <output-pattern> <transcript_path> <command> [cwd]
+# arbitrary exit code with a required marker in combined output (stderr trail).
+expect_out() {
+  local label="$1" want="$2" pattern="$3" tp="$4" cmd="$5" dir="${6:-.}"
+  local out rc
+  out=$(json_for "$cmd" "$tp" | (cd "$dir" && bash "$GUARD") 2>&1)
+  rc=$?
+  if [ "$rc" = "$want" ] && printf '%s' "$out" | grep -q -- "$pattern"; then
+    PASS=$((PASS+1)); echo "PASS  $label"
+  else
+    FAIL=$((FAIL+1)); echo "FAIL  $label (want=$want got=$rc pattern='$pattern')"; echo "      out: ${out:0:160}"
+  fi
+}
+
+# ---- real git fixtures: main checkout (.git dir) + linked worktree (.git file)
+FX="$HOME/tmp/guardc-fixtures"
+rm -rf "$FX"; mkdir -p "$FX"
+MAIN="$FX/main-repo"
+git init -q "$MAIN"
+git -C "$MAIN" config user.email guardc@example.com
+git -C "$MAIN" config user.name guardc
+echo readme > "$MAIN/README.md"
+git -C "$MAIN" add README.md
+git -C "$MAIN" commit -qm init
+git -C "$MAIN" worktree add -q "$FX/linked-wt" -b side
+echo wt > "$FX/linked-wt/WT.md"
+git -C "$FX/linked-wt" add WT.md
+git -C "$FX/linked-wt" commit -qm wt-init
+LINKED="$FX/linked-wt"
+
+echo "== R1 worktree remove/prune (first-token anchored) =="
+expect 0 "worktree list allowed"                "$PROJ" "git worktree list"
+expect 0 "mid-line literal in echo allowed"     "$PROJ" "echo 'use wt remove, not git worktree remove'"
+expect 2 "worktree remove blocked"              "$PROJ" "git worktree remove ../pi-mypackage-feat-old"
+expect 2 "worktree prune blocked"               "$PROJ" "git worktree prune"
+expect 2 "worktree remove --force blocked"      "$PROJ" "git worktree remove --force ../x"
+expect 2 "rtk-prefixed prune blocked"           "$PROJ" "rtk git worktree prune"
+expect_msg "remove msg points to wt remove"     "wt remove" "$PROJ" "git worktree remove ../x"
+
+echo "== R2 raw merge (pull family + --ff-only allowed) =="
+expect 0 "git pull allowed"                     "$PROJ" "git pull"
+expect 0 "pull --ff-only allowed"               "$PROJ" "git pull --ff-only origin main"
+expect 0 "merge --ff-only allowed"              "$PROJ" "git merge --ff-only origin/main"
+expect 0 "merge --abort allowed (rescue)"       "$PROJ" "git merge --abort"
+expect 2 "raw merge blocked"                    "$PROJ" "git merge origin/feat/wt-guardrails"
+expect 2 "merge --no-ff blocked"                "$PROJ" "git merge --no-ff feat/x"
+expect 2 "chained merge segment blocked"        "$PROJ" "git fetch origin && git merge origin/main"
+expect 2 "rtk-prefixed merge blocked"           "$PROJ" "rtk git merge feat/x"
+expect_msg "merge msg points to wt merge / pull --ff-only" "pull --ff-only" "$PROJ" "git merge origin/main"
+
+echo "== R3 cross-branch in linked worktree (.git is a file) =="
+expect 2 "checkout branch blocked"            "$PROJ" "git checkout main" "$LINKED"
+expect 2 "switch branch blocked"              "$PROJ" "git switch main" "$LINKED"
+expect 2 "checkout -f branch blocked"         "$PROJ" "git checkout -f main" "$LINKED"
+expect 2 "checkout detached rev blocked"      "$PROJ" "git checkout origin/main" "$LINKED"
+expect 0 "checkout -- file allowed"           "$PROJ" "git checkout -- README.md" "$LINKED"
+expect 0 "checkout existing path allowed"     "$PROJ" "git checkout README.md" "$LINKED"
+expect 0 "checkout -b allowed"                "$PROJ" "git checkout -b nb2" "$LINKED"
+expect 0 "switch -c allowed"                  "$PROJ" "git switch -c nb3" "$LINKED"
+expect 0 "checkout rev -- path allowed"       "$PROJ" "git checkout origin/main -- README.md" "$LINKED"
+expect_msg "r3 msg points to wt switch" "wt switch" "$PROJ" "git checkout main" "$LINKED"
+
+echo "== R3 boundary: main checkout (.git is a dir) never blocked =="
+expect 0 "main checkout branch allowed"       "$PROJ" "git checkout main" "$MAIN"
+expect 0 "main checkout switch allowed"       "$PROJ" "git switch side" "$MAIN"
+
+echo "== R4 wt merge approval flag =="
+expect 2 "wt merge -y blocked"                  "$PROJ" "wt merge -y"
+expect 2 "wt merge --yes blocked"               "$PROJ" "wt merge --yes"
+expect 2 "rtk wt merge -y blocked"              "$PROJ" "rtk wt merge -y"
+expect 0 "wt merge plain allowed"               "$PROJ" "wt merge"
+expect 0 "wt merge --no-remove allowed"         "$PROJ" "wt merge --no-remove"
+expect_msg "r4 msg names the approval rule"     "approval" "$PROJ" "wt merge -y"
+
+echo "== override channel (# guard-override: marker) =="
+expect 0 "override marker allows worktree remove" "$PROJ" "git worktree remove ../x # guard-override: rescue"
+expect 0 "override marker allows wt merge -y"   "$PROJ" "wt merge -y # guard-override: user pre-approved"
+expect 0 "override marker on own line allows"   "$PROJ" "# guard-override: deliberate cleanup
+git worktree prune"
+expect_out "override leaves stderr audit trail" 0 "guard-override" "$PROJ" "git worktree prune # guard-override: x"
+
+echo "== heredoc body literals must not trip R1/R2 (spec #137 creation incident) =="
+DOC=$(cat <<'FEOF'
+gh issue create --title wt-guard-spec --body "$(cat <<'EOF'
+## R1 删树/剪枝
+- `git worktree` 的 remove/prune 子命令 → 指向 `wt remove`
+- raw `git merge` → 指向 wt merge 或 git pull --ff-only
+文档代码块示例（非命令）:
+git worktree remove ../demo
+git merge origin/main --no-ff
+EOF
+)"
+FEOF
+)
+expect 0 "heredoc doc body not blocked"         "$PROJ" "$DOC"
+
+echo
+echo "PASS=$PASS FAIL=$FAIL"
+[ "$FAIL" = 0 ]
