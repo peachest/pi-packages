@@ -75,6 +75,18 @@ export function createDeliver(ctx: LoopsCtx, deps: DeliverDeps) {
   const consumedOutbox = new Set<string>();
   /** outbox 未决标记（评审 H6）：fanOut 消费中防 onWrite 重入 deliverScan 双发；成功转 consumed、失败清除待重试。 */
   const inProgressOutbox = new Set<string>();
+  /** 票 127（scan-③）：待序水位标记 seq→notificationId（连续前缀推进的暂存区）。 */
+  const pendingMarks = new Map<number, string>();
+  /** 连续前缀 flush：从 watermark+1 起把已成功的连续段按序 mark 进 store。 */
+  const flushContiguousMarks = (): void => {
+    for (;;) {
+      const next = ctx.store.fanOutWatermark() + 1;
+      const id = pendingMarks.get(next);
+      if (id === undefined) break;
+      pendingMarks.delete(next);
+      ctx.store.markFanOutConsumed(id, next);
+    }
+  };
   const ownerEpoch = ctx.ownerEpoch ?? 0;
   // 评审 H3：重启种子——簿记是 L2 runtime（重启清零 = 24h 窗口重新计时，R1 A5 归零重探同精神），
   // 但 accepted 行既不在 pendingDeliveries（只含 pending）也不经 drain（只读 parked）：不播种则
@@ -273,7 +285,8 @@ export function createDeliver(ctx: LoopsCtx, deps: DeliverDeps) {
     if (stopped) return;
     // outbox 消费（票 11 落点：投递循环消费 outbox → L0 队列内 fanOut 编址；fire-once，fanOut 幂等兑底重启重放）。
     // 评审 H6：in-progress 防重入（fanOut 提交回调 onWrite 同 tick 重入）+ 成功才消费（apply fanOut 分支）——
-    // withRetry 耗尽（临时 Store 故障）只进 errors，未决标记清除后由下个兜底 tick 重试，投递不丢。
+    // withRetry 耗尽（临时 Store 故障）只进 errors，未决标记清除后由下个兜底 tick 重试——
+    // 票 127：水位连续前缀推进保证失败行不被后续成功行的 mark 跳过（重试语义真实成立）。
     // 票 123（候选2 D1 拍板：持久水位入 store）：游标增量读替代 O(历史) 全扫；重启续读水位，
     // 崩溃窗口（fanOut 成功与 mark 之间）重放由 I10 幂等兑底（多一次幂等 fanOut 不丢投递）。
     for (const row of ctx.store.outboxUnconsumed(ctx.store.fanOutWatermark())) {
@@ -361,9 +374,15 @@ export function createDeliver(ctx: LoopsCtx, deps: DeliverDeps) {
     try {
       const result = fanOut(notificationId, { activeSessions: fanOutSessions() });
       consumedOutbox.add(notificationId);
-      // 票 123：持久水位推进（eventSeq 从事件行读——outbox.notificationId 1:1 eventSeq）
+      // 票 127（scan-③）：水位连续前缀推进——失败行（L0 队不死，fanOut 抛错进 errors 继续）不得被
+      // 后续成功行的 mark 跳过（旧 MAX 推进会让失败行被游标永久排除 = 静默丢投递）。
+      // 成功行 seq > watermark+1 时暂存 pendingMarks（内存），待缺口补上按序 flush；
+      // 重启丢 pendingMarks → outboxUnconsumed 重扫重放（I10 幂等兑底），不丢投递。
       const evRow = ctx.store.tx((tx) => tx.getEvent(notificationId));
-      if (evRow) ctx.store.markFanOutConsumed(notificationId, evRow.eventSeq);
+      if (evRow) {
+        pendingMarks.set(evRow.eventSeq, notificationId);
+        flushContiguousMarks();
+      }
       // 票 44：Transitioned 沿广播——每次事件消费后向全部注册连接推一行观测沿（best-effort）。
       // 观察面板（herdr 订阅面板）靠它做沿驱动刷新：离线 session 的投递行进 parked 不推 wake，
       // 无此沿则面板对离线订阅永无刷新触发。沿是刷新触发非投递：0 送达不重试，面板下一沿/手动刷新追平。
