@@ -8,7 +8,8 @@
 #
 # What it does:
 #   1. Verifies upstream/ matches HEAD (staged drift included — abort otherwise; patch fully applied).
-#   2. Replaces worktrunk.ts + package.json + LICENSE from the extracted upstream dir
+#   2. Validates the extracted package (all three payload files readable) and stages it in a
+#      temp dir BEFORE touching upstream/, then replaces worktrunk.ts + package.json + LICENSE
 #      (README.md intentionally not copied — upstream README describes the unpatched tool).
 #   3. Replays lite.patch with plain git apply (--3way would fail against the
 #      patched blob in the index). NOTE: inside a work tree git apply resolves
@@ -31,10 +32,15 @@ git -C "$HERE" diff --quiet HEAD -- upstream/ || {
   exit 1
 }
 
-# 2. refresh upstream payload
+# 2. stage + validate the replacement payload before touching upstream/
+STAGE="$(mktemp -d)"
+trap 'rm -rf "$STAGE"' EXIT
+for name in worktrunk.ts package.json LICENSE; do
+  [ -r "$SRC/$name" ] || { echo "ERROR: $SRC/$name missing/unreadable; incomplete extracted package." >&2; exit 1; }
+  cp -a "$SRC/$name" "$STAGE/$name"
+done
 rm -f "$UP/worktrunk.ts" "$UP/package.json" "$UP/LICENSE"
-cp -a "$SRC/worktrunk.ts" "$SRC/package.json" "$UP/"
-[ -f "$SRC/LICENSE" ] && cp -a "$SRC/LICENSE" "$UP/"
+cp -a "$STAGE/worktrunk.ts" "$STAGE/package.json" "$STAGE/LICENSE" "$UP/"
 
 # 3. replay the patch; fail loudly on conflict
 TOP="$(git -C "$HERE" rev-parse --show-toplevel)"
