@@ -143,6 +143,17 @@ echo "== R3 boundary: main checkout (.git is a dir) never blocked =="
 expect 0 "main checkout branch allowed"       "$PROJ" "git checkout main" "$MAIN"
 expect 0 "main checkout switch allowed"       "$PROJ" "git switch side" "$MAIN"
 
+echo "== R3 cd/subshell resolution (rolling-r1 L191) =="
+# Hook cwd = MAIN (the incident shape: session sits in a main checkout); the
+# checkout targets the linked worktree through a cd the guard must follow.
+expect 2 "subshell cd into linked wt blocked"  "$PROJ" "(cd $LINKED && git checkout main)" "$MAIN"
+expect 2 "plain cd into linked wt blocked"     "$PROJ" "cd $LINKED && git checkout main" "$MAIN"
+expect 2 "multi-line cd into linked wt blocked" "$PROJ" "cd $LINKED
+git checkout main" "$MAIN"
+expect 0 "subshell cd into main checkout allowed" "$PROJ" "(cd $MAIN && git checkout main)" "$MAIN"
+expect 0 "subshell pop restores outer cwd"     "$PROJ" "(cd $LINKED && git status); git checkout main" "$MAIN"
+expect 0 "file restore via subshell cd allowed" "$PROJ" "(cd $LINKED && git checkout -- README.md)" "$MAIN"
+
 echo "== R4 wt merge approval flag =="
 expect 2 "wt merge -y blocked"                  "$PROJ" "wt merge -y"
 expect 2 "wt merge --yes blocked"               "$PROJ" "wt merge --yes"

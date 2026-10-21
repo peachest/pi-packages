@@ -82,6 +82,15 @@ if code and all(re.fullmatch(r"cd(\s+\S+)?", l) for l in code):
 # 2. docker in command position — use sudo nerdctl (AGENTS.md).
 #    Probes (which/grep/systemctl/…) are allowed; only running docker blocks.
 PROBE = r"^(which|type|command\s+-v|whereis|grep|egrep|rg|ls|cat|tail|head|less|systemctl|journalctl|apt|apt-get|dpkg|nix|snap|find|stat)\b"
+
+def _cmd_strip(s):
+    # Shared command-position prefix normalization (guard 2 and _wt_segments
+    # must stay one model): env-var assignments and sudo do not change which
+    # command runs.
+    s = re.sub(r"^(?:\w+=\S*\s+)+", "", s)   # env-var prefix
+    s = re.sub(r"^sudo\s+", "", s)
+    return s
+
 for l in code:
     for seg in re.split(r"[|;()&]+", l):          # command positions in the line
         s = seg.strip()
@@ -89,8 +98,7 @@ for l in code:
             continue  # remote segment: quoted remote args (e.g. ssh host
             # 'docker ps') mis-split below, and remote hosts manage their own
             # docker — AGENTS.md rule is local-only. Later segments still scan.
-        s = re.sub(r"^(?:\w+=\S*\s+)+", "", s)   # env-var prefix
-        s = re.sub(r"^sudo\s+", "", s)
+        s = _cmd_strip(s)
         if not s or re.match(PROBE, s):
             continue
         if re.match(r"^docker(\s|$)", s):
@@ -134,21 +142,25 @@ def _wt_lines(text):
         out.append(raw)
     return out
 
-def _wt_segments(text):
-    # Command positions within each line (same segment model as guard 2),
-    # after rtk-prefix strip, comment-line drop, env-prefix and sudo strip.
-    segs = []
+def _wt_pairs(text):
+    # (segment, preceding-delimiter) pairs with the _wt_segments normalization
+    # (heredoc bodies dropped, comment lines skipped, rtk stripped, prefixes
+    # stripped). The delimiter lets callers track subshell depth: R3 must
+    # judge `(cd X && git checkout …)` by X, not by the hook process cwd
+    # (rolling-r1 L191).
+    pairs = []
     for l in _wt_lines(text):
         l = re.sub(r"^rtk\s+", "", l.strip())
         if not l or l.startswith("#"):
             continue
-        for seg in re.split(r"[|;()&]+", l):
-            s = seg.strip()
-            s = re.sub(r"^(?:\w+=\S*\s+)+", "", s)   # env-var prefix
-            s = re.sub(r"^sudo\s+", "", s)
-            if s:
-                segs.append(s)
-    return segs
+        parts = re.split(r"([|;()&]+)", l)
+        for _i in range(0, len(parts), 2):
+            pairs.append((_cmd_strip(parts[_i].strip()), parts[_i - 1] if _i else ""))
+    return pairs
+
+def _wt_segments(text):
+    # Command positions within each line (same segment model as guard 2).
+    return [seg for seg, _d in _wt_pairs(text) if seg]
 
 # R1. Deleting/pruning worktrees by raw git — wt owns removal (it refuses to
 # remove the worktree the session sits in; raw git happily self-deletes the
@@ -185,47 +197,72 @@ for _s in _wt_segments(cmd):
 # R3. Cross-branch checkout inside a linked worktree strands the session (the
 # worktree belongs to its branch; wt switch migrates the session along). The
 # trigger is cwd-based: in a linked worktree .git is a FILE; a main checkout
-# has a .git DIRECTORY and is never touched by this rule. File restores
+# has a .git DIRECTORY and is never touched by this rule. rolling-r1 L191:
+# the .git test follows the COMMAND's directory, not the hook process cwd —
+# `cd <linked> && git checkout main` (subshell or plain) escaped when the
+# hook ran from a main checkout. Delimiters from _wt_pairs track subshell
+# depth: a cd inside ( … ) is popped when the group closes. File restores
 # (checkout -- <path>, checkout <rev> -- <path>, checkout <existing path>)
 # and new-branch creation (-b/-B/-c/-C/--orphan) stay allowed.
-if os.path.isfile(".git"):
-    for _s in _wt_segments(cmd):
-        _m = re.match(r"^git\s+(?:-\S+\s+\S+\s+)*(checkout|switch)(\s|$)", _s)
-        if not _m:
-            continue
+_cur = os.getcwd()
+_r3_stack = []
+for _seg, _delim in _wt_pairs(cmd):
+    for _ch in _delim:                       # subshell depth, before the segment
+        if _ch == "(":
+            _r3_stack.append(_cur)
+        elif _ch == ")" and _r3_stack:
+            _cur = _r3_stack.pop()
+    if not _seg:
+        continue
+    _mcd = re.match(r"^cd\b\s*(.*)$", _seg)
+    if _mcd:
         try:
-            _args = shlex.split(_s[_m.end():])
+            _toks = shlex.split(_mcd.group(1).strip())
         except ValueError:
-            _args = _s[_m.end():].split()
-        _branch = None
-        _i = 0
-        while _i < len(_args):
-            _a = _args[_i]
-            if _a == "--":
-                break  # pathspec from here on: file restore
-            if _a in ("-b", "-B", "-c", "-C", "--orphan"):
-                break  # new branch in this tree: allowed
-            if _a in ("-t", "--track"):
-                _i += 2
-                continue
-            if _a.startswith("-"):
-                _i += 1
-                continue
-            _branch = _a
-            break
-        if _branch is None or ("--" in _args and _m.group(1) == "checkout"):
+            _toks = _mcd.group(1).split()
+        _tgt = next((_t for _t in _toks if _t != "--" and not _t.startswith("-")), None)
+        if _tgt is None:
+            _cur = os.path.expanduser("~")    # bare `cd` → HOME
+        elif _tgt != "-":                     # `cd -`: OLDPWD unknowable, keep
+            _tgt = os.path.expanduser(_tgt)
+            _cur = os.path.normpath(_tgt if os.path.isabs(_tgt) else os.path.join(_cur, _tgt))
+        continue
+    _m = re.match(r"^git\s+(?:-\S+\s+\S+\s+)*(checkout|switch)(\s|$)", _seg)
+    if not _m or not os.path.isfile(os.path.join(_cur, ".git")):
+        continue
+    try:
+        _args = shlex.split(_seg[_m.end():])
+    except ValueError:
+        _args = _seg[_m.end():].split()
+    _branch = None
+    _i = 0
+    while _i < len(_args):
+        _a = _args[_i]
+        if _a == "--":
+            break  # pathspec from here on: file restore
+        if _a in ("-b", "-B", "-c", "-C", "--orphan"):
+            break  # new branch in this tree: allowed
+        if _a in ("-t", "--track"):
+            _i += 2
             continue
-        if _m.group(1) == "checkout" and os.path.exists(_branch):
-            continue  # bare <path> restore — the path exists in this tree
-        block("`git checkout <branch>`/`git switch <branch>` inside a linked "
-              "worktree moves this tree off its branch and strands the "
-              "session (processes anchored to the old branch break — same "
-              "class as the !688 / 2026-10-21 cwd-deletion incidents). "
-              "Re-run with wt: `wt switch <branch>` — e.g. `wt switch main` "
-              "— which migrates the session with the checkout. File restores "
-              "(`git checkout -- <path>`) and new branch creation "
-              "(`git checkout -b <name>`) stay allowed. Genuine rescue need: "
-              "append `# guard-override: <reason>`.")
+        if _a.startswith("-"):
+            _i += 1
+            continue
+        _branch = _a
+        break
+    if _branch is None or ("--" in _args and _m.group(1) == "checkout"):
+        continue
+    if _m.group(1) == "checkout" and os.path.exists(os.path.join(_cur, _branch)):
+        continue  # bare <path> restore — the path exists in this tree
+    block("`git checkout <branch>`/`git switch <branch>` inside a linked "
+          "worktree moves this tree off its branch and strands the "
+          "session (processes anchored to the old branch break — same "
+          "class as the !688 / 2026-10-21 cwd-deletion incidents). "
+          "Re-run with wt: `wt switch <branch>` — e.g. `wt switch main` "
+          "— which migrates the session with the checkout. File restores "
+          "(`git checkout -- <path>`) and new branch creation "
+          "(`git checkout -b <name>`) stay allowed. Genuine rescue need: "
+          "append `# guard-override: <reason>`.")
 
 # R4. wt merge -y/--yes skips the approval prompt — merging is the user's
 # decision (AGENTS.md); headless workers report the pending merge to the
