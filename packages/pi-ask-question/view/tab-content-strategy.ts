@@ -3,7 +3,7 @@ import { type Component, Container, type Editor, Spacer, Text, truncateToWidth }
 import { COLLAPSE_KEY_OFF, formatKeySpecForDisplay } from "../config.ts";
 import { t } from "../state/i18n-bridge.ts";
 import { selectSavedNote } from "../state/selectors/derivations.ts";
-import { formatAnswerScalar } from "../tool/format-answer.ts";
+import { formatAnswerScalar, formatMultiCheckedLine, formatMultiCustomLine } from "../tool/format-answer.ts";
 import type { QuestionData } from "../tool/types.ts";
 import type { PreviewPane, PreviewPaneProps } from "./components/preview/preview-pane.ts";
 import type { DialogState } from "./dialog-builder.ts";
@@ -31,6 +31,8 @@ const REVIEW_GLOBAL_HINT = "n to add a note";
 const REVIEW_NOTE_LABEL = "Note";
 /** Label for a question's saved note — the question tab's resting row and the review entry (#197). */
 const SAVED_NOTE_LABEL = "Note for this answer:";
+/** Coexistence note on the multi-select custom half — mirrors the formatAnswerScalar merge semantics (#133). */
+const MULTI_CUSTOM_COEXIST = "（与勾选项同时生效）";
 
 /**
  * Single-row, width-clipped chrome cell. The footer row count is invariant
@@ -200,11 +202,29 @@ export class SubmitTabStrategy implements TabContentStrategy {
 			const a = state.answers.get(i);
 			if (!a) continue;
 			const label = q.header && q.header.length > 0 ? q.header : `Q${i + 1}`;
-			const answerText = formatAnswerScalar(a, "summary");
 			c.addChild(new Text(this.config.theme.fg("muted", ` ● ${label}`), 1, 0));
-			c.addChild(
-				new Text(`   ${this.config.theme.fg("muted", "→")} ${this.config.theme.fg("text", answerText)}`, 1, 0),
-			);
+			if (a.kind === "multi") {
+				// Two-line merge preview (#133): the checked half on the answer row, the custom
+				// half as a sub-line (notes-row indent) so the coexistence reads as ONE answer.
+				c.addChild(
+					new Text(
+						`   ${this.config.theme.fg("muted", "→")} ${this.config.theme.fg("text", formatMultiCheckedLine(a))}`,
+						1,
+						0,
+					),
+				);
+				const customLine = formatMultiCustomLine(a);
+				if (customLine) {
+					c.addChild(
+						new Text(`     ${this.config.theme.fg("text", `${customLine}${MULTI_CUSTOM_COEXIST}`)}`, 1, 0),
+					);
+				}
+			} else {
+				const answerText = formatAnswerScalar(a, "summary");
+				c.addChild(
+					new Text(`   ${this.config.theme.fg("muted", "→")} ${this.config.theme.fg("text", answerText)}`, 1, 0),
+				);
+			}
 			if (a.notes && a.notes.length > 0) {
 				c.addChild(
 					new Text(

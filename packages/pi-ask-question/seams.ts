@@ -22,7 +22,7 @@ export type { QuestionnaireAction } from "./state/key-router.ts";
 export type { Effect, ApplyContext } from "./state/state-reducer.ts";
 export type { QuestionnaireState } from "./state/state.ts";
 // formatters + response envelope
-export { formatAnswerScalar } from "./tool/format-answer.ts";
+export { formatAnswerScalar, NO_INPUT_PLACEHOLDER } from "./tool/format-answer.ts";
 export {
 	buildQuestionnaireResponse,
 	buildAnswerSegment,

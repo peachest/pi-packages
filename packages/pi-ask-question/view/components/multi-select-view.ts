@@ -160,21 +160,29 @@ export class MultiSelectView implements StatefulView<MultiSelectViewProps> {
 		const continuationPrefix = " ".repeat(visibleWidth(rowPrefix));
 		const selectedText = (text: string) => this.theme.fg("accent", this.theme.bold(text));
 
-		if (other.active && other.inputMode) {
-			return renderInlineInputRow({
-				buffer: other.inputBuffer,
-				cursorOffset: other.inputCursorOffset,
-				rowPrefix,
-				continuationPrefix,
-				contentWidth,
-				selectedText,
-			});
-		}
+		const inputLines =
+			other.active && other.inputMode
+				? renderInlineInputRow({
+						buffer: other.inputBuffer,
+						cursorOffset: other.inputCursorOffset,
+						rowPrefix,
+						continuationPrefix,
+						contentWidth,
+						selectedText,
+					})
+				: wrapTextWithAnsi(other.inputBuffer || displayLabel("other"), contentWidth).map((segment, index) => {
+						const line = `${index === 0 ? rowPrefix : continuationPrefix}${segment}`;
+						return other.active ? selectedText(line) : line;
+					});
 
-		return wrapTextWithAnsi(other.inputBuffer || displayLabel("other"), contentWidth).map((segment, index) => {
-			const line = `${index === 0 ? rowPrefix : continuationPrefix}${segment}`;
-			return other.active ? selectedText(line) : line;
-		});
+		// Live merged echo (#133): mirrors the reducer's checked+custom coexistence so the
+		// user sees the combined answer under the editor before committing.
+		if (other.inputBuffer.length === 0) return inputLines;
+		const checked = this.question.options.flatMap((opt, i) =>
+			this.props.rows[i]?.checked ? [`[✔ ${opt.label}]`] : [],
+		);
+		const echo = `${continuationPrefix}${this.theme.fg("muted", truncateToWidth([...checked, `＋ 自定义: "${other.inputBuffer}"`].join(" "), contentWidth, "…"))}`;
+		return [...inputLines, echo];
 	}
 
 	private prefixVisibleWidth(): number {
