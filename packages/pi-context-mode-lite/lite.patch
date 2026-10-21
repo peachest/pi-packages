@@ -12,7 +12,7 @@
 +    // 审计建议：给保留工具写量化触发判据 + 小输出反例，压 echo/sleep 类小输出旁路（62% 调用 <2KB）。
 +    const DESCRIPTION_OVERRIDES = {
 +        "ctx_execute":
-+            "Run code over data when ordinary tools do not fit. Use ONLY when: (a) a command's raw output exceeds ~5KB and would flood context, or (b) you need to filter/aggregate/parse large output and print only a small derived summary. Do NOT use for short fixed outputs (single lines, small listings) — call bash/read directly; the sandbox wrapper costs more tokens than it saves there. Multiple related commands → prefer ctx_batch_execute.",
++            "Run code over data when ordinary tools do not fit. Use ONLY when: (a) a command's raw output exceeds ~5KB and would flood context, or (b) you need to filter/aggregate/parse large output and print only a small derived summary. Do NOT use for short fixed outputs (single lines, small listings) — call bash/read directly; the sandbox wrapper costs more tokens than it saves there. Multiple related commands → prefer ctx_batch_execute. timeout is in MILLISECONDS (60000 = 60s, not 60s — passing 60 means 60ms); omit it for no server-side timer.",
 +        "ctx_batch_execute":
 +            "Run 3+ related commands in ONE call and query their combined output. Use ONLY when: total raw output exceeds ~5KB, or you would otherwise run several sequential greps/reads over large artifacts. Do NOT use for a single short command — call bash directly. Pass `queries` covering every question you have about the output.",
 +    };
