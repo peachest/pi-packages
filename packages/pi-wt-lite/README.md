@@ -47,3 +47,7 @@ diff -u --label a/upstream/package.json --label b/upstream/package.json <pristin
 历史上首次迁移（旧 skills 仓 `d972f3c:extensions/pi-wt-lite.ts` → 本包）的零行为变化等价性已于 2026-10-21 验证，持续的等价性证明由 `verify.sh` 承担。
 
 安装方式见仓库根 AGENTS.md（`pi install` 规范）；settings.json 中原 `../../skills` 扩展目录条目保留（仍服务 pi-herdr-peer.ts），本包以 `../../projects/pi-mypackage/packages/pi-wt-lite` 相对路径条目接入。
+
+## 已知债（spec#137 review 裁定）
+
+- **上游双注册**：pristine worktrunk.ts 在模块顶层与 session_start 各调一次 registerTool()（L1563/L1585）——上游既有行为，pi 实测容忍；按 vendor 纪律不写注释进 pristine，记录于此。若 pi 未来严格化重复注册，需在 lite.patch 加幂等守卫。

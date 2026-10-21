@@ -70,3 +70,8 @@ vitest 包一层 spawn bash 跑三套原始 fixture（`tests/fixtures/*.sh` 原�
 ## 证据链
 
 四轮挖掘合成报告（hook-candidates）与历史备份原在 `~/tmp/hook-mining/`（易失），本包内 `tests/fixtures/` 为测试正本；挖掘方法论见 skills 仓 `in-progress/hook-me`。变更记录：见 git log 与脚本头注释。
+
+## 已知债（spec#137 review 裁定 backlog）
+
+- **全文匹配债**：guard-3（worktree add）、P2（git add -A）、P3（sleep）仍是全文正则，heredoc 正文/echo 字面量会误拦（r1 L103/L309、r3 L243/489/500×2）——修复专项 = 统一解析入口重构（架构候选 2），届时四变体收敛为一个 parse seam。
+- **P6 注释重复**：两处同义注释待合并（顺带清理项）。
