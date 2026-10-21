@@ -6,7 +6,7 @@ vendored [pi-worktrunk](https://github.com/mavam/pi-worktrunk)（npm `0.12.2`，
 
 worktrunk 工具由本地 vendored 扩展提供（`wt` v0.77.0 配套），有两处手改：
 
-1. **`buildReference` 替换为 `COMPACT_REFERENCE` 常量**：上游每次调用会对已安装 wt 的每个子命令跑 `--help-md` 探测（`HELP_PROBE_CONCURRENCY=8`）生成全量命令目录，token 开销大且每次启动重打。改为手写的常用子集参考（switch/remove/list/merge/step，其余子命令指引走 bash `wt <cmd> --help`）。
+1. **`buildReference` 替换为 `COMPACT_REFERENCE` 常量**：上游每次调用会对已安装 wt 的每个子命令跑 `--help-md` 探测（`HELP_PROBE_CONCURRENCY=8`）生成全量命令目录，token 开销大且每次启动重打。改为手写的常用子集参考（switch/remove/list/merge/step，其余子命令指引走 bash `wt <cmd> --help`）。调用点删除后，整条死掉的 reference 生成管线（buildReference/renderReference/formatReference/truncateReference/mapConcurrent/attributeExamples/renderToolExample/firstSentence 及两个管线常量）在 patch 内一并删除，parseCommand/parseSectionEntries 等解析工具保留。
 2. **`registerTool` description/promptGuidelines 压缩**：与紧凑参考对齐，去掉生成目录相关表述，强调 args 不重复命令名、codemode queued 即停。
 
 ## 结构
