@@ -38,11 +38,12 @@ diff -u --label a/upstream/package.json --label b/upstream/package.json <pristin
 
 ## 验证
 
-patched 产物与迁移源逐字节一致（零行为变化，2026-10-21 验证）：
+`verify.sh` 把「发布物与源一致」从手工纪律变成可执行不变量，四步链：npm pristine（`npm pack pi-worktrunk@<upstream/package.json 的 version>` 解包到干净临时目录）→ 应用 lite.patch → 产物与 `upstream/` 三文件逐字节 cmp → `node tests/remove-self-guard.test.mjs` 行为断言。
 
-```bash
-diff upstream/worktrunk.ts <(git -C <旧skills仓> show d972f3c:extensions/pi-wt-lite.ts)  # 应无输出
-node -e "import('./upstream/worktrunk.ts').then(()=>console.log('ok'))"  # 语法冒烟（需 node >=24 strip-types 环境）
-```
+**何时跑**：每次 `sync.sh` 之后、每次上游升级（重生成 lite.patch）之后、怀疑 vendor 漂移时。
+
+**失败含义**（任一步失败 exit 1 并指明步骤）：步骤 2 红 = lite.patch 与 pristine 版本不匹配，需按上文重新生成 patch；步骤 3 红 = `upstream/` 脱离「pristine+patch」可复现基线（手改了 upstream/ 没同步进 patch，或 patch 过期）；步骤 4 红 = patch 后行为断言失败，禁止安装。全过输出 `verified: pristine+patch==upstream, behavior green`。
+
+历史上首次迁移（旧 skills 仓 `d972f3c:extensions/pi-wt-lite.ts` → 本包）的零行为变化等价性已于 2026-10-21 验证，持续的等价性证明由 `verify.sh` 承担。
 
 安装方式见仓库根 AGENTS.md（`pi install` 规范）；settings.json 中原 `../../skills` 扩展目录条目保留（仍服务 pi-herdr-peer.ts），本包以 `../../projects/pi-mypackage/packages/pi-wt-lite` 相对路径条目接入。

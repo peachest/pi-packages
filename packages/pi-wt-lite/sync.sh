@@ -48,6 +48,7 @@ PREFIX="$(git -C "$HERE" rev-parse --show-prefix)"
 if git -C "$TOP" apply --directory="${PREFIX%/}" "$PATCH"; then
   echo "OK: upstream refreshed, lite.patch applied cleanly."
   echo "Next: bump version in package.json, update README source-version note, commit."
+  echo "Then run ./verify.sh — it must be green before the package is installed."
 else
   echo "CONFLICT: lite.patch failed to apply. Upstream moved into patched regions." >&2
   echo "Resolve by hand in upstream/, then regenerate lite.patch against the pristine npm copy ($SRC)" >&2
