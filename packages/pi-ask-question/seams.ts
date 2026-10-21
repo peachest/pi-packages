@@ -3,6 +3,7 @@
 // is re-exported here from its private source module. No logic lives here.
 // validator
 export {
+	ERROR_CONTEXT_REQUIRED,
 	ERROR_NO_QUESTIONS,
 	ERROR_TOO_MANY_QUESTIONS,
 	ERROR_DUPLICATE_QUESTION,
@@ -12,6 +13,9 @@ export {
 	validateQuestionnaire,
 } from "./tool/validate-questionnaire.ts";
 export type { ValidationResult } from "./tool/validate-questionnaire.ts";
+// params schema + types
+export { QuestionParamsSchema } from "./tool/types.ts";
+export type { QuestionParams, QuestionAnswer, QuestionnaireResult } from "./tool/types.ts";
 // reducer
 export { reduce } from "./state/state-reducer.ts";
 export type { QuestionnaireAction } from "./state/key-router.ts";
@@ -21,6 +25,8 @@ export {
 	buildQuestionnaireResponse,
 	buildAnswerSegment,
 	buildUnansweredSegment,
+	DECLINE_MESSAGE,
+	ENVELOPE_PREFIX,
 } from "./tool/response-envelope.ts";
 // views
 export { MultiSelectView } from "./view/components/multi-select-view.ts";

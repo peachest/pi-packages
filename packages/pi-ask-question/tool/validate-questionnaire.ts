@@ -1,4 +1,12 @@
-import { MAX_QUESTIONS, MIN_OPTIONS, type QuestionnaireError, type QuestionParams, RESERVED_LABELS } from "./types.ts";
+import {
+	MAX_CONTEXT_LENGTH,
+	MAX_QUESTIONS,
+	MIN_CONTEXT_LENGTH,
+	MIN_OPTIONS,
+	type QuestionnaireError,
+	type QuestionParams,
+	RESERVED_LABELS,
+} from "./types.ts";
 
 export const ERROR_NO_QUESTIONS = "Error: At least one question is required";
 export const ERROR_TOO_MANY_QUESTIONS = `Error: At most ${MAX_QUESTIONS} questions are allowed per invocation`;
@@ -6,6 +14,7 @@ export const ERROR_DUPLICATE_QUESTION = "Error: Question text must be unique wit
 export const ERROR_TOO_FEW_OPTIONS = `Error: Each question requires at least ${MIN_OPTIONS} options`;
 export const ERROR_RESERVED_LABEL = `Error: Option label is reserved (${RESERVED_LABELS.join(", ")})`;
 export const ERROR_DUPLICATE_OPTION_LABEL = "Error: Option labels must be unique within a question";
+export const ERROR_CONTEXT_REQUIRED = `Error: context is required (${MIN_CONTEXT_LENGTH}-${MAX_CONTEXT_LENGTH} characters) — write three sentences: the session's overall goal, current progress, and what decision this batch of questions resolves`;
 
 const RESERVED_LABEL_SET: ReadonlySet<string> = new Set(RESERVED_LABELS);
 
@@ -17,6 +26,15 @@ export type ValidationResult = { ok: true } | { ok: false; error: QuestionnaireE
  * `reserved_label` MUST short-circuit before `duplicate_option_label`.
  */
 export function validateQuestionnaire(typed: QuestionParams): ValidationResult {
+	// Pi's schema check rejects invalid context before execute; this gate gives
+	// direct callers the teaching message instead of a bare schema error.
+	if (
+		typeof typed.context !== "string" ||
+		typed.context.length < MIN_CONTEXT_LENGTH ||
+		typed.context.length > MAX_CONTEXT_LENGTH
+	) {
+		return { ok: false, error: "context_required", message: ERROR_CONTEXT_REQUIRED };
+	}
 	if (typed.questions.length === 0) {
 		return { ok: false, error: "no_questions", message: ERROR_NO_QUESTIONS };
 	}

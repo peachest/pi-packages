@@ -30,12 +30,23 @@ export function buildQuestionnaireResponse(result: QuestionnaireResult | null | 
 	const unanswered: number[] = [];
 	for (let i = 0; i < params.questions.length; i++) {
 		const a = result.answers.find((x) => x.questionIndex === i);
-		if (a) segments.push(buildAnswerSegment(a));
-		else unanswered.push(i);
+		if (a) {
+			// Each question's authored motivation rides before its answer segment.
+			const background = params.questions[i]?.background;
+			if (background && background.length > 0) segments.push(`background: ${background}.`);
+			segments.push(buildAnswerSegment(a));
+		} else unanswered.push(i);
 	}
 	const hasGlobalNote = result.globalNote !== undefined && result.globalNote.length > 0;
 	if (segments.length === 0 && !hasGlobalNote) {
 		return buildToolResult(DECLINE_MESSAGE, { answers: result.answers, cancelled: true });
+	}
+	// Recall-panel echo: context leads and recent anchors follow, so the model
+	// re-reads why these questions were asked before any answer. The decline
+	// paths above stay bare — panel material never echoes there.
+	segments.unshift(`context: ${params.context}.`);
+	if (params.recent && params.recent.length > 0) {
+		segments.splice(1, 0, `recent: ${params.recent.join("; ")}.`);
 	}
 	if (unanswered.length > 0) segments.push(buildUnansweredSegment(unanswered, params));
 	// Global note rides after the per-question segments: raw multiline echo (no

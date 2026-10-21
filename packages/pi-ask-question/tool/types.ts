@@ -6,6 +6,10 @@ export const MIN_OPTIONS = 2;
 export const MAX_OPTIONS = 4;
 export const MAX_HEADER_LENGTH = 16;
 export const MAX_LABEL_LENGTH = 60;
+export const MIN_CONTEXT_LENGTH = 40;
+export const MAX_CONTEXT_LENGTH = 400;
+export const MAX_RECENT_ITEMS = 5;
+export const MAX_RECENT_ITEM_LENGTH = 100;
 
 /**
  * User-facing labels for the three runtime sentinel rows, keyed by their
@@ -76,6 +80,12 @@ export const QuestionSchema = Type.Object({
 				"Set to true to allow the user to select multiple options instead of just one. Use when choices are not mutually exclusive.",
 		}),
 	),
+	background: Type.Optional(
+		Type.String({
+			description:
+				"What observation, report, or disagreement led to this question? If you cannot answer that, the question probably should not be asked.",
+		}),
+	),
 });
 
 export const QuestionsSchema = Type.Array(QuestionSchema, {
@@ -85,6 +95,25 @@ export const QuestionsSchema = Type.Array(QuestionSchema, {
 });
 
 export const QuestionParamsSchema = Type.Object({
+	// Recall-panel material: the brief a reader needs after a 2-hour absence,
+	// echoed back at the top of the answer envelope.
+	context: Type.String({
+		minLength: MIN_CONTEXT_LENGTH,
+		maxLength: MAX_CONTEXT_LENGTH,
+		description: `REQUIRED — ${MIN_CONTEXT_LENGTH}-${MAX_CONTEXT_LENGTH} characters. Write three sentences for a reader returning after a 2-hour absence: (1) the session's overall goal, (2) current progress, (3) what decision this batch of questions resolves.`,
+	}),
+	recent: Type.Optional(
+		Type.Array(
+			Type.String({
+				maxLength: MAX_RECENT_ITEM_LENGTH,
+				description: `MAX ${MAX_RECENT_ITEM_LENGTH} CHARACTERS — a verifiable anchor (file path, ticket id, CI result), not a narrative description.`,
+			}),
+			{
+				maxItems: MAX_RECENT_ITEMS,
+				description: `Up to ${MAX_RECENT_ITEMS} verifiable anchors (file paths, ticket ids, CI results) shown alongside the questions; omit if none.`,
+			},
+		),
+	),
 	questions: QuestionsSchema,
 });
 
@@ -130,6 +159,7 @@ export type QuestionnaireError =
 	| "duplicate_question"
 	| "duplicate_option_label"
 	| "reserved_label"
+	| "context_required"
 	| "session_load_failed"
 	| "stale_module_cache";
 
