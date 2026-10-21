@@ -48,6 +48,10 @@ paths = [
     '''\.pi/.*''',
     '''\.pi-subagents/.*''',
     '''\.scratch/.*''',
+    # security-guard test fixtures: scoped to the two fixture suites only (real
+    # creds in a NEW fixture file would still be caught) — spec#137 suite A/C
+    '''packages/pi-bash-guards/tests/fixtures/test-bash-guards\.sh''',
+    '''packages/pi-bash-guards/tests/fixtures/test-wt-lifecycle\.sh''',
     '''\.venv/.*''',
     '''__pycache__/.*''',
     # vendored upstream build artifact; its 172.16.0.0/12 mention is public

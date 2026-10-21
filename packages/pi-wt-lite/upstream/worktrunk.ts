@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { hostname, tmpdir } from "node:os";
+import { homedir, hostname, tmpdir } from "node:os";
 import { existsSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { basename, resolve, join, isAbsolute } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -168,6 +168,9 @@ const CONTINUATION_MESSAGE_TYPE = "pi-worktrunk-continuation";
 const MAX_CONTINUATION_OUTPUT = 50_000;
 const CONTINUATION_ARG_PREFIX = "__pi_worktrunk_continuation=";
 const WORKTRUNK_ALIAS_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
+const REMOVE_SELF_GUARD_MESSAGE = "目标 worktree 是当前 session 所在目录。先 wt switch main 迁出，再 remove。（headless session 无 recover 网，此拦截是唯一防线）";
+const REMOVE_SELF_LIST_FAILURE_MESSAGE = "无法核实 remove 目标：worktree 列表获取失败。先跑 wt list 确认目标不含当前 session 目录，再重试。";
+const HEADLESS_MIGRATION_NOTICE = "本 session 为 headless 模式，session 自动迁移不可用；如需收尾请用 merge --no-remove 并向父 session 报告";
 const COMPACT_REFERENCE = `Worktrunk command reference (subset; run \`wt <cmd> --help\` via bash for full detail)
 - switch [BRANCH] [-c] [-b BASE] [-C REPO] — switch to or create a worktree; checkouts live at ~/projects/<repo>-<branch>. -c creates the branch (-b sets its base, default main). -C targets another repo checkout (bare repos).
 - remove [BRANCH...] [-D] [-f] [--no-delete-branch] — remove worktrees; branches deleted if merged
@@ -175,9 +178,7 @@ const COMPACT_REFERENCE = `Worktrunk command reference (subset; run \`wt <cmd> -
 - merge [TARGET] [--no-squash] [--no-rebase] [--no-remove] — squash-merge current branch into TARGET (default main); pre-merge hooks run as quality gate
 - step rebase [TARGET] | step push [TARGET] | step commit | step diff | step squash — single operations on the current worktree
 Any other subcommand (hook, config, step promote/relocate/tether/for-each/eval/prune, …): run via bash instead, e.g. \`wt hook show\`. Aliases registered via wt config also work as the command.`;
-const MAX_EXAMPLES_PER_COMMAND = 3;
 const HELP_DESCRIPTION_INDENT = 10;
-const HELP_PROBE_CONCURRENCY = 8;
 const HELP_PROBE_TIMEOUT_MS = 10_000;
 
 class WorktrunkError extends Error {
@@ -498,180 +499,6 @@ export function parseExamples(output: string): string[][] {
   return examples;
 }
 
-function attributeExamples(commands: CommandReference[]): void {
-  const examples = commands.flatMap((command) => command.examples);
-  for (const command of commands) command.examples = [];
-  const candidates = [...commands].sort((left, right) => right.path.length - left.path.length);
-  for (const tokens of examples) {
-    const command = candidates.find(({ path }) => tokens.some((_, start) =>
-      path.every((part, index) => tokens[start + index] === part)));
-    if (!command) continue;
-    const key = JSON.stringify(tokens);
-    if (!command.examples.some((example) => JSON.stringify(example) === key)) {
-      command.examples.push(tokens);
-    }
-  }
-}
-
-export function renderToolExample(
-  tokens: readonly string[],
-  topLevelCommands: ReadonlySet<string>,
-): string | undefined {
-  const commandIndex = tokens.findIndex((token) => topLevelCommands.has(token));
-  if (commandIndex < 0) return undefined;
-  return JSON.stringify({
-    command: tokens[commandIndex],
-    args: [...tokens.slice(0, commandIndex), ...tokens.slice(commandIndex + 1)],
-  });
-}
-
-function firstSentence(description: string): string {
-  return description.match(/^.*?[.!?](?=\s+[A-Z]|\s*$)/)?.[0] ?? description;
-}
-
-function truncateReference(reference: string): string {
-  const suffix = "\n[reference truncated]";
-  const limit = MAX_REFERENCE_BYTES - Buffer.byteLength(suffix);
-  const codePoints = [...reference];
-  let low = 0;
-  let high = codePoints.length;
-  while (low < high) {
-    const middle = Math.ceil((low + high) / 2);
-    if (Buffer.byteLength(codePoints.slice(0, middle).join("")) <= limit) low = middle;
-    else high = middle - 1;
-  }
-  let result = codePoints.slice(0, low).join("");
-  const newline = result.lastIndexOf("\n");
-  if (newline > 0) result = result.slice(0, newline);
-  return `${result}${suffix}`;
-}
-
-function renderReference(
-  root: CommandReference,
-  all: readonly CommandReference[],
-  rootOutput: string,
-  trimOptions: boolean,
-  includeExamples: boolean,
-): string {
-  const lines = ["Worktrunk command reference"];
-  const topLevelCommands = new Set(root.subcommands.map(({ syntax }) => syntax));
-  const globalOptions = parseSectionEntries(rootOutput, new Set(["Options", "Global Options"]), "option");
-  if (globalOptions.length) {
-    lines.push("", "Global options:");
-    for (const option of globalOptions) {
-      lines.push(`- ${option.syntax}: ${trimOptions ? firstSentence(option.description) : option.description}`);
-    }
-  }
-  for (const command of all) {
-    lines.push("", `${command.path.join(" ")} — ${command.summary}`);
-    if (command.path.length === 1) lines.push(`Usage: ${command.usage}`);
-    if (command.subcommands.length) {
-      lines.push("Subcommands:");
-      for (const subcommand of command.subcommands) lines.push(`- ${subcommand.syntax}: ${subcommand.description}`);
-    }
-    if (command.arguments.length) {
-      lines.push("Arguments:");
-      for (const argument of command.arguments) lines.push(`- ${argument.syntax}: ${argument.description}`);
-    }
-    if (command.options.length) {
-      lines.push("Options:");
-      for (const option of command.options) {
-        lines.push(`- ${option.syntax}: ${trimOptions ? firstSentence(option.description) : option.description}`);
-      }
-    }
-    if (!includeExamples) continue;
-    const examples = command.examples.flatMap((tokens) => {
-      const example = renderToolExample(tokens, topLevelCommands);
-      return example ? [example] : [];
-    }).slice(0, MAX_EXAMPLES_PER_COMMAND);
-    if (examples.length) {
-      lines.push("Examples:");
-      for (const example of examples) lines.push(`- ${example}`);
-    }
-  }
-  return lines.join("\n");
-}
-
-export function formatReference(
-  root: CommandReference,
-  all: readonly CommandReference[],
-  rootOutput: string,
-): string {
-  let reference = renderReference(root, all, rootOutput, false, true);
-  if (Buffer.byteLength(reference) <= MAX_REFERENCE_BYTES) return reference;
-  reference = renderReference(root, all, rootOutput, true, true);
-  if (Buffer.byteLength(reference) <= MAX_REFERENCE_BYTES) return reference;
-  reference = renderReference(root, all, rootOutput, true, false);
-  return Buffer.byteLength(reference) <= MAX_REFERENCE_BYTES
-    ? reference
-    : truncateReference(reference);
-}
-
-async function mapConcurrent<T, R>(
-  items: readonly T[],
-  worker: (item: T) => Promise<R>,
-): Promise<R[]> {
-  const results = new Array<R>(items.length);
-  let next = 0;
-  await Promise.all(Array.from(
-    { length: Math.min(HELP_PROBE_CONCURRENCY, items.length) },
-    async () => {
-      while (next < items.length) {
-        const index = next;
-        next += 1;
-        results[index] = await worker(items[index]);
-      }
-    },
-  ));
-  return results;
-}
-
-export async function buildReference(
-  commands: readonly WorktrunkCommand[],
-  rootOutput: string,
-  readCommand: (path: readonly string[]) => Promise<string | undefined>,
-): Promise<string> {
-  type PendingCommand = { path: string[]; summary: string };
-  const references = new Map<string, CommandReference>();
-  const requested = new Set<string>();
-  let pending: PendingCommand[] = commands.map(({ name, description }) => ({
-    path: [name],
-    summary: description,
-  }));
-
-  while (pending.length) {
-    for (const { path } of pending) requested.add(path.join("\0"));
-    const outputs = await mapConcurrent(pending, async ({ path }) => {
-      try { return await readCommand(path); } catch { return undefined; }
-    });
-    const next: PendingCommand[] = [];
-    for (let index = 0; index < pending.length; index += 1) {
-      const output = outputs[index];
-      if (!output?.trim()) continue;
-      const current = pending[index];
-      const command = parseCommand(current.path, output, current.summary);
-      references.set(current.path.join("\0"), command);
-      for (const subcommand of command.subcommands) {
-        const path = [...current.path, subcommand.syntax];
-        const key = path.join("\0");
-        if (!requested.has(key)) next.push({ path, summary: subcommand.description });
-      }
-    }
-    pending = next;
-  }
-
-  const all: CommandReference[] = [];
-  const append = (path: string[]) => {
-    const command = references.get(path.join("\0"));
-    if (!command) return;
-    all.push(command);
-    for (const subcommand of command.subcommands) append([...path, subcommand.syntax]);
-  };
-  for (const { name } of commands) append([name]);
-  attributeExamples(all);
-  return formatReference(parseCommand([], rootOutput), all, rootOutput);
-}
-
 export function parseWorktrunkCommands(output: string): WorktrunkCommand[] {
   return parseCommands(output).map(({ syntax, description }) => ({ name: syntax, description }));
 }
@@ -854,6 +681,48 @@ function toolReply(
 
 function isBareCommand(invocation: Invocation, command: string): boolean {
   return invocation.command === command && invocation.commandArgs.length === 0;
+}
+
+/** Whether any `wt remove` target resolves to `cwd` itself or an ancestor of it.
+ * A bare `wt remove` defaults to the current worktree, so it always blocks. */
+export function removeTargetsSelf(
+  items: readonly WorktreeItem[],
+  commandArgs: readonly string[],
+  cwd: string,
+): boolean {
+  const branches = commandArgs.filter((arg) => !arg.startsWith("-"));
+  const targets = branches.length
+    ? branches.map((branch) => {
+        const requested = branch.startsWith("~")
+          ? join(homedir(), branch.slice(1))
+          : resolve(cwd, branch);
+        return items.find((item) =>
+          item.branch === branch ||
+          (item.worktree?.path !== undefined && canonicalPath(item.worktree.path) === canonicalPath(requested)),
+        )?.worktree?.path;
+      })
+    // Bare remove removes the current worktree (wt semantics).
+    : [items.find((item) => item.worktree?.current)?.worktree?.path ?? cwd];
+  const self = canonicalPath(cwd).replace(/\/+$/, "");
+  return targets.some((target) => {
+    if (target === undefined) return false;
+    const path = canonicalPath(target).replace(/\/+$/, "");
+    return path === self || self.startsWith(`${path}/`);
+  });
+}
+
+/** Guard decision for `wt remove` given the discovery outcome; list === undefined means
+ * worktree discovery failed. Explicit targets then reject (fail-closed — an unverified
+ * target must not be removed); a bare remove still blocks via the cwd fallback above. */
+export function removeSelfGuardDecision(
+  list: readonly WorktreeItem[] | undefined,
+  commandArgs: readonly string[],
+  cwd: string,
+): string | undefined {
+  if (list === undefined && commandArgs.some((arg) => !arg.startsWith("-"))) {
+    return REMOVE_SELF_LIST_FAILURE_MESSAGE;
+  }
+  return removeTargetsSelf(list ?? [], commandArgs, cwd) ? REMOVE_SELF_GUARD_MESSAGE : undefined;
 }
 
 function relationText(relation?: Relation): string { return `ahead ${relation?.ahead ?? 0}, behind ${relation?.behind ?? 0}`; }
@@ -1069,6 +938,13 @@ export default function extension(
 
   async function safeList(cwd: string, signal?: AbortSignal): Promise<WorktreeItem[]> {
     try { return await client.list(cwd, signal); } catch { return []; }
+  }
+  async function removeSelfGuard(invocation: Invocation, cwd: string, signal?: AbortSignal): Promise<string | undefined> {
+    if (invocation.command !== "remove") return undefined;
+    // Strict list (not safeList): a failed discovery must not open the guard for explicit targets.
+    let items: WorktreeItem[] | undefined;
+    try { items = await client.list(cwd, signal); } catch { items = undefined; }
+    return removeSelfGuardDecision(items, invocation.commandArgs, cwd);
   }
   async function readWorktreeIdentity(cwd: string): Promise<RepositoryIdentity | undefined> {
     try {
@@ -1352,6 +1228,12 @@ export default function extension(
       }
       args = ["switch", selected.worktree.path];
     }
+    const guardMessage = await removeSelfGuard(invocation, ctx.cwd, ctx.signal);
+    if (guardMessage) {
+      displayCommand(ctx, args, guardMessage, true, modelOrigin);
+      // Turn already ended (queued); nothing was deleted, so the model must get the rejection.
+      return { result: { code: 1 }, output: guardMessage, moved: false, canContinue: true };
+    }
 
     const scope = approvalScope(invocation, ctx.cwd);
     const canPrompt = interactive && ctx.hasUI;
@@ -1405,6 +1287,10 @@ export default function extension(
       output = [output, await describeApprovalFailure(output, scope, ctx.cwd, ctx.signal)].filter(Boolean).join("\n");
     }
     output = [...notes, output].filter(Boolean).join("\n\n");
+    if (result.code === 0 && !result.killed && !interactive &&
+        (invocation.command === "merge" || invocation.command === "remove")) {
+      output = [output, HEADLESS_MIGRATION_NOTICE].filter(Boolean).join("\n\n");
+    }
     progress.hide();
     displayCommand(ctx, args, output, result.code !== 0 || Boolean(result.killed), modelOrigin);
     const base: Execution = { result, output, moved: false, canContinue: false };
@@ -1587,6 +1473,8 @@ export default function extension(
               `Command not run: Pi's working directory is no longer usable. Restart Pi in ${target?.path ?? "a surviving worktree"}.`);
           }
           if (ctx.mode === "print" || ctx.mode === "json" || (usable && canRunInline(invocation, aliasNames.has(params.command)))) {
+            const guardMessage = await removeSelfGuard(invocation, ctx.cwd, signal);
+            if (guardMessage) return toolReply("failed", args, ctx.cwd, guardMessage);
             let result: WtResult;
             try { result = await invoke(args, { cwd: ctx.cwd, signal }); }
             catch (error) {
@@ -1597,6 +1485,10 @@ export default function extension(
               ? await pendingApprovals(approvalScope(invocation, ctx.cwd), ctx.cwd, signal)
               : undefined;
             const approval = approvalFailureDetails(output, pending);
+            const migrationNotice = result.code === 0 && !result.killed &&
+              (invocation.command === "merge" || invocation.command === "remove") &&
+              (ctx.mode === "print" || ctx.mode === "json")
+              ? HEADLESS_MIGRATION_NOTICE : undefined;
             let stopReason: string | undefined;
             try {
               const destination = await directedDestination(result.directive, identity);
@@ -1620,14 +1512,14 @@ export default function extension(
             }
             if (stopReason) {
               ctx.abort();
-              return toolReply("stopped", args, ctx.cwd, [output, approval, stopReason].filter(Boolean).join("\n\n"), result);
+              return toolReply("stopped", args, ctx.cwd, [output, approval, stopReason, migrationNotice].filter(Boolean).join("\n\n"), result);
             }
             if (result.code !== 0 || result.killed) {
               const failure = formatWtFailure(args, result, ctx.cwd);
               return toolReply("failed", args, ctx.cwd,
                 [failure, aliasFailureSummary(invocation, failure, result.code), approvalFailureDetails(failure, pending)].filter(Boolean).join("\n"), result);
             }
-            return toolReply("completed", args, ctx.cwd, output || `wt ${args.join(" ")} completed successfully.`, result);
+            return toolReply("completed", args, ctx.cwd, [output || `wt ${args.join(" ")} completed successfully.`, migrationNotice].filter(Boolean).join("\n\n"), result);
           }
           const nonce = randomUUID();
           placementInFlight = true;
