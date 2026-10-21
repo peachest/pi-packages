@@ -1,3 +1,22 @@
+diff --git a/upstream/package.json b/upstream/package.json
+index 631443e..fa0162d 100644
+--- a/upstream/package.json
++++ b/upstream/package.json
+@@ -29,10 +29,10 @@
+     "node": ">=24.0.0"
+   },
+   "peerDependencies": {
+-    "@earendil-works/pi-ai": "*",
+-    "@earendil-works/pi-coding-agent": "*",
+-    "@earendil-works/pi-tui": "*",
+-    "typebox": "*"
++    "@earendil-works/pi-ai": "^0.99.1",
++    "@earendil-works/pi-coding-agent": "^0.99.1",
++    "@earendil-works/pi-tui": "^0.99.1",
++    "typebox": "^1.1.0"
+   },
+   "scripts": {
+     "check": "tsc --noEmit && node --test --experimental-strip-types *.test.ts",
 diff --git a/upstream/worktrunk.ts b/upstream/worktrunk.ts
 index cf4d3d2..9dbde53 100644
 --- a/upstream/worktrunk.ts
