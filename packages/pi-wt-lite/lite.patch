@@ -1,5 +1,5 @@
 diff --git a/upstream/worktrunk.ts b/upstream/worktrunk.ts
-index cf4d3d2..f5e0f60 100644
+index cf4d3d2..9dbde53 100644
 --- a/upstream/worktrunk.ts
 +++ b/upstream/worktrunk.ts
 @@ -1,7 +1,7 @@
@@ -123,19 +123,20 @@ index cf4d3d2..f5e0f60 100644
      if (settings !== undefined) aliases = parseWorktrunkAliases(settings);
      for (const { name } of aliases) aliasNames.add(name);
    }
-@@ -1356,6 +1404,11 @@ export default function extension(
+@@ -1356,6 +1404,12 @@ export default function extension(
        }
        args = ["switch", selected.worktree.path];
      }
 +    const guardMessage = await removeSelfGuard(invocation, ctx.cwd, ctx.signal);
 +    if (guardMessage) {
 +      displayCommand(ctx, args, guardMessage, true, modelOrigin);
-+      return { result: { code: 1 }, output: guardMessage, moved: false, canContinue: false };
++      // Turn already ended (queued); nothing was deleted, so the model must get the rejection.
++      return { result: { code: 1 }, output: guardMessage, moved: false, canContinue: true };
 +    }
  
      const scope = approvalScope(invocation, ctx.cwd);
      const canPrompt = interactive && ctx.hasUI;
-@@ -1409,6 +1462,10 @@ export default function extension(
+@@ -1409,6 +1463,10 @@ export default function extension(
        output = [output, await describeApprovalFailure(output, scope, ctx.cwd, ctx.signal)].filter(Boolean).join("\n");
      }
      output = [...notes, output].filter(Boolean).join("\n\n");
@@ -146,7 +147,7 @@ index cf4d3d2..f5e0f60 100644
      progress.hide();
      displayCommand(ctx, args, output, result.code !== 0 || Boolean(result.killed), modelOrigin);
      const base: Execution = { result, output, moved: false, canContinue: false };
-@@ -1539,12 +1596,12 @@ export default function extension(
+@@ -1539,12 +1597,12 @@ export default function extension(
      pi.registerTool({
        name: "worktrunk",
        label: "Worktrunk",
@@ -163,7 +164,7 @@ index cf4d3d2..f5e0f60 100644
          "Never pass -y/--yes to worktrunk; approving project commands is the user's decision, and Pi asks the user when Worktrunk needs approval.",
        ],
        parameters: Type.Object({
-@@ -1591,6 +1648,8 @@ export default function extension(
+@@ -1591,6 +1649,8 @@ export default function extension(
                `Command not run: Pi's working directory is no longer usable. Restart Pi in ${target?.path ?? "a surviving worktree"}.`);
            }
            if (ctx.mode === "print" || ctx.mode === "json" || (usable && canRunInline(invocation, aliasNames.has(params.command)))) {
@@ -172,7 +173,7 @@ index cf4d3d2..f5e0f60 100644
              let result: WtResult;
              try { result = await invoke(args, { cwd: ctx.cwd, signal }); }
              catch (error) {
-@@ -1601,6 +1660,10 @@ export default function extension(
+@@ -1601,6 +1661,10 @@ export default function extension(
                ? await pendingApprovals(approvalScope(invocation, ctx.cwd), ctx.cwd, signal)
                : undefined;
              const approval = approvalFailureDetails(output, pending);
@@ -183,7 +184,7 @@ index cf4d3d2..f5e0f60 100644
              let stopReason: string | undefined;
              try {
                const destination = await directedDestination(result.directive, identity);
-@@ -1624,14 +1687,14 @@ export default function extension(
+@@ -1624,14 +1688,14 @@ export default function extension(
              }
              if (stopReason) {
                ctx.abort();

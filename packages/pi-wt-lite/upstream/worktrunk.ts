@@ -1407,7 +1407,8 @@ export default function extension(
     const guardMessage = await removeSelfGuard(invocation, ctx.cwd, ctx.signal);
     if (guardMessage) {
       displayCommand(ctx, args, guardMessage, true, modelOrigin);
-      return { result: { code: 1 }, output: guardMessage, moved: false, canContinue: false };
+      // Turn already ended (queued); nothing was deleted, so the model must get the rejection.
+      return { result: { code: 1 }, output: guardMessage, moved: false, canContinue: true };
     }
 
     const scope = approvalScope(invocation, ctx.cwd);
