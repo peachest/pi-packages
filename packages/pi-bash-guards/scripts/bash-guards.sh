@@ -100,8 +100,37 @@ def _cmd_strip(s):
             break
     return s
 
+def _split_punct(line):
+    # Split a line into (segment, preceding-delimiter-run) pairs on shell
+    # control punctuation (| ; & ( )) OUTSIDE single/double quotes. Quoted
+    # punctuation is argument text, not a command boundary (rolling-r2 L165:
+    # printf 'a; git merge' manufactured a fake command position). Unquoted
+    # $( …) still splits — those commands really run; a quoted "$( …)" body
+    # stays one segment (missed block, never false block — same fail-open
+    # direction as _wt_lines' quoted-<< limit).
+    out, buf, pend, q = [], [], "", None
+    for ch in line:
+        if q:
+            buf.append(ch)
+            if ch == q:
+                q = None
+        elif ch in "'\"":
+            q = ch
+            buf.append(ch)
+        elif ch in "|;()&":
+            if buf:
+                out.append(("".join(buf), pend))
+                buf, pend = [], ch
+            else:
+                pend += ch          # extend the run (&&, ||, (( ))
+        else:
+            buf.append(ch)
+    if buf or pend:
+        out.append(("".join(buf), pend))
+    return out
+
 for l in code:
-    for seg in re.split(r"[|;()&]+", l):          # command positions in the line
+    for seg, _d in _split_punct(l):           # command positions in the line
         s = seg.strip()
         if re.match(r"^(ssh|scp|rsync)\b", s):
             continue  # remote segment: quoted remote args (e.g. ssh host
@@ -162,9 +191,8 @@ def _wt_pairs(text):
         l = re.sub(r"^rtk\s+", "", l.strip())
         if not l or l.startswith("#"):
             continue
-        parts = re.split(r"([|;()&]+)", l)
-        for _i in range(0, len(parts), 2):
-            pairs.append((_cmd_strip(parts[_i].strip()), parts[_i - 1] if _i else ""))
+        for seg, delim in _split_punct(l):
+            pairs.append((_cmd_strip(seg.strip()), delim))
     return pairs
 
 def _wt_segments(text):

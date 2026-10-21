@@ -218,6 +218,13 @@ expect 2 "command-wrapped container cmd blocked"      "$PROJ" "command ${D} ps"
 expect 0 "command -v probe still allowed"             "$PROJ" "command -v ${D}"
 expect 2 "if-wrapped raw merge blocked"               "$PROJ" "if true; then git merge origin/main; fi"
 
+echo "== quoted punctuation is argument text, not a command boundary (rolling-r2 L165) =="
+expect 0 "quoted ; literal is not a merge command"    "$PROJ" "printf '%s\\n' 'example; git merge topic'"
+expect 0 "quoted ; literal is not a container cmd"    "$PROJ" "printf '%s\\n' 'example; ${D} ps'"
+expect 0 "quoted && literal is not a container cmd"   "$PROJ" "printf '%s\\n' 'a && ${D} ps'"
+expect 0 "quoted remote cmd with ; still allowed"     "$PROJ" "ssh host 'true; ${D} ps'"
+expect 2 "genuine chained merge still blocked"        "$PROJ" "echo start; git merge origin/main"
+
 echo
 echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" = 0 ]
