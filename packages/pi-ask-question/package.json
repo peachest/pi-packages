@@ -38,6 +38,7 @@
     "index.ts",
     "presentation.ts",
     "reconcile.ts",
+    "seams.ts",
     "LICENSE",
     "locales/",
     "docs/",
