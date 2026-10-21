@@ -1,0 +1,65 @@
+--- a/upstream/worktrunk.ts
++++ b/upstream/worktrunk.ts
+@@ -168,7 +168,13 @@
+ const MAX_CONTINUATION_OUTPUT = 50_000;
+ const CONTINUATION_ARG_PREFIX = "__pi_worktrunk_continuation=";
+ const WORKTRUNK_ALIAS_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
+-const MAX_REFERENCE_BYTES = 30_000;
++const COMPACT_REFERENCE = `Worktrunk command reference (subset; run \`wt <cmd> --help\` via bash for full detail)
++- switch [BRANCH] [-c] [-b BASE] [-C REPO] — switch to or create a worktree; checkouts live at ~/projects/<repo>-<branch>. -c creates the branch (-b sets its base, default main). -C targets another repo checkout (bare repos).
++- remove [BRANCH...] [-D] [-f] [--no-delete-branch] — remove worktrees; branches deleted if merged
++- list [--branches] [--full] [--removes] — show worktrees and status
++- merge [TARGET] [--no-squash] [--no-rebase] [--no-remove] — squash-merge current branch into TARGET (default main); pre-merge hooks run as quality gate
++- step rebase [TARGET] | step push [TARGET] | step commit | step diff | step squash — single operations on the current worktree
++Any other subcommand (hook, config, step promote/relocate/tether/for-each/eval/prune, …): run via bash instead, e.g. \`wt hook show\`. Aliases registered via wt config also work as the command.`;
+ const MAX_EXAMPLES_PER_COMMAND = 3;
+ const HELP_DESCRIPTION_INDENT = 10;
+ const HELP_PROBE_CONCURRENCY = 8;
+@@ -1135,27 +1141,17 @@
+     installedCommands = parseWorktrunkCommands(rootOutput);
+     for (const { name } of installedCommands) commandNames.add(name);
+ 
+-    const [version, reference, settings] = await Promise.all([
++    const [version, settings] = await Promise.all([
+       runWt(["--version"], {
+         cwd: ctx.cwd,
+         signal: ctx.signal,
+         timeout: HELP_PROBE_TIMEOUT_MS,
+       }).catch(() => undefined),
+-      buildReference(installedCommands, rootOutput, async (path) => {
+-        const help = await runWt(
+-          [...path, "--help-md"],
+-          {
+-            cwd: ctx.cwd,
+-            signal: ctx.signal,
+-            timeout: HELP_PROBE_TIMEOUT_MS,
+-          },
+-        );
+-        return help.code === 0 && help.stdout?.trim() ? help.stdout : undefined;
+-      }).catch(() => ""),
+       client.settings(ctx.cwd, ctx.signal).catch(() => undefined),
+     ]);
+     if (version?.code === 0) installedVersion = version.stdout?.trim();
+-    worktrunkReference = reference;
++    // Compact curated reference instead of the generated full catalog (token budget).
++    worktrunkReference = COMPACT_REFERENCE;
+     if (settings !== undefined) aliases = parseWorktrunkAliases(settings);
+     for (const { name } of aliases) aliasNames.add(name);
+   }
+@@ -1539,12 +1535,12 @@
+     pi.registerTool({
+       name: "worktrunk",
+       label: "Worktrunk",
+-      description: `Run Worktrunk commands using the command reference generated from the installed binary. The command's remaining arguments pass directly to wt without shell expansion. Pi follows Worktrunk's directory-change directive, including from aliases and foreground hooks. If its working directory is gone, Pi recovers to a verified surviving worktree without running the requested command; re-evaluate the command there before retrying. Calls must be sequential: issue one Worktrunk call, wait for its result, then issue the next; a call made while another is still pending fails. Inspection commands return structured results immediately. In TUI/RPC, other commands return status queued and run after this turn. In codemode, end the script immediately on queued or stopped; do not run dependent tools until the continuation arrives. Command failures return status failed with diagnostics, not a thrown exception.${versionNotice}${referenceCatalog}${aliasCatalog}`,
+-      promptSnippet: "Run Worktrunk commands using the installed command, option, and example reference",
++      description: `Run Worktrunk (wt) to manage git worktrees. Arguments pass directly to wt without shell expansion; do NOT repeat the command name inside args ("switch -c foo" means command: "switch", args: ["-c", "foo"]). Calls must be sequential: issue one Worktrunk call, wait for its result, then issue the next. Pi follows wt's directory-change directive: switch moves this session into the worktree automatically. If the working directory is gone, Pi recovers to a surviving worktree without running the command. Command failures return status failed with diagnostics, not a thrown exception. Reference for the common subset below; other subcommands run via bash.${versionNotice}${referenceCatalog}${aliasCatalog}`,
++      promptSnippet: "Run Worktrunk commands (switch/remove/list/merge/step subset reference)",
+       promptGuidelines: [
+-        "Use worktrunk for Worktrunk commands. Select a command and its remaining arguments from the worktrunk reference and examples.",
++        "Use worktrunk for Worktrunk commands; args must not repeat the command name.",
+         "The worktrunk tool follows Worktrunk's requested directory automatically.",
+-        "In codemode, inspect worktrunk's status. End the script immediately on queued or stopped; queued commands have not run yet. Check failed before using results. Never run Worktrunk calls in parallel.",
++        "In codemode, end the script immediately on queued or stopped; do not run dependent tools until the continuation arrives. Never run Worktrunk calls in parallel.",
+         "Never pass -y/--yes to worktrunk; approving project commands is the user's decision, and Pi asks the user when Worktrunk needs approval.",
+       ],
+       parameters: Type.Object({
