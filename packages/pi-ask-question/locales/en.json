@@ -1,5 +1,7 @@
 {
   "sentinel.other": "Type something.",
+  "sentinel.rephrase": "↻ Ask again (unclear)",
+  "sentinel.other_multi": "＋ Custom input (applies alongside the checked options)",
   "sentinel.next": "Next",
 
   "submit.label": "Submit answers",
@@ -26,6 +28,7 @@
   "preview.notes_affordance": "Notes: press n to add notes",
   "preview.notes_edit_affordance": "Note saved: press n to edit",
   "notes.header": "Notes:",
+  "notes.reason_header": "Reason:",
   "notes.saved_label": "Note for this answer:",
   "notes.global_header": "Global note:",
 

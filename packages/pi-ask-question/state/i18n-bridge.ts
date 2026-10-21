@@ -20,7 +20,7 @@
  * the canonical `ROW_INTENT_META[kind].label`, never `displayLabel(kind)`.
  */
 
-import { ROW_INTENT_META, type SentinelKind } from "./row-intent.ts";
+import { OTHER_LABEL_MULTI, ROW_INTENT_META, type SentinelKind } from "./row-intent.ts";
 
 export const I18N_NAMESPACE = "@juicesharp/pi-ask-question";
 
@@ -48,4 +48,15 @@ export const t: ScopeFn = scopeImpl;
 
 export function displayLabel(kind: SentinelKind): string {
 	return t(`sentinel.${kind}`, ROW_INTENT_META[kind].label);
+}
+
+/**
+ * Other-row label for a question mode (#134): multi-select spells out the merge
+ * semantics with the checked options (`sentinel.other_multi`), single-select keeps
+ * the neutral rpiv string. The canonical `OTHER_LABEL_MULTI` doubles as the t()
+ * fallback — the 7 vendored locales deliberately lack the key, so a missing
+ * translation falls back instead of leaking a stale copy or the raw key name.
+ */
+export function otherDisplayLabel(multiSelect: boolean): string {
+	return multiSelect ? t("sentinel.other_multi", OTHER_LABEL_MULTI) : displayLabel("other");
 }

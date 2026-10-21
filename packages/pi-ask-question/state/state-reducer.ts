@@ -307,6 +307,47 @@ const notesExitHandler: Handler<"notes_exit"> = (state, _action, _ctx) => {
 };
 
 /**
+ * Reason editor seeding (#132): mirrors `notesEnterHandler` but seeds from the
+ * `reasonByTab` slot. The draft shares the notes editor's `notesDraft` mirror —
+ * only one side editor can be open at a time (dispatch order in `routeKey`), so
+ * the single draft cell is unambiguous.
+ */
+const reasonEnterHandler: Handler<"reason_enter"> = (state, _action, _ctx) => {
+	const value = state.reasonByTab.get(state.currentTab) ?? "";
+	return {
+		state: { ...state, reasonVisible: true, notesDraft: value },
+		effects: [
+			{ kind: "set_notes_value", value },
+			{ kind: "set_notes_focused", focused: true },
+		],
+	};
+};
+
+/**
+ * Reason editor commit (#132): mirrors `notesExitHandler` but writes the independent
+ * `reasonByTab` slot — never `notesByTab`, so a tab's note and reason coexist. An
+ * existing rephrase answer's `reason` mirror is refreshed in kind-guarded shape (an
+ * empty commit strips it, conditional spread keeps `"reason" in answer` honest), so
+ * the Submit review stays truthful when the user edits the reason after a rephrase.
+ */
+const reasonExitHandler: Handler<"reason_exit"> = (state, _action, _ctx) => {
+	const trimmed = state.notesDraft.trim();
+	const reasonByTab = new Map(state.reasonByTab);
+	const answers = new Map(state.answers);
+	if (trimmed.length === 0) reasonByTab.delete(state.currentTab);
+	else reasonByTab.set(state.currentTab, trimmed);
+	const prev = answers.get(state.currentTab);
+	if (prev?.kind === "rephrase") {
+		const { reason: _stale, ...rest } = prev;
+		answers.set(state.currentTab, trimmed.length === 0 ? rest : { ...rest, reason: trimmed });
+	}
+	return {
+		state: { ...state, reasonByTab, answers, reasonVisible: false },
+		effects: [{ kind: "set_notes_focused", focused: false }],
+	};
+};
+
+/**
  * Rephrase cap, per tab, per invocation (dialog-lifetime). The 3rd `rephrase_request`
  * on the same tab stops the dialog through the `rephrase_cap` cancel — the user has
  * rejected the question's wording three times, so the agent must switch to plain-chat
@@ -387,6 +428,8 @@ const HANDLERS: { [K in QuestionnaireAction["kind"]]: Handler<K> } = {
 	multi_confirm: multiConfirmHandler,
 	cancel: cancelHandler,
 	rephrase_request: rephraseRequestHandler,
+	reason_enter: reasonEnterHandler,
+	reason_exit: reasonExitHandler,
 	notes_enter: notesEnterHandler,
 	notes_exit: notesExitHandler,
 	notes_forward: notesForwardHandler,

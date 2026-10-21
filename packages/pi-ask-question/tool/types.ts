@@ -1,5 +1,5 @@
 import { type Static, Type } from "typebox";
-import { LABELS_BY_KIND, ROW_INTENT_META } from "../state/row-intent.ts";
+import { LABELS_BY_KIND, OTHER_LABEL_MULTI, ROW_INTENT_META } from "../state/row-intent.ts";
 
 export const MAX_QUESTIONS = 4;
 export const MIN_OPTIONS = 2;
@@ -32,13 +32,22 @@ export type SentinelLabel = (typeof SENTINEL_LABELS)[SentinelKind];
  * of truth) and has no runtime kind.
  *
  * Reserved unconditionally — every question mode rejects these labels, even
- * when a given runtime sentinel is not appended in that mode.
+ * when a given runtime sentinel is not appended in that mode. The multi-select
+ * other-row variant (`OTHER_LABEL_MULTI`) is reserved for the same reason: an
+ * option must never wear a sentinel's words.
  *
  * Order is pinned by `types.test.ts:292` — keep the explicit
- * `["Other", other, next]` literal so consumers using
- * `RESERVED_LABELS[i]` indexing or `Set` membership see no behavior change.
+ * `["Other", other, next, …]` literal so consumers using
+ * `RESERVED_LABELS[i]` indexing or `Set` membership see no behavior change;
+ * new labels append at the end.
  */
-export const RESERVED_LABELS = ["Other", ROW_INTENT_META.other.label, ROW_INTENT_META.next.label] as const;
+export const RESERVED_LABELS = [
+	"Other",
+	ROW_INTENT_META.other.label,
+	ROW_INTENT_META.next.label,
+	ROW_INTENT_META.rephrase.label,
+	OTHER_LABEL_MULTI,
+] as const;
 export type ReservedLabel = (typeof RESERVED_LABELS)[number];
 
 export const OptionSchema = Type.Object({

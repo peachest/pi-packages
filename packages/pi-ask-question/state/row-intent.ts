@@ -15,7 +15,16 @@ export type RowKind = WrappingSelectItem["kind"];
  * derivation, and `LABELS_BY_KIND` consumers iterate this list.
  */
 export type SentinelKind = Exclude<RowKind, "option">;
-export const SENTINEL_KINDS: readonly SentinelKind[] = ["other", "next"];
+export const SENTINEL_KINDS: readonly SentinelKind[] = ["other", "rephrase", "next"];
+
+/**
+ * Multi-select other-row label (#134): spells out the merge semantics so coexistence
+ * with checked options is visible before typing. Canonical string doubles as the
+ * `t("sentinel.other_multi", …)` fallback; single-select keeps the neutral
+ * `ROW_INTENT_META.other.label`. Lives here (row-intent domain data) so `types.ts`
+ * RESERVED_LABELS and the i18n bridge share one spelling without a cycle.
+ */
+export const OTHER_LABEL_MULTI = "＋ 补充自定义输入（与以上勾选项同时生效）";
 
 /**
  * Per-kind static metadata. Pure data — no closures, no per-kind handler
@@ -42,16 +51,19 @@ export const SENTINEL_KINDS: readonly SentinelKind[] = ["other", "next"];
  * - `numbered` — true iff the row contributes to the main-list numbering.
  *   Multi-select Next is the only `numbered=false` row that lives in the list.
  * - `activatesInputMode` — true iff focusing the row should toggle
- *   `state.inputMode = true`. Read by `state-reducer.ts` `nav` case.
+ *   `state.inputMode = true`. Read by `state-reducer.ts` `nav` case. The rephrase
+ *   row is false: its reason editing rides the notes-editor interaction (writing the
+ *   independent `reasonByTab` slot), not the inline input.
  * - `blocksMultiToggle` — in multiSelect mode, Space (and Enter-as-toggle)
- *   on this row is suppressed. The Next sentinel is the only true.
+ *   on this row is suppressed. The Next and rephrase sentinels are the only true.
  * - `autoSubmitsInMulti` — in multiSelect mode, Enter on this row commits
  *   the question (emits `multi_confirm`). The Next sentinel is the only true.
  * - `autoAppendOnSingleSelect` — `buildItemsForQuestion` appends
  *   this row when the question is single-select, regardless of whether any
  *   option carries a `preview`. The "other" sentinel is the only true.
  * - `autoAppendOnMultiSelect` — `buildItemsForQuestion` appends this row
- *   when the question is multi-select. The `other` and `next` sentinels are both true.
+ *   when the question is multi-select. The `other`, `rephrase` and `next`
+ *   sentinels are all true.
  */
 export interface RowIntentMeta {
 	label: string;
@@ -99,6 +111,19 @@ export const ROW_INTENT_META: Record<RowKind, RowIntentMeta> = {
 		autoAppendOnSingleSelect: false,
 		autoAppendOnMultiSelect: true,
 	},
+	rephrase: {
+		// Canonical string doubles as the t() fallback — the 7 vendored locales
+		// deliberately lack `sentinel.rephrase` (no stale copy can shadow it).
+		label: "↻ 没说清，重新问",
+		reserved: true,
+		livesInMainList: true,
+		numbered: true,
+		activatesInputMode: false,
+		blocksMultiToggle: true,
+		autoSubmitsInMulti: false,
+		autoAppendOnSingleSelect: true,
+		autoAppendOnMultiSelect: true,
+	},
 };
 
 /**
@@ -107,6 +132,7 @@ export const ROW_INTENT_META: Record<RowKind, RowIntentMeta> = {
  */
 export const LABELS_BY_KIND: { readonly [K in SentinelKind]: string } = {
 	other: ROW_INTENT_META.other.label,
+	rephrase: ROW_INTENT_META.rephrase.label,
 	next: ROW_INTENT_META.next.label,
 };
 

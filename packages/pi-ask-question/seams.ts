@@ -21,6 +21,7 @@ export { reduce, REPHRASE_CAP } from "./state/state-reducer.ts";
 export type { QuestionnaireAction } from "./state/key-router.ts";
 export type { Effect, ApplyContext } from "./state/state-reducer.ts";
 export type { QuestionnaireState } from "./state/state.ts";
+export type { QuestionnaireRuntime } from "./state/state.ts";
 // formatters + response envelope
 export { formatAnswerScalar, NO_INPUT_PLACEHOLDER } from "./tool/format-answer.ts";
 export {
@@ -35,3 +36,9 @@ export {
 // views
 export { MultiSelectView } from "./view/components/multi-select-view.ts";
 export { SubmitTabStrategy } from "./view/tab-content-strategy.ts";
+// T4 rephrase TUI wiring (ticket #132)
+export { routeKey } from "./state/key-router.ts";
+export { OTHER_LABEL_MULTI, ROW_INTENT_META, SENTINEL_KINDS } from "./state/row-intent.ts";
+export type { WrappingSelectItem } from "./view/components/wrapping-select.ts";
+export { otherDisplayLabel } from "./state/i18n-bridge.ts";
+export { RESERVED_LABELS, SENTINEL_LABELS } from "./tool/types.ts";

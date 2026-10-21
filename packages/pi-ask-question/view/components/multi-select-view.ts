@@ -1,6 +1,6 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
-import { displayLabel } from "../../state/i18n-bridge.ts";
+import { displayLabel, otherDisplayLabel } from "../../state/i18n-bridge.ts";
 import type { QuestionData } from "../../tool/types.ts";
 import type { StatefulView } from "../stateful-view.ts";
 import { renderInlineInputRow } from "./inline-input.ts";
@@ -32,6 +32,8 @@ export interface MultiSelectOtherRowProps {
 export interface MultiSelectViewProps {
 	rows: ReadonlyArray<{ checked: boolean; active: boolean }>;
 	other: MultiSelectOtherRowProps;
+	/** The rephrase sentinel row is the focused row (optionIndex === options.length + 1). */
+	rephraseActive: boolean;
 	nextActive: boolean;
 	nextLabel: string;
 }
@@ -69,6 +71,7 @@ export class MultiSelectView implements StatefulView<MultiSelectViewProps> {
 		this.props = {
 			rows: [],
 			other: { active: false, checked: false, inputMode: false, inputBuffer: "", inputCursorOffset: undefined },
+			rephraseActive: false,
 			nextActive: false,
 			nextLabel: displayLabel("next"),
 		};
@@ -110,6 +113,7 @@ export class MultiSelectView implements StatefulView<MultiSelectViewProps> {
 		build.lines.push(...this.renderOtherRow(contentWidth, numberWidth));
 		if (this.props.other.active) build.focusedRange = [otherStart, build.lines.length];
 
+		this.appendBareRow(build, width, this.props.rephraseActive, displayLabel("rephrase"));
 		this.appendNextRow(build, width);
 
 		const value = { lines: build.lines, focusedRange: build.focusedRange };
@@ -141,14 +145,20 @@ export class MultiSelectView implements StatefulView<MultiSelectViewProps> {
 		}
 	}
 
+	/**
+	 * Numberless action row (the rephrase sentinel): bare `pointer + label`, same shape
+	 * as the Next row — both are actions, not checkable answers.
+	 */
+	private appendBareRow(build: MultiSelectBuild, width: number, active: boolean, label: string): void {
+		const start = build.lines.length;
+		const pointer = active ? this.theme.fg("accent", ACTIVE_POINTER) : INACTIVE_POINTER;
+		const styled = active ? this.theme.fg("accent", this.theme.bold(label)) : label;
+		build.lines.push(truncateToWidth(`${pointer}${styled}`, width, ""));
+		if (active) build.focusedRange = [start, build.lines.length];
+	}
+
 	private appendNextRow(build: MultiSelectBuild, width: number): void {
-		const nextStart = build.lines.length;
-		const nextPointer = this.props.nextActive ? this.theme.fg("accent", ACTIVE_POINTER) : INACTIVE_POINTER;
-		const nextLabel = this.props.nextActive
-			? this.theme.fg("accent", this.theme.bold(this.props.nextLabel))
-			: this.props.nextLabel;
-		build.lines.push(truncateToWidth(`${nextPointer}${nextLabel}`, width, ""));
-		if (this.props.nextActive) build.focusedRange = [nextStart, build.lines.length];
+		this.appendBareRow(build, width, this.props.nextActive, this.props.nextLabel);
 	}
 
 	private renderOtherRow(contentWidth: number, numberWidth: number): string[] {
@@ -170,7 +180,7 @@ export class MultiSelectView implements StatefulView<MultiSelectViewProps> {
 						contentWidth,
 						selectedText,
 					})
-				: wrapTextWithAnsi(other.inputBuffer || displayLabel("other"), contentWidth).map((segment, index) => {
+				: wrapTextWithAnsi(other.inputBuffer || otherDisplayLabel(true), contentWidth).map((segment, index) => {
 						const line = `${index === 0 ? rowPrefix : continuationPrefix}${segment}`;
 						return other.active ? selectedText(line) : line;
 					});

@@ -18,6 +18,7 @@ function emptyMultiSelectProps(ctx: PerTabBindingContext): MultiSelectViewProps 
 			inputBuffer: ctx.inputBuffer,
 			inputCursorOffset: ctx.inputCursorOffset,
 		},
+		rephraseActive: false,
 		nextActive: false,
 		nextLabel: displayLabel("next"),
 	};
@@ -41,8 +42,11 @@ export const selectMultiSelectProps: PerTabSelector<MultiSelectViewProps> = (sta
 			active: focused && i === state.optionIndex,
 		});
 	}
+	// Focus rows: options 0..N-1, other N, rephrase N+1, next N+2 — mirroring
+	// `buildItemsForQuestion`'s sentinel order (`SENTINEL_KINDS`).
 	const otherActive = focused && state.optionIndex === question.options.length;
-	const nextActive = focused && state.optionIndex === question.options.length + 1;
+	const rephraseActive = focused && state.optionIndex === question.options.length + 1;
+	const nextActive = focused && state.optionIndex === question.options.length + 2;
 	return {
 		rows,
 		other: {
@@ -52,6 +56,7 @@ export const selectMultiSelectProps: PerTabSelector<MultiSelectViewProps> = (sta
 			inputBuffer: ctx.inputBuffer,
 			inputCursorOffset: ctx.inputCursorOffset,
 		},
+		rephraseActive,
 		nextActive,
 		nextLabel: nextLabelFor(ctx),
 	};

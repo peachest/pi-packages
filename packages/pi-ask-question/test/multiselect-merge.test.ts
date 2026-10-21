@@ -82,6 +82,7 @@ describe("MultiSelectView live merge echo", () => {
 				inputBuffer: other.inputBuffer ?? "",
 				inputCursorOffset: undefined,
 			},
+			rephraseActive: false,
 			nextActive: false,
 			nextLabel: "Submit",
 		});
@@ -115,6 +116,7 @@ describe("MultiSelectView live merge echo", () => {
 				inputBuffer: "draft",
 				inputCursorOffset: undefined,
 			},
+			rephraseActive: false,
 			nextActive: false,
 			nextLabel: "Submit",
 		});

@@ -35,6 +35,14 @@ export type QuestionnaireAction =
 	| { kind: "rephrase_request"; reason?: string }
 	| { kind: "notes_enter" }
 	| { kind: "notes_exit" }
+	/**
+	 * Open the reason editor for the rephrase row (#132): the shared side editor opens in
+	 * reason mode — seeded from / committed to `reasonByTab`, never `notesByTab`. Reached
+	 * by `n` while the rephrase row is focused (see the universal-`n` gate in `routeKey`).
+	 */
+	| { kind: "reason_enter" }
+	/** Commit the reason editor: trimmed draft → `reasonByTab` (empty clears the slot). */
+	| { kind: "reason_exit" }
 	| { kind: "submit" }
 	| { kind: "submit_nav"; nextIndex: 0 | 1 }
 	| { kind: "notes_forward"; data: string }
@@ -102,6 +110,11 @@ function buildSingleSelectAnswer(state: QuestionnaireState, runtime: Questionnai
 		return null;
 	}
 	if (item.kind === "next") {
+		return null;
+	}
+	if (item.kind === "rephrase") {
+		// The rephrase row is never an option answer — Enter there is routed to
+		// `rephrase_request` above this function; kept total against future callers.
 		return null;
 	}
 	return {
@@ -180,6 +193,20 @@ function routeNotesMode(kb: QuestionnaireKeybindings, data: string): Questionnai
 	if (kb.matches(data, KEYBIND_CANCEL)) return { kind: "notes_exit" };
 	if (kb.matches(data, KEYBIND_NEW_LINE)) return { kind: "notes_forward", data };
 	if (isConfirm(kb, data)) return { kind: "notes_exit" };
+	return { kind: "notes_forward", data };
+}
+
+/**
+ * Reason-mode router (#132): the shared side editor open for the rephrase reason —
+ * same interaction shape as `routeNotesMode` (Esc/Enter commit, Shift+Enter newline,
+ * everything else forwards to the editor), different commit slot. Text keystrokes reuse
+ * the mode-agnostic `notes_forward` action — the forwarding effect drives the same
+ * shared editor component regardless of which mode opened it.
+ */
+function routeReasonMode(kb: QuestionnaireKeybindings, data: string): QuestionnaireAction {
+	if (kb.matches(data, KEYBIND_CANCEL)) return { kind: "reason_exit" };
+	if (kb.matches(data, KEYBIND_NEW_LINE)) return { kind: "notes_forward", data };
+	if (isConfirm(kb, data)) return { kind: "reason_exit" };
 	return { kind: "notes_forward", data };
 }
 
@@ -327,6 +354,7 @@ export function routeKey(data: string, state: QuestionnaireState, runtime: Quest
 
 	if (state.collapsed) return routeCollapsed(kb, data);
 	if (state.notesVisible) return routeNotesMode(kb, data);
+	if (state.reasonVisible) return routeReasonMode(kb, data);
 	if (state.inputMode) return routeInputMode(kb, data, state, runtime);
 	if (runtime.isMulti && state.currentTab === runtime.questions.length) {
 		return routeSubmitTab(kb, data, state, runtime);
@@ -344,12 +372,27 @@ export function routeKey(data: string, state: QuestionnaireState, runtime: Quest
 	// notes Input, inputMode forwards to the inline Input, the submit-tab block
 	// activates it via its own branch (the global note, ahead of its ignore
 	// fall-through), and tabSwitchAction ignores it — so by the time we reach this
-	// gate, `n` is unambiguously a notes-enter request. Row intent (Next sentinel,
-	// "Type something.") is irrelevant: the gate sits ABOVE the multi-select
-	// toggle block and the Next sentinel never activates inputMode, so `n` is
-	// neither swallowed earlier nor blocked by `blocksMultiToggle`.
+	// gate, `n` is unambiguously a notes-enter request — except on the rephrase row,
+	// where the gate forks it to `reason_enter` (branch below); row intent matters for
+	// that one kind only. (Next sentinel, "Type something.") remain irrelevant: the gate
+	// sits ABOVE the multi-select toggle block and the Next sentinel never activates
+	// inputMode, so `n` is neither swallowed earlier nor blocked by `blocksMultiToggle`.
 	if (data === NOTES_ACTIVATE_KEY) {
+		// On the rephrase row the same text key opens the REASON editor — the row's
+		// side-band is `reasonByTab`, not `notesByTab` (#132). Everywhere else `n` stays
+		// the universal notes key (FR-1, unchanged): notes remain reachable from any
+		// other row of the same tab, so a tab can carry both a note and a reason.
+		if (runtime.currentItem?.kind === "rephrase") return { kind: "reason_enter" };
 		return { kind: "notes_enter" };
+	}
+
+	// Enter on the rephrase row marks the tab for re-ask (#131 action) with the tab's
+	// pending reason, if any (no forced editor path — user ruling). Sits above both mode
+	// routers: in multi-select the toggle/multi_confirm paths would otherwise treat the
+	// Enter as a checkbox flip, and in single-select buildSingleSelectAnswer would have
+	// no rephrase branch.
+	if (isConfirm(kb, data) && runtime.currentItem?.kind === "rephrase") {
+		return { kind: "rephrase_request", reason: state.reasonByTab.get(state.currentTab) };
 	}
 
 	if (kb.matches(data, KEYBIND_UP)) {

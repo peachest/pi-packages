@@ -15,11 +15,18 @@ import { renderInlineInputRow } from "./inline-input.ts";
  *   (label is "Type something."). Renders the headless multiline editor when active.
  * - `next`: the explicit commit-and-advance row appended to multi-select questions
  *   (label is "Next"). Renders without a number / checkbox.
+ * - `rephrase`: the reject-and-re-ask row appended to every question (#132; label is
+ *   "↻ 没说清，重新问"). A plain selectable row — Enter dispatches `rephrase_request`
+ *   (see `key-router.ts`), it never toggles or opens the inline input.
+ *
+ * rpiv invariant: adding a sentinel variant here REQUIRES a matching `ROW_INTENT_META`
+ * entry (`row-intent.ts`) — `Record<RowKind, …>` fails to compile until both exist.
  */
 export type WrappingSelectItem =
 	| { kind: "option"; label: string; description?: string }
 	| { kind: "other"; label: string; description?: string }
-	| { kind: "next"; label: string; description?: string };
+	| { kind: "next"; label: string; description?: string }
+	| { kind: "rephrase"; label: string; description?: string };
 
 export interface WrappingSelectTheme {
 	selectedText: (text: string) => string;

@@ -27,6 +27,8 @@ import type { TabComponents } from "./tab-components.ts";
 
 const NOTES_HEADER = "Notes:";
 const GLOBAL_NOTES_HEADER = "Global note:";
+/** Reason-editor header (#132) — the shared side editor open for the rephrase reason. */
+const REASON_HEADER = "原因：";
 const REVIEW_GLOBAL_HINT = "n to add a note";
 const REVIEW_NOTE_LABEL = "Note";
 /** Label for a question's saved note — the question tab's resting row and the review entry (#197). */
@@ -133,6 +135,16 @@ export class QuestionTabStrategy implements TabContentStrategy {
 	}
 
 	midRows(state: DialogState): Component[] {
+		// Reason-editor mount (#132): same shared `notesInput` editor as notes mode —
+		// `reasonVisible` and `notesVisible` are mutually exclusive (dispatch order in
+		// `routeKey`), so the slot below the body hosts whichever side editor is open.
+		if (state.reasonVisible) {
+			return [
+				new Text(this.config.theme.fg("muted", t("notes.reason_header", REASON_HEADER)), 1, 0),
+				this.config.notesInput,
+				new Spacer(1),
+			];
+		}
 		if (state.notesVisible) {
 			return [
 				new Text(this.config.theme.fg("muted", t("notes.header", NOTES_HEADER)), 1, 0),

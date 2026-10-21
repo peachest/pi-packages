@@ -25,7 +25,7 @@ import {
 	YIELD_TO_OVERLAY,
 } from "./presentation.ts";
 import { type DialogUI, hasDialogUI, runRpcQuestionnaire } from "./rpc-fallback.ts";
-import { displayLabel, t } from "./state/i18n-bridge.ts";
+import { displayLabel, otherDisplayLabel, t } from "./state/i18n-bridge.ts";
 import { sentinelsToAppend } from "./state/row-intent.ts";
 import { normalizeQuestionParams, prepareQuestionArguments } from "./tool/normalize-params.ts";
 import { buildQuestionnaireResponse, buildToolResult } from "./tool/response-envelope.ts";
@@ -419,7 +419,12 @@ export function buildItemsForQuestion(question: QuestionData): WrappingSelectIte
 		description: o.description,
 	}));
 	for (const kind of sentinelsToAppend(question)) {
-		items.push({ kind, label: displayLabel(kind) });
+		// The other row's label is per-mode (#134): multi-select spells out the merge
+		// semantics with checked options; every other sentinel uses its kind label.
+		items.push({
+			kind,
+			label: kind === "other" ? otherDisplayLabel(question.multiSelect === true) : displayLabel(kind),
+		});
 	}
 	return items;
 }

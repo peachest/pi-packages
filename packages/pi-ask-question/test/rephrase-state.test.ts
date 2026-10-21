@@ -61,6 +61,7 @@ function makeState(overrides: Partial<QuestionnaireState> = {}): QuestionnaireSt
 		rephraseCountByTab: new Map(),
 		submitChoiceIndex: 0,
 		notesDraft: "",
+		reasonVisible: false,
 		collapsed: false,
 		...overrides,
 	};

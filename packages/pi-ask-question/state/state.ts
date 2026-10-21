@@ -36,6 +36,13 @@ export interface QuestionnaireState {
 	/** Canonical mirror of the in-flight notes editor; runtime mirrors after `forward_notes_keystroke`. */
 	notesDraft: string;
 	/**
+	 * Reason-editor mode flag (#132): the shared side editor (the `notesVisible` one) is
+	 * open FOR THE REPHRASE REASON — seeded from / committed to `reasonByTab` instead of
+	 * `notesByTab`. Opened by `reason_enter` (`n` while the rephrase row is focused);
+	 * mutually exclusive with `notesVisible` by dispatch order in `routeKey`.
+	 */
+	reasonVisible: boolean;
+	/**
 	 * Collapsed mode: the questionnaire gets out of the way so the agent transcript behind
 	 * the bottom-anchored overlay becomes readable. Toggled by the configured collapse key
 	 * from any state; while true, every keystroke except cancel is swallowed (see
