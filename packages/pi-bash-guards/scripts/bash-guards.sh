@@ -85,10 +85,19 @@ PROBE = r"^(which|type|command\s+-v|whereis|grep|egrep|rg|ls|cat|tail|head|less|
 
 def _cmd_strip(s):
     # Shared command-position prefix normalization (guard 2 and _wt_segments
-    # must stay one model): env-var assignments and sudo do not change which
-    # command runs.
-    s = re.sub(r"^(?:\w+=\S*\s+)+", "", s)   # env-var prefix
-    s = re.sub(r"^sudo\s+", "", s)
+    # must stay one model): compound-command keywords, brace groups, negation,
+    # env-var assignments and sudo do not change which command runs. Loop to
+    # a fixed point so layered prefixes (sudo FOO=1 docker …) expose the
+    # command too; strips only ever remove recognized transparent prefixes.
+    for _ in range(4):
+        _prev = s
+        s = re.sub(r"^[{}]\s*", "", s)                                  # brace group
+        s = re.sub(r"^(?:if|while|until|elif|then|else|do)\s+", "", s)  # compound keyword
+        s = re.sub(r"^!\s*", "", s)                                     # negation
+        s = re.sub(r"^(?:\w+=\S*\s+)+", "", s)   # env-var prefix
+        s = re.sub(r"^sudo\s+", "", s)
+        if s == _prev:
+            break
     return s
 
 for l in code:

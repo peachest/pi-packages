@@ -199,6 +199,12 @@ D=dock; D=${D}er  # literal spelled obliquely so this fixture file never trips o
 expect 2 "docker hidden behind ssh segment blocked"  "$PROJ" "ssh host true; ${D} rm x"
 expect 2 "docker hidden behind scp && blocked"       "$PROJ" "scp f host:x && ${D} ps"
 expect 0 "remote docker arg still allowed"           "$PROJ" "ssh host '${D} ps'"
+expect 2 "if-wrapped container cmd blocked"          "$PROJ" "if ${D} ps; then echo ok; fi"
+expect 2 "while-wrapped container cmd blocked"       "$PROJ" "while ${D} ps; do :; done"
+expect 2 "negated container cmd blocked"             "$PROJ" "! ${D} ps"
+expect 2 "brace-group container cmd blocked"          "$PROJ" "{ ${D} ps; }"
+expect 0 "if with probe cmd allowed"                  "$PROJ" "if grep -q x /f; then echo ok; fi"
+expect 2 "if-wrapped raw merge blocked"               "$PROJ" "if true; then git merge origin/main; fi"
 
 echo
 echo "PASS=$PASS FAIL=$FAIL"
