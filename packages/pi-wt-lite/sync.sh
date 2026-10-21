@@ -23,6 +23,8 @@ set -euo pipefail
 
 SRC="${1:?usage: ./sync.sh <extracted-pi-worktrunk-package-dir>}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
+# SRC relative to the CALLER's cwd, not the package dir (works from any depth)
+[[ "$SRC" == /* ]] || SRC="$(pwd)/$SRC"
 UP="$HERE/upstream"
 PATCH="$HERE/lite.patch"
 
@@ -41,11 +43,13 @@ for name in worktrunk.ts package.json LICENSE; do
 done
 rm -f "$UP/worktrunk.ts" "$UP/package.json" "$UP/LICENSE"
 cp -a "$STAGE/worktrunk.ts" "$STAGE/package.json" "$STAGE/LICENSE" "$UP/"
+trap 'echo "ERROR: patch replay failed; upstream/ left as unpatched pristine — restore with git checkout -- upstream/ before retrying." >&2' EXIT
 
 # 3. replay the patch; fail loudly on conflict
 TOP="$(git -C "$HERE" rev-parse --show-toplevel)"
 PREFIX="$(git -C "$HERE" rev-parse --show-prefix)"
 if git -C "$TOP" apply --directory="${PREFIX%/}" "$PATCH"; then
+  trap - EXIT
   echo "OK: upstream refreshed, lite.patch applied cleanly."
   echo "Next: bump version in package.json, update README source-version note, commit."
   echo "Then run ./verify.sh — it must be green before the package is installed."
