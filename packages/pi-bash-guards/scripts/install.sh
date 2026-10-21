@@ -11,8 +11,15 @@ REG="${HOME}/.pi/agent/kendex/hooks.json"
 
 [ -f "$SRC" ] || { echo "FAIL: source missing: $SRC" >&2; exit 1; }
 mkdir -p "$(dirname "$DST")"
-cp "$SRC" "$DST"
-chmod +x "$DST"
+# Atomic replace: a concurrent tool_call reader must never observe a
+# truncated hook payload (fail-open), so stage to a temp file in the same
+# directory and mv(2) rename it into place.
+TMP="$DST.tmp.$$"
+trap 'rm -f "$TMP"' EXIT
+cp "$SRC" "$TMP"
+chmod +x "$TMP"
+mv "$TMP" "$DST"
+trap - EXIT
 
 # Registry check: hooks.json must reference the guard path (install does NOT
 # write hooks.json — it is created once by pi-hooks; we only verify it).
