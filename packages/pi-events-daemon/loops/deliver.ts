@@ -340,10 +340,18 @@ export function createDeliver(ctx: LoopsCtx, deps: DeliverDeps) {
         if (entry) entry.repushed = true; // 恰一次置位（attempt-marked：push 失败不复活，#31 无其他复活路径）
       }
       sessionPushInflight.add(sessionId);
-      void ctx.pusher.push(assembleLine(sessionId, rows)).then(
-        () => sessionPushInflight.delete(sessionId),
-        () => sessionPushInflight.delete(sessionId),
-      ); // 尽力一次：结果不改变幂等置位
+      // 票 132（scan-B）：assembleLine 同步抛错时 then 未注册 → inflight 永不释放 → 该 session
+      // 推送永久停摆。try/catch 收口：同步异常释放守卫进 errors，异步路径仍由 then 释放。
+      try {
+        const line = assembleLine(sessionId, rows);
+        void ctx.pusher.push(line).then(
+          () => sessionPushInflight.delete(sessionId),
+          () => sessionPushInflight.delete(sessionId),
+        ); // 尽力一次：结果不改变幂等置位
+      } catch (err) {
+        sessionPushInflight.delete(sessionId);
+        errors.push(err);
+      }
     }
   };
 

@@ -388,3 +388,17 @@ describe("票 122：validate 双 seam 接线——profile 静态面复活（候�
     expect((r.warnings ?? []).some((w) => w.includes("未显式声明 exit"))).toBe(true);
   });
 });
+
+describe("票 129（scan-⑤）：smoke 失败清理先行 register——孤儿实体根治", () => {
+  it("ad-hoc smoke 失败 → {subscribed:false} 且实体被 unregister（query 无孤儿）", async () => {
+    const rig = makeRig();
+    rig.exec.enqueue({ exitCode: 0 }); // 语法
+    rig.exec.enqueue({ exitCode: 2 }); // live-run 失败
+    const r = (await rig.dispatch(frame("subscribe", { check: "exit 2" }))) as { subscribed: boolean };
+    expect(r.subscribed).toBe(false);
+    // store 直查（query wire 不透 retired）——实体必须已 retired（孤儿根治口径）
+    const ents = rig.store.queryEntities({}).filter((e) => e.type === "adhoc");
+    expect(ents.length).toBeGreaterThanOrEqual(1);
+    expect(ents.every((e) => e.retired === true)).toBe(true);
+  });
+});

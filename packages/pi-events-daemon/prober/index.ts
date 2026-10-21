@@ -58,6 +58,8 @@ const DEFAULT_TOKEN_PATTERNS: readonly RegExp[] = [
   /"(?:token|password|secret|api[-_]?key)"\s*:\s*"(?:[^"\\]|\\.)*"/gi,
   // 引号值形态（shell/env 赋值）：password="..." → 值含空格/转义整体掩码
   /\b(?:token|password|secret|api[-_]?key)\s*=\s*"(?:[^"\\]|\\.)*"/gi,
+  // 票 130（scan-B）：单引号值形态——password='a b c' 值含空格，通配形只掩到首空格泄漏后半
+  /\b(?:token|password|secret|api[-_]?key)\s*=\s*'[^']*'/gi,
   /\b(?:token|password|secret|api[-_]?key)\s*[=:]\s*\S+/gi,
 ];
 

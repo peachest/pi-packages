@@ -235,7 +235,14 @@ export function createOpDispatch(deps: OpDispatchDeps): (frame: OpRequestFrame) 
           const isAdhocCheck = params.entityRef === undefined && params.url === undefined;
           if (!smokeSkipped && (smokeRequested || isAdhocCheck)) {
             smokeValidate = await validateReport(check);
-            if (smokeValidate.verdict !== "passed") return { subscribed: false, validate: smokeValidate };
+            if (smokeValidate.verdict !== "passed") {
+              // 票 129（scan-⑤）：smoke 失败时清理先行的 register——否则 state=null 非终态实体
+              // 永久残留（ephemeral housekeeping 只清终态），每次失败订阅都累积孤儿
+              if (params.entityRef === undefined && params.url === undefined) {
+                await submit({ kind: "unregister", ref } as never); // 票 129：MutationRequest.unregister 字段名 = ref（非 req 包裹）
+              }
+              return { subscribed: false, validate: smokeValidate };
+            }
           }
           delete opts.smoke;
           // 票 122（候选1 D2b）：全形态统一过 staticLint（纯文本零 spawn）——模板 check 忘写 exit

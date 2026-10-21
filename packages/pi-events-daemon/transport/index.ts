@@ -128,8 +128,15 @@ export function serve(path: string, handlers: TransportHandlers): TransportHandl
           // 票 119（#117）：subscribe 缺省 sessionId = 连接声明（投递归 session）。
           // 显式传入不覆盖；长连接未声明（短连接脚本消费者）保持现状空串；非 subscribe op 不注入。
           if (frame.op === "subscribe") {
-            const opts = (frame.params.opts ??= {}) as Record<string, unknown>;
-            if (opts.sessionId === undefined && sessionId !== null) opts.sessionId = sessionId;
+            // 票 131（scan-B）：opts 类型守卫——decodeLine 只校验 params 是对象，恶意/坏帧
+            // opts:"str" 时属性赋值严格模式 TypeError 会逃出 data 回调崩 daemon。
+            // 缺失建 {}（票 119 注入面），存在但非对象跳过注入（坏帧交 D1a/daemon 校验报错）。
+            const opts = frame.params.opts;
+            if (opts === undefined || opts === null) frame.params.opts = {};
+            const optsRecord = frame.params.opts as Record<string, unknown>;
+            if (typeof optsRecord === "object" && optsRecord.sessionId === undefined && sessionId !== null) {
+              optsRecord.sessionId = sessionId;
+            }
           }
           // .then 包装：dispatch 同步 throw 也归入 rejection 路径（不炸 socket data 回调）；
           // dispatch 异常（含 reject(undefined)）与 success 序列化（循环引用/BigInt）都归一为配对 error 响应。
