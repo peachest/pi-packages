@@ -80,7 +80,9 @@ export function defaultDaemonLauncher(socketPath: string, env: NodeJS.ProcessEnv
     const require = createRequire(import.meta.url);
     let entry: string;
     try {
-      entry = join(dirname(require.resolve("pi-events-daemon/package.json")), "daemon-main.ts");
+      // 票 128（scan-②）：真入口是 bin/pi-events-daemon.ts（bootstrap+epoch+信号生命周期）——
+      // 旧 daemon-main.ts 是纯 re-export（无执行副作用，spawn 即退 → 惰性拉起从未工作过）
+      entry = join(dirname(require.resolve("pi-events-daemon/package.json")), "bin", "pi-events-daemon.ts");
     } catch {
       throw new Error(`daemon 拉起失败：pi-events-daemon 包未找到（socket: ${socketPath}）`);
     }
@@ -96,11 +98,15 @@ export function defaultDaemonLauncher(socketPath: string, env: NodeJS.ProcessEnv
     } catch {
       stderrFd = undefined; // 旁车日志开不了不阻断拉起（降级为原 stdio:ignore 行为）
     }
-    spawn(process.execPath, ["--experimental-transform-types", entry], {
+    const child = spawn(process.execPath, ["--experimental-transform-types", entry], {
       detached: true,
       stdio: ["ignore", "ignore", stderrFd ?? "ignore"],
       env: { ...env, PI_EVENTS_SOCK: socketPath },
-    }).unref();
+    });
+    // 票 128（audit B4）：spawn error 无监听 = 未处理 error 事件崩宿主进程——detached+unref 下
+    // 仍需挂 error handler 吞掉（失败由 socket 轮询超时路径报错，错误细节已在旁车日志）
+    child.on("error", () => {});
+    child.unref();
     if (stderrFd !== undefined) closeSync(stderrFd); // fd 交给子进程继承，父侧即关
     for (let i = 0; i < 50; i++) {
       if (existsSync(socketPath)) return;
