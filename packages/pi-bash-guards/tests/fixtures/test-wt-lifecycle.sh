@@ -96,6 +96,17 @@ git -C "$FX/linked-wt" add WT.md
 git -C "$FX/linked-wt" commit -qm wt-init
 LINKED="$FX/linked-wt"
 
+# P6 fixture repos (rolling-r1): known-platform repo with matching identity,
+# plus an unknown-platform remote repo (platform not in the expected map).
+P6GH="$FX/p6-gh"
+git init -q "$P6GH"
+git -C "$P6GH" config user.email 1938913473@qq.com
+git -C "$P6GH" remote add origin https://github.com/peachest/pi-packages.git
+P6UNK="$FX/p6-unknown"
+git init -q "$P6UNK"
+git -C "$P6UNK" config user.email guardc@example.com
+git -C "$P6UNK" remote add origin https://gitlab.internal/team/repo.git
+
 echo "== R1 worktree remove/prune (first-token anchored) =="
 expect 0 "worktree list allowed"                "$PROJ" "git worktree list"
 expect 0 "mid-line literal in echo allowed"     "$PROJ" "echo 'use wt remove, not git worktree remove'"
@@ -161,6 +172,10 @@ EOF
 FEOF
 )
 expect 0 "heredoc doc body not blocked"         "$PROJ" "$DOC"
+
+echo "== P6 unknown remote platform (rolling-r1) =="
+expect 0 "unknown platform remote: commit allowed"   "$PROJ" "git commit -m x" "$P6UNK"
+expect 2 "no-remote default identity still enforced" "$PROJ" "git commit -m x" "$MAIN"
 
 echo "== G1 hand-copy destination parsing (rolling-r1) =="
 expect 2 "cp -t into extensions blocked"       "$PROJ" "cp -t ~/.pi/agent/extensions x"

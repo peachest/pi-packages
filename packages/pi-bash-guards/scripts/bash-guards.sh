@@ -366,6 +366,9 @@ if in_projects:
         remote_urls = sorted({m.group(1).lower() for m in re.finditer(r"^\S+\s+(\S+)\s+\(fetch\)$", remotes, re.M)})
         want_any = {v for url in remote_urls for k, v in expected.items() if k in url}
         if remote_urls:
+            if not want_any:
+                sys.exit(0)  # rolling-r1 L350: unknown remote platform — fail
+                # open, never block every commit in the repo for it
             # push-remote resolution chain, for naming the platform in the message
             branch = subprocess.run(["git", "branch", "--show-current"], capture_output=True,
                                     text=True, timeout=5).stdout.strip()
