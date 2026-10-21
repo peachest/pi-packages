@@ -7,8 +7,8 @@ render at all.
 
 | Environment | What the model sees | What you see |
 | --- | --- | --- |
-| Interactive terminal | `ask_user_question` in its tool list | The full tabbed TUI overlay |
-| RPC / ACP host (VS Code pendant, Zed, Paseo) | `ask_user_question` in its tool list | A sequence of the host's own native select and input dialogs |
+| Interactive terminal | `ask_user` in its tool list | The full tabbed TUI overlay |
+| RPC / ACP host (VS Code pendant, Zed, Paseo) | `ask_user` in its tool list | A sequence of the host's own native select and input dialogs |
 | Non-interactive run (no UI) | Nothing — the tool is removed | Nothing |
 
 ### Terminal attention
@@ -20,7 +20,7 @@ The BEL is best effort: if the synchronous terminal write fails, the questionnai
 ### Non-interactive runs
 
 A `before_agent_start` hook reconciles the active tool set against `ctx.hasUI` before every
-turn. When there is no UI, `ask_user_question` is stripped from the list so the model never
+turn. When there is no UI, `ask_user` is stripped from the list so the model never
 sees a tool it cannot use — better than offering it and auto-declining every call. When UI
 comes back, the tool is restored. The reconciler is idempotent and leaves sibling tools
 untouched.

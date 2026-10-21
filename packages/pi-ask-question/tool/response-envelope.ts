@@ -73,7 +73,9 @@ export function buildQuestionnaireResponse(result: QuestionnaireResult | null | 
 	if (unanswered.length > 0) segments.push(buildUnansweredSegment(unanswered, params));
 	// Global note rides after the per-question segments: raw multiline echo (no
 	// reformatting), trailing period mirroring `buildAnswerSegment`'s shape.
-	if (hasGlobalNote) segments.push(`global note: ${result.globalNote}.`);
+	if (result.globalNote !== undefined && result.globalNote.length > 0) {
+		segments.push(buildGlobalNoteSegment(result.globalNote));
+	}
 	const details = unanswered.length > 0 ? { ...result, unanswered } : result;
 	return buildToolResult(`${ENVELOPE_PREFIX} ${segments.join(" ")} ${ENVELOPE_SUFFIX}`, details);
 }
@@ -95,13 +97,31 @@ export function buildRephraseInstruction(a: QuestionAnswer): string {
 }
 
 /**
+ * `global note: <note>.` — the Submit-tab note segment. Shared builder so the transcript
+ * decision card mirrors the envelope segment byte-for-byte (#135 P2-1).
+ */
+export function buildGlobalNoteSegment(note: string): string {
+	return `global note: ${note}.`;
+}
+
+/**
+ * Optional per-answer envelope suffixes in canonical order (`selected preview:` then
+ * `user notes:`). Shared builder — the transcript decision card appends the same strings
+ * after its `● header → answer` scalar so card and envelope never drift (#135 P2-1).
+ */
+export function answerSuffixSegments(a: QuestionAnswer): string[] {
+	const suffixes: string[] = [];
+	if (a.preview && a.preview.length > 0) suffixes.push(`selected preview: ${a.preview}`);
+	if (a.notes && a.notes.length > 0) suffixes.push(`user notes: ${a.notes}`);
+	return suffixes;
+}
+
+/**
  * Format a single answer segment for the envelope. Pure of `a`. The `"Q"="A"` shape and
  * the optional `selected preview:` / `user notes:` suffixes are pinned by envelope tests.
  */
 export function buildAnswerSegment(a: QuestionAnswer): string {
-	const parts: string[] = [`"${a.question}"="${formatAnswerScalar(a, "envelope")}"`];
-	if (a.preview && a.preview.length > 0) parts.push(`selected preview: ${a.preview}`);
-	if (a.notes && a.notes.length > 0) parts.push(`user notes: ${a.notes}`);
+	const parts: string[] = [`"${a.question}"="${formatAnswerScalar(a, "envelope")}"`, ...answerSuffixSegments(a)];
 	return `${parts.join(". ")}.`;
 }
 

@@ -1,5 +1,6 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { formatAnswerScalar } from "../tool/format-answer.ts";
+import { answerSuffixSegments, buildGlobalNoteSegment } from "../tool/response-envelope.ts";
 import type { QuestionAnswer, QuestionnaireResult } from "../tool/types.ts";
 
 /**
@@ -31,19 +32,24 @@ function questionLabel(questions: readonly unknown[], index: number): string {
 	return header.length > 0 ? header : `Q${index + 1}`;
 }
 
-/** `● <header> → <answer>` — the answer comes from the same `formatAnswerScalar` path as the envelope segment. */
+/**
+ * `● <header> → <answer>` — the scalar and the `selected preview:` / `user notes:` suffixes
+ * come from the same shared builders as the envelope segment (`formatAnswerScalar` +
+ * `answerSuffixSegments`), so card and envelope never drift.
+ */
 function answerCardLine(a: QuestionAnswer, questions: readonly unknown[], theme: Theme): string {
 	const label = questionLabel(questions, a.questionIndex);
+	const body = [formatAnswerScalar(a, "envelope"), ...answerSuffixSegments(a)].join(". ");
 	return (
 		theme.fg("muted", `● ${label}`) +
 		" " +
 		theme.fg("muted", "→") +
 		" " +
-		theme.fg("text", formatAnswerScalar(a, "envelope"))
+		theme.fg("text", body)
 	);
 }
 
-/** Card body: context section (one line per authored line) + recent anchors + per-answer rows. */
+/** Card body: context section (one line per authored line) + recent anchors + per-answer rows + global note segment. */
 function cardBodyLines(details: QuestionnaireResult, params: unknown, theme: Theme): string[] {
 	if (!isRecord(params) || typeof params.context !== "string" || !Array.isArray(params.questions)) return [];
 	const lines: string[] = [];
@@ -54,6 +60,7 @@ function cardBodyLines(details: QuestionnaireResult, params: unknown, theme: The
 		lines.push(`recent: ${recent.filter((r) => typeof r === "string").join("; ")}.`);
 	}
 	for (const a of details.answers) lines.push(answerCardLine(a, params.questions, theme));
+	if (details.globalNote && details.globalNote.length > 0) lines.push(buildGlobalNoteSegment(details.globalNote));
 	return lines;
 }
 

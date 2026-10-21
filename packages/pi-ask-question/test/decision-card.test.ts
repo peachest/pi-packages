@@ -141,6 +141,59 @@ describe("transcript decision card (ticket #134)", () => {
 		});
 	});
 
+	describe("envelope suffix rendering (ticket #135 P2-1)", () => {
+		function cardLines(answers: unknown[], details: Record<string, unknown> = {}) {
+			return buildDecisionCardLines({
+				text: "",
+				details: { cancelled: false, answers, ...details } as never,
+				params: PARAMS,
+				expanded: true,
+				theme,
+			});
+		}
+
+		it("non-empty notes renders the `user notes:` envelope suffix", () => {
+			const lines = cardLines([
+				{ questionIndex: 0, question: "用哪个数据库？", kind: "option", answer: "Postgres", notes: "要托管版本" },
+			]);
+			expect(lines.at(-1)).toBe("● 数据库 → Postgres. user notes: 要托管版本");
+		});
+
+		it("non-empty preview renders the `selected preview:` envelope suffix, before notes", () => {
+			const lines = cardLines([
+				{
+					questionIndex: 0,
+					question: "用哪个数据库？",
+					kind: "option",
+					answer: "Postgres",
+					preview: "```sql\nselect 1;\n```",
+					notes: "要托管版本",
+				},
+			]);
+			expect(lines.at(-1)).toBe("● 数据库 → Postgres. selected preview: ```sql\nselect 1;\n```. user notes: 要托管版本");
+		});
+
+		it("empty-string notes/preview render nothing (conditional-spread parity)", () => {
+			const lines = cardLines([
+				{ questionIndex: 0, question: "用哪个数据库？", kind: "option", answer: "Postgres", notes: "", preview: "" },
+			]);
+			expect(lines.at(-1)).toBe("● 数据库 → Postgres");
+		});
+
+		it("globalNote appends the envelope `global note:` segment after the answer rows", () => {
+			const lines = cardLines(
+				[{ questionIndex: 0, question: "用哪个数据库？", kind: "option", answer: "Postgres" }],
+				{ globalNote: "部署形态已定" },
+			);
+			expect(lines.at(-1)).toBe("global note: 部署形态已定.");
+		});
+
+		it("no globalNote leaves the card without a global note line", () => {
+			const lines = cardLines([{ questionIndex: 0, question: "用哪个数据库？", kind: "option", answer: "Postgres" }]);
+			expect(lines.some((l) => l.startsWith("global note:"))).toBe(false);
+		});
+	});
+
 	describe("buildDecisionCardLines — collapse/expand", () => {
 		const fourQuestions = PARAMS.questions.flatMap((q) => [q, q]);
 		const bigParams = { context: CTX, recent: ["a"], questions: fourQuestions };

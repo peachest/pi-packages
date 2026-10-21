@@ -367,7 +367,9 @@ const rephraseRequestHandler: Handler<"rephrase_request"> = (state, action, ctx)
 	if (count >= REPHRASE_CAP) {
 		// Cap hit: force the rephrase_cap cancel. The capped tab ships no answer (its prior
 		// answer, if any, is void — the user rejected the question itself); every other
-		// answered tab survives in `details.answers` (rpiv cancelled invariant).
+		// answered tab survives in `details.answers` (rpiv cancelled invariant). That tab's
+		// pending per-question note (`notesByTab`) drops together with the deleted answer —
+		// accepted loss, the user rejected the question the note was about.
 		const answers = new Map(state.answers);
 		answers.delete(tab);
 		return doneFor({ ...state, answers, rephraseCountByTab }, ctx, true, "rephrase_cap");
@@ -391,7 +393,8 @@ const rephraseRequestHandler: Handler<"rephrase_request"> = (state, action, ctx)
 	else reasonByTab.delete(tab);
 	const next: QuestionnaireState = { ...state, answers, reasonByTab, rephraseCountByTab };
 	// Focus follows the existing switchTab semantics to the next question; on the last
-	// question there is no next — the dialog still ends through the normal doneFor paths.
+	// question there is no next tab — the dialog stays open (state returns unchanged) and
+	// the user must reach the Submit tab manually to finish it.
 	if (tab < ctx.questions.length - 1) return switchTabResult(next, tab + 1, ctx);
 	return { state: next, effects: [] };
 };

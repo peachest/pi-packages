@@ -1,12 +1,12 @@
 # Tool schema
 
-The complete programmatic surface of `ask_user_question`: what the model sends, what
+The complete programmatic surface of `ask_user`: what the model sends, what
 validation rejects, what comes back, and the event other extensions can listen to.
 
 ## Parameters
 
 ```ts
-ask_user_question({
+ask_user({
   questions: [
     {
       question: string,            // full question text, ends with "?"
