@@ -414,13 +414,18 @@ if in_projects:
             if not want_any:
                 sys.exit(0)  # rolling-r1 L350: unknown remote platform — fail
                 # open, never block every commit in the repo for it
-            # push-remote resolution chain, for naming the platform in the message
-            branch = subprocess.run(["git", "branch", "--show-current"], capture_output=True,
-                                    text=True, timeout=5).stdout.strip()
-            push_remote = subprocess.run(["git", "config", f"branch.{branch}.pushRemote"],
-                                         capture_output=True, text=True, timeout=5).stdout.strip() \
-                or subprocess.run(["git", "config", "remote.pushDefault"], capture_output=True,
-                                  text=True, timeout=5).stdout.strip() or "origin"
+            # push-remote resolution chain, for naming the platform in the
+            # message. rolling-r1 L352: same fail-open as the other probes —
+            # a timeout/missing git here must not raise out of the hook.
+            try:
+                branch = subprocess.run(["git", "branch", "--show-current"], capture_output=True,
+                                        text=True, timeout=5, check=False).stdout.strip()
+                push_remote = subprocess.run(["git", "config", f"branch.{branch}.pushRemote"],
+                                             capture_output=True, text=True, timeout=5, check=False).stdout.strip() \
+                    or subprocess.run(["git", "config", "remote.pushDefault"], capture_output=True,
+                                      text=True, timeout=5, check=False).stdout.strip() or "origin"
+            except (OSError, subprocess.SubprocessError):
+                sys.exit(0)
             push_url = next((u for u in remote_urls if push_remote and push_remote in
                              {r.group(1) for r in re.finditer(rf"^{re.escape(push_remote)}\s+(\S+)\s+\(fetch\)$", remotes, re.M)}),
                             remote_urls[0])
