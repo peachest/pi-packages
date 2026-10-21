@@ -340,7 +340,18 @@ for l in code:
     dest = target_dir or (positional[-1] if positional else "")
     if not dest:
         continue
-    if re.search(r"(\.pi/agent/(extensions|skills)|\.agents/skills)(/|\s|['\"]|$)", dest):
+    # rolling-r1 L278: the shell expands ~/$HOME before the copy runs — expand
+    # the common forms here and re-check, so the destination can't hide behind
+    # them. Vars the hook env can't resolve ($PI_EXTENSIONS-style indirection)
+    # can't be judged: reject rather than wave an unknown destination at the
+    # managed dirs (reviewer-sanctioned branch; guard-override is the escape).
+    _dest = os.path.expanduser(os.path.expandvars(dest))
+    if "$" in _dest:
+        block("copy destination " + dest + " holds a variable this guard cannot "
+              "resolve — rerun with a literal path so the agent-dir hand-copy "
+              "guard can judge it, or append `# guard-override: <reason>` if "
+              "this copy is legitimate.")
+    if re.search(r"(\.pi/agent/(extensions|skills)|\.agents/skills)(/|\s|['\"]|$)", _dest):
         block("placing files into ~/.pi/agent/extensions or ~/.agents/skills by "
               "hand is forbidden (AGENTS.md) — installs drift and shadow the "
               "managed copies. Channels: skills -> edit the ~/skills source repo "

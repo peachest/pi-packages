@@ -196,6 +196,10 @@ expect 2 "cp -t into extensions blocked"       "$PROJ" "cp -t ~/.pi/agent/extens
 expect 2 "cp --target-directory= into skills blocked" "$PROJ" "cp --target-directory=~/.agents/skills x"
 expect 0 "cp -t to tmp allowed"                "$PROJ" "cp -t ~/tmp x"
 expect 0 "cp -t FROM skills into tmp allowed (reads)" "$PROJ" "cp -t ~/tmp ~/.agents/skills/hook-me/SKILL.md"
+expect 2 "cp via $HOME var into extensions blocked"   "$PROJ" "cp x \"\$HOME/.pi/agent/extensions/\""
+expect 2 "cp via unresolvable var dest blocked"       "$PROJ" "cp x \"\$PI_EXTENSIONS\""
+expect 2 "cp quoted-tilde dest into skills blocked"   "$PROJ" "cp x \"~/.agents/skills/y\""
+expect 0 "cp var dest to tmp allowed"                 "$PROJ" "cp x \"\$HOME/tmp/notes\""
 
 echo "== guard-2 segment hardening (rolling-r1) =="
 D=dock; D=${D}er  # literal spelled obliquely so this fixture file never trips other guards
