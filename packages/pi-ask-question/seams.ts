@@ -42,3 +42,8 @@ export { OTHER_LABEL_MULTI, ROW_INTENT_META, SENTINEL_KINDS } from "./state/row-
 export type { WrappingSelectItem } from "./view/components/wrapping-select.ts";
 export { otherDisplayLabel } from "./state/i18n-bridge.ts";
 export { RESERVED_LABELS, SENTINEL_LABELS } from "./tool/types.ts";
+// T6 transcript decision card + persistent collapse widget (ticket #134)
+export { buildItemsForQuestion } from "./ask-user-question.ts";
+export { buildCallSummaryLine, buildDecisionCardLines, CARD_PREVIEW_LINES } from "./view/decision-card.ts";
+export { ASK_USER_WIDGET_KEY, buildWidgetLine } from "./view/collapse-widget.ts";
+export { QuestionnaireSession } from "./state/questionnaire-session.ts";

@@ -1,5 +1,5 @@
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
-import { isKeyRelease, isKeyRepeat, matchesKey, type OverlayHandle, type TUI } from "@earendil-works/pi-tui";
+import { isKeyRelease, isKeyRepeat, matchesKey, Text, type OverlayHandle, type TUI } from "@earendil-works/pi-tui";
 import { type OpenQuestionnaire, registerAnswerChannel } from "./answer-channel.ts";
 import {
 	COLLAPSE_KEY_OFF,
@@ -29,6 +29,8 @@ import { displayLabel, otherDisplayLabel, t } from "./state/i18n-bridge.ts";
 import { sentinelsToAppend } from "./state/row-intent.ts";
 import { normalizeQuestionParams, prepareQuestionArguments } from "./tool/normalize-params.ts";
 import { buildQuestionnaireResponse, buildToolResult } from "./tool/response-envelope.ts";
+import { ASK_USER_WIDGET_KEY, buildWidgetLine, makeWidgetComponent } from "./view/collapse-widget.ts";
+import { buildCallSummaryLine, buildDecisionCardLines } from "./view/decision-card.ts";
 import {
 	MAX_OPTIONS,
 	MAX_QUESTIONS,
@@ -120,6 +122,33 @@ type SessionModule = typeof import("./state/questionnaire-session.ts");
 type SessionRef = { current: import("./state/questionnaire-session.ts").QuestionnaireSession | null };
 type OverlayHandleRef = { current: OverlayHandle | undefined };
 
+/**
+ * Persistent collapse widget (T6): set while the dialog is collapsed, cleared on the four
+ * lifecycle exits — reopen (collapse toggle back), submit, Esc-cancel, and the rephrase-cap
+ * cancel (the latter three all resolve the mount, where `runTuiPath` clears). The line reads
+ * the session's live answer count at render time, so the widget needs no updates in between.
+ */
+function setCollapseWidget(ctx: ExtensionContext, sessionRef: SessionRef, collapseKey: string): void {
+	if (typeof ctx.ui.setWidget !== "function") return;
+	ctx.ui.setWidget(ASK_USER_WIDGET_KEY, (tui, theme) =>
+		makeWidgetComponent({
+			tui,
+			theme,
+			readLine: () =>
+				buildWidgetLine(
+					sessionRef.current?.answeredCount ?? 0,
+					sessionRef.current?.questionCount ?? 0,
+					formatKeySpecForDisplay(collapseKey),
+				),
+		}),
+	);
+}
+
+function clearCollapseWidget(ctx: ExtensionContext): void {
+	if (typeof ctx.ui.setWidget !== "function") return;
+	ctx.ui.setWidget(ASK_USER_WIDGET_KEY, undefined);
+}
+
 type SessionLoad =
 	| { ok: true; module: SessionModule }
 	| { ok: false; error: Extract<QuestionnaireError, "session_load_failed" | "stale_module_cache">; message: string };
@@ -166,7 +195,6 @@ function registerCollapseKeyListener(
 	overlayHandleRef: OverlayHandleRef,
 ): (() => void) | undefined {
 	if (collapseKey === COLLAPSE_KEY_OFF || typeof ctx.ui.onTerminalInput !== "function") return undefined;
-	let hasAnnouncedHide = false;
 	return ctx.ui.onTerminalInput((data) => {
 		const handle = overlayHandleRef.current;
 		if (!handle) return undefined;
@@ -181,10 +209,6 @@ function registerCollapseKeyListener(
 		// the overlay and a held key does not toggle it repeatedly.
 		if (isKeyRelease(data) || isKeyRepeat(data)) return { consume: true };
 		sessionRef.current?.toggleCollapsedExternal();
-		if (handle.isHidden() && !hasAnnouncedHide) {
-			hasAnnouncedHide = true;
-			ctx.ui.notify?.(`ask_user_question hidden — press ${formatKeySpecForDisplay(collapseKey)} to reopen`, "info");
-		}
 		return { consume: true };
 	});
 }
@@ -254,6 +278,10 @@ function makeSessionFactory(config: {
 			collapseKey,
 			canReopenWhileHidden,
 			rowBudget: rowBudgetForHost(tui.terminal, presentation.rowBudget),
+			// Collapse flips set/clear the persistent widget (T6); the session's commit is
+			// the single choke point covering both toggle paths (dispatch + raw listener).
+			onCollapseChange: (collapsed) =>
+				collapsed ? setCollapseWidget(ctx, sessionRef, collapseKey) : clearCollapseWidget(ctx),
 		});
 		sessionRef.current = session;
 		return session.component;
@@ -384,6 +412,12 @@ async function runTuiPath(pi: ExtensionAPI, ctx: ExtensionContext, typed: Questi
 			result = await mount(presentation);
 		}
 
+		// Widget lifecycle: submit, Esc-cancel, rephrase-cap cancel, and the
+		// external-answer race all resolve the mount — the widget must not outlive the
+		// dialog. (The reopen exit clears via the collapse callback.) Harmless no-op when
+		// the widget was never set (RPC fallback, pre-collapse resolution).
+		clearCollapseWidget(ctx);
+
 		if (result === undefined) {
 			// The RPC walker takes over; its prompts cannot be answered from outside.
 			open.host = "rpc";
@@ -469,6 +503,30 @@ export function registerAskUserQuestionTool(pi: ExtensionAPI): void {
 		parameters: QuestionParamsSchema,
 		// Undo double-encoded nested arguments before Pi validates them (#244).
 		prepareArguments: prepareQuestionArguments,
+
+		// Transcript chrome (T6): one-line call summary, decision card for answered
+		// results, single envelope line for declined/cancelled. Both degrade safely on
+		// replayed/malformed args — the pure formatters are pinned by decision-card tests.
+		renderCall(args, theme) {
+			return new Text(buildCallSummaryLine(args, theme), 0, 0);
+		},
+
+		renderResult(result, options, theme, context) {
+			const text = result.content.find((c) => c.type === "text")?.text ?? "";
+			return new Text(
+				buildDecisionCardLines({
+					text,
+					// pi leaves `details` untyped on the renderer side; the envelope builder
+					// always stores a QuestionnaireResult here (buildToolResult).
+					details: result.details as QuestionnaireResult | undefined,
+					params: context?.args,
+					expanded: options.expanded,
+					theme,
+				}).join("\n"),
+				0,
+				0,
+			);
+		},
 
 		async execute(toolCallId, params, _signal, _onUpdate, ctx) {
 			// Line-terminator normalization runs once here, ahead of validation, so

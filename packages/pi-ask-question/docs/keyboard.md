@@ -108,8 +108,9 @@ questionnaire back with your answers intact.
 
 When the questionnaire opened as an overlay for a second question, collapse marks the
 overlay hidden in Pi's overlay stack, so the transcript it was covering
-becomes readable and chat scrolling resumes. The first time you collapse, Pi notifies you
-with the key to press — that message names your configured key. Because Pi routes no
+becomes readable and chat scrolling resumes. While hidden, a persistent widget above the
+editor shows your answer progress (`answered n/m`) and names the key to press — your
+configured key. Because Pi routes no
 input to a hidden overlay, the collapse key is additionally captured at the raw terminal
 level. It only acts when the questionnaire is hidden or focused, so a different overlay
 on top of it (for example `/btw`) keeps its keystrokes. A question that opened on top of

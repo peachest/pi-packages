@@ -32,6 +32,13 @@ export interface QuestionnaireSessionConfig {
 	canReopenWhileHidden: boolean;
 	/** Terminal rows → rows the dialog may render; see `QuestionnaireBuildConfig.rowBudget`. */
 	rowBudget: (terminalRows: number) => number;
+	/**
+	 * Fired after every commit that flips `collapsed` (T6): both toggle paths — the raw
+	 * terminal listener (`toggleCollapsedExternal`) and the in-dialog dispatch — converge
+	 * here, so this is the single choke point where the host sets/clears the persistent
+	 * collapse widget. Only flips fire; a submit/cancel end never does.
+	 */
+	onCollapseChange?: (collapsed: boolean) => void;
 }
 
 export interface QuestionnaireSessionComponent {
@@ -79,6 +86,7 @@ export class QuestionnaireSession {
 	private readonly editInput: QuestionnaireSessionConfig["editInput"];
 	private readonly collapseKey: string;
 	private readonly canReopenWhileHidden: boolean;
+	private readonly onCollapseChange: QuestionnaireSessionConfig["onCollapseChange"];
 	private inputEditorOpen = false;
 
 	/**
@@ -102,6 +110,7 @@ export class QuestionnaireSession {
 		this.editInput = config.editInput;
 		this.collapseKey = config.collapseKey;
 		this.canReopenWhileHidden = config.canReopenWhileHidden;
+		this.onCollapseChange = config.onCollapseChange;
 
 		const built = buildQuestionnaire({
 			tui: this.tui,
@@ -165,11 +174,13 @@ export class QuestionnaireSession {
 	}
 
 	private commit(action: QuestionnaireAction): void {
+		const wasCollapsed = this.state.collapsed;
 		const result = reduce(this.state, action, this.applyContext());
 		this.state = result.state;
 		for (const effect of result.effects) this.runEffect(effect);
 		this.state = this.mirrorNotesDraft(this.state);
 		this.viewAdapter.apply(this.state);
+		if (this.state.collapsed !== wasCollapsed) this.onCollapseChange?.(this.state.collapsed);
 	}
 
 	private mirrorNotesDraft(s: QuestionnaireState): QuestionnaireState {
@@ -276,6 +287,16 @@ export class QuestionnaireSession {
 	 */
 	setOverlayHandle(handle: OverlayHandle): void {
 		this.overlayHandle = handle;
+	}
+
+	/** Live answer count for the persistent collapse widget (T6) — read at widget render time. */
+	get answeredCount(): number {
+		return this.state.answers.size;
+	}
+
+	/** Authored question total for the persistent collapse widget (T6). */
+	get questionCount(): number {
+		return this.questions.length;
 	}
 
 	/**
