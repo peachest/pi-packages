@@ -171,6 +171,44 @@ function dualSuite(label: string, make: () => Store & { close?(): void }): void 
       s.close?.();
     });
 
+    it("latestEventIdFor(ref,to)：下推 lastEventIdFor N+1（票 123/scan-① sqlite 覆盖，dualSuite 双实现）", () => {
+      const s = make();
+      s.tx((tx) => {
+        tx.putEvent({ ...ev(1), eventId: "evt:x:external/1#1", entityRefType: "x", entityRefKey: "external/1", to: "passed" });
+        tx.putEvent({ ...ev(2), eventId: "evt:x:external/1#2", entityRefType: "x", entityRefKey: "external/1", to: "failed" });
+        tx.putEvent({ ...ev(3), eventId: "evt:x:external/1#3", entityRefType: "x", entityRefKey: "external/1", to: "passed" });
+        tx.putOutbox({ notificationId: "evt:x:external/1#1", eventSeq: 1 });
+        tx.putOutbox({ notificationId: "evt:x:external/1#2", eventSeq: 2 });
+        tx.putOutbox({ notificationId: "evt:x:external/1#3", eventSeq: 3 });
+      });
+      expect(s.latestEventIdFor({ type: "x", key: "external/1" }, "passed")).toBe("evt:x:external/1#3");
+      expect(s.latestEventIdFor({ type: "x", key: "external/1" }, "waiting")).toBeUndefined();
+      s.close?.();
+    });
+
+    it("latestSeqForRef(ref)：publish 尾序下推（dualSuite 双实现）", () => {
+      const s = make();
+      s.tx((tx) => {
+        tx.putEvent({ ...ev(1), eventId: "evt:y:project/k#1", entityRefType: "y", entityRefKey: "project/k" });
+        tx.putEvent({ ...ev(2), eventId: "evt:y:project/k#2", entityRefType: "y", entityRefKey: "project/k" });
+        tx.putEvent({ ...ev(3), eventId: "evt:z:project/k#3", entityRefType: "z", entityRefKey: "project/k" });
+        tx.putOutbox({ notificationId: "evt:y:project/k#1", eventSeq: 1 });
+        tx.putOutbox({ notificationId: "evt:y:project/k#2", eventSeq: 2 });
+        tx.putOutbox({ notificationId: "evt:z:project/k#3", eventSeq: 3 });
+      });
+      expect(s.latestSeqForRef({ type: "y", key: "project/k" })).toBe(2);
+      expect(s.latestSeqForRef({ type: "nope", key: "project/x" })).toBe(0);
+      s.close?.();
+    });
+
+    it("fanOut 消费水位：markFanOutConsumed 推进 / fanOutWatermark 读回（dualSuite 双实现）", () => {
+      const s = make();
+      s.markFanOutConsumed("evt:a#1", 10);
+      s.markFanOutConsumed("evt:a#2", 20);
+      expect(s.fanOutWatermark()).toBe(20);
+      s.close?.();
+    });
+
     it("outboxUnconsumed：游标增量读（票 123 契约，替代 outboxBatch limit 截断）", () => {
       const s = make();
       s.tx((tx) => {
@@ -645,58 +683,3 @@ describe("ticket 22: 真 SQLite（B 层）", () => {
   });
 });
 
-describe("票 123（候选2）：事件级查询 seam + fanOut 消费水位", () => {
-  it("latestEventIdFor(ref,to)：下推 lastEventIdFor N+1（returns undefined when none）", () => {
-    const s: Store & { close?(): void } = createMemoryStore();
-    s.tx((tx) => {
-      tx.putEvent({ ...ev(1), eventId: "evt:x:external/1#1", entityRefType: "x", entityRefKey: "external/1", to: "passed" });
-      tx.putEvent({ ...ev(2), eventId: "evt:x:external/1#2", entityRefType: "x", entityRefKey: "external/1", to: "failed" });
-      tx.putEvent({ ...ev(3), eventId: "evt:x:external/1#3", entityRefType: "x", entityRefKey: "external/1", to: "passed" });
-      tx.putOutbox({ notificationId: "evt:x:external/1#1", eventSeq: 1 });
-      tx.putOutbox({ notificationId: "evt:x:external/1#2", eventSeq: 2 });
-      tx.putOutbox({ notificationId: "evt:x:external/1#3", eventSeq: 3 });
-    });
-    expect(s.latestEventIdFor({ type: "x", key: "external/1" }, "passed")).toBe("evt:x:external/1#3");
-    expect(s.latestEventIdFor({ type: "x", key: "external/1" }, "waiting")).toBeUndefined();
-    s.close?.();
-  });
-
-  it("latestSeqForRef(ref)：publish 尾序下推", () => {
-    const s: Store & { close?(): void } = createMemoryStore();
-    s.tx((tx) => {
-      tx.putEvent({ ...ev(1), eventId: "evt:y:project/k#1", entityRefType: "y", entityRefKey: "project/k" });
-      tx.putEvent({ ...ev(2), eventId: "evt:y:project/k#2", entityRefType: "y", entityRefKey: "project/k" });
-      tx.putEvent({ ...ev(3), eventId: "evt:z:project/k#3", entityRefType: "z", entityRefKey: "project/k" });
-      tx.putOutbox({ notificationId: "evt:y:project/k#1", eventSeq: 1 });
-      tx.putOutbox({ notificationId: "evt:y:project/k#2", eventSeq: 2 });
-      tx.putOutbox({ notificationId: "evt:z:project/k#3", eventSeq: 3 });
-    });
-    expect(s.latestSeqForRef({ type: "y", key: "project/k" })).toBe(2);
-    expect(s.latestSeqForRef({ type: "nope", key: "project/x" })).toBe(0);
-    s.close?.();
-  });
-
-  it("fanOut 消费水位：markFanOutConsumed 推进 / fanOutWatermark 读回；重启（重开 store）水位仍在", () => {
-    const dbPath = tmpDbPath();
-    const s: Store & { close?(): void } = new SqliteStore(dbPath);
-    s.markFanOutConsumed("evt:a#1", 10);
-    s.markFanOutConsumed("evt:a#2", 20);
-    expect(s.fanOutWatermark()).toBe(20);
-    s.close?.();
-    const s2: Store & { close?(): void } = new SqliteStore(dbPath); // 重启恢复
-    expect(s2.fanOutWatermark()).toBe(20);
-    s2.close?.();
-  });
-
-  it("outboxUnconsumed(afterSeq)：游标增量读（deliverScan 尾部重放面）", () => {
-    const s: Store & { close?(): void } = createMemoryStore();
-    s.tx((tx) => {
-      tx.putOutbox({ notificationId: "n1", eventSeq: 1 });
-      tx.putOutbox({ notificationId: "n2", eventSeq: 2 });
-      tx.putOutbox({ notificationId: "n3", eventSeq: 3 });
-    });
-    expect(s.outboxUnconsumed(1).map((r) => r.notificationId)).toEqual(["n2", "n3"]);
-    expect(s.outboxUnconsumed(3)).toEqual([]);
-    s.close?.();
-  });
-});
