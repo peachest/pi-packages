@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { hostname, tmpdir } from "node:os";
+import { homedir, hostname, tmpdir } from "node:os";
 import { existsSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { basename, resolve, join, isAbsolute } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -168,6 +168,8 @@ const CONTINUATION_MESSAGE_TYPE = "pi-worktrunk-continuation";
 const MAX_CONTINUATION_OUTPUT = 50_000;
 const CONTINUATION_ARG_PREFIX = "__pi_worktrunk_continuation=";
 const WORKTRUNK_ALIAS_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
+const REMOVE_SELF_GUARD_MESSAGE = "目标 worktree 是当前 session 所在目录。先 wt switch main 迁出，再 remove。（headless session 无 recover 网，此拦截是唯一防线）";
+const HEADLESS_MIGRATION_NOTICE = "本 session 为 headless 模式，session 自动迁移不可用；如需收尾请用 merge --no-remove 并向父 session 报告";
 const COMPACT_REFERENCE = `Worktrunk command reference (subset; run \`wt <cmd> --help\` via bash for full detail)
 - switch [BRANCH] [-c] [-b BASE] [-C REPO] — switch to or create a worktree; checkouts live at ~/projects/<repo>-<branch>. -c creates the branch (-b sets its base, default main). -C targets another repo checkout (bare repos).
 - remove [BRANCH...] [-D] [-f] [--no-delete-branch] — remove worktrees; branches deleted if merged
@@ -856,6 +858,34 @@ function isBareCommand(invocation: Invocation, command: string): boolean {
   return invocation.command === command && invocation.commandArgs.length === 0;
 }
 
+/** Whether any `wt remove` target resolves to `cwd` itself or an ancestor of it.
+ * A bare `wt remove` defaults to the current worktree, so it always blocks. */
+export function removeTargetsSelf(
+  items: readonly WorktreeItem[],
+  commandArgs: readonly string[],
+  cwd: string,
+): boolean {
+  const branches = commandArgs.filter((arg) => !arg.startsWith("-"));
+  const targets = branches.length
+    ? branches.map((branch) => {
+        const requested = branch.startsWith("~")
+          ? join(homedir(), branch.slice(1))
+          : resolve(cwd, branch);
+        return items.find((item) =>
+          item.branch === branch ||
+          (item.worktree?.path !== undefined && canonicalPath(item.worktree.path) === canonicalPath(requested)),
+        )?.worktree?.path;
+      })
+    // Bare remove removes the current worktree (wt semantics).
+    : [items.find((item) => item.worktree?.current)?.worktree?.path ?? cwd];
+  const self = canonicalPath(cwd).replace(/\/+$/, "");
+  return targets.some((target) => {
+    if (target === undefined) return false;
+    const path = canonicalPath(target).replace(/\/+$/, "");
+    return path === self || self.startsWith(`${path}/`);
+  });
+}
+
 function relationText(relation?: Relation): string { return `ahead ${relation?.ahead ?? 0}, behind ${relation?.behind ?? 0}`; }
 function changeText(item: WorktreeItem): string {
   const changes = item.worktree?.changes ?? {};
@@ -1069,6 +1099,11 @@ export default function extension(
 
   async function safeList(cwd: string, signal?: AbortSignal): Promise<WorktreeItem[]> {
     try { return await client.list(cwd, signal); } catch { return []; }
+  }
+  async function removeSelfGuard(invocation: Invocation, cwd: string, signal?: AbortSignal): Promise<string | undefined> {
+    if (invocation.command !== "remove") return undefined;
+    const blocked = removeTargetsSelf(await safeList(cwd, signal), invocation.commandArgs, cwd);
+    return blocked ? REMOVE_SELF_GUARD_MESSAGE : undefined;
   }
   async function readWorktreeIdentity(cwd: string): Promise<RepositoryIdentity | undefined> {
     try {
@@ -1352,6 +1387,11 @@ export default function extension(
       }
       args = ["switch", selected.worktree.path];
     }
+    const guardMessage = await removeSelfGuard(invocation, ctx.cwd, ctx.signal);
+    if (guardMessage) {
+      displayCommand(ctx, args, guardMessage, true, modelOrigin);
+      return { result: { code: 1 }, output: guardMessage, moved: false, canContinue: false };
+    }
 
     const scope = approvalScope(invocation, ctx.cwd);
     const canPrompt = interactive && ctx.hasUI;
@@ -1405,6 +1445,10 @@ export default function extension(
       output = [output, await describeApprovalFailure(output, scope, ctx.cwd, ctx.signal)].filter(Boolean).join("\n");
     }
     output = [...notes, output].filter(Boolean).join("\n\n");
+    if (result.code === 0 && !result.killed && !interactive &&
+        (invocation.command === "merge" || invocation.command === "remove")) {
+      output = [output, HEADLESS_MIGRATION_NOTICE].filter(Boolean).join("\n\n");
+    }
     progress.hide();
     displayCommand(ctx, args, output, result.code !== 0 || Boolean(result.killed), modelOrigin);
     const base: Execution = { result, output, moved: false, canContinue: false };
@@ -1587,6 +1631,8 @@ export default function extension(
               `Command not run: Pi's working directory is no longer usable. Restart Pi in ${target?.path ?? "a surviving worktree"}.`);
           }
           if (ctx.mode === "print" || ctx.mode === "json" || (usable && canRunInline(invocation, aliasNames.has(params.command)))) {
+            const guardMessage = await removeSelfGuard(invocation, ctx.cwd, signal);
+            if (guardMessage) return toolReply("failed", args, ctx.cwd, guardMessage);
             let result: WtResult;
             try { result = await invoke(args, { cwd: ctx.cwd, signal }); }
             catch (error) {
@@ -1597,6 +1643,10 @@ export default function extension(
               ? await pendingApprovals(approvalScope(invocation, ctx.cwd), ctx.cwd, signal)
               : undefined;
             const approval = approvalFailureDetails(output, pending);
+            const migrationNotice = result.code === 0 && !result.killed &&
+              (invocation.command === "merge" || invocation.command === "remove") &&
+              (ctx.mode === "print" || ctx.mode === "json")
+              ? HEADLESS_MIGRATION_NOTICE : undefined;
             let stopReason: string | undefined;
             try {
               const destination = await directedDestination(result.directive, identity);
@@ -1620,14 +1670,14 @@ export default function extension(
             }
             if (stopReason) {
               ctx.abort();
-              return toolReply("stopped", args, ctx.cwd, [output, approval, stopReason].filter(Boolean).join("\n\n"), result);
+              return toolReply("stopped", args, ctx.cwd, [output, approval, stopReason, migrationNotice].filter(Boolean).join("\n\n"), result);
             }
             if (result.code !== 0 || result.killed) {
               const failure = formatWtFailure(args, result, ctx.cwd);
               return toolReply("failed", args, ctx.cwd,
                 [failure, aliasFailureSummary(invocation, failure, result.code), approvalFailureDetails(failure, pending)].filter(Boolean).join("\n"), result);
             }
-            return toolReply("completed", args, ctx.cwd, output || `wt ${args.join(" ")} completed successfully.`, result);
+            return toolReply("completed", args, ctx.cwd, [output || `wt ${args.join(" ")} completed successfully.`, migrationNotice].filter(Boolean).join("\n\n"), result);
           }
           const nonce = randomUUID();
           placementInFlight = true;
