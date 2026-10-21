@@ -25,6 +25,11 @@ npm pack pi-worktrunk@<ver> && tar xzf pi-worktrunk-<ver>.tgz
 ./sync.sh package        # 冲突即报错，人工裁决后重生成 patch
 ```
 
+重生成 patch 必须带 `--relative`（否则路径是仓库根相对，sync.sh 无法命中）：
+
+```bash
+git diff --relative -- upstream/ > lite.patch
+
 上游若升级（pi-worktrunk 发布新版本或 vendored 自 wt 升级后需手动 diff 同步），需重审：①`--help-md` 探测的 token 开销是否已被上游优化（是则 COMPACT_REFERENCE 可退役）；②新增子命令是否值得进紧凑参考；③与 `~/.config/worktrunk/config.toml` 全局配置的措辞是否仍一致。
 
 ## 验证
