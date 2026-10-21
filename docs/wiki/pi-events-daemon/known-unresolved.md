@@ -59,6 +59,12 @@
 - **票 123 A5 张力**：consumedOutbox 持久水位与 A5"重启归零"字面冲突，已按票 42 F1 位点恢复先例显式记账（commit 6502bc1）；若未来 A5 语义复审需连带此处。
 - **票 126 旁车日志无轮转**：<socket>.daemon.log 追加无上限——daemon 稳态几乎零 stderr，仅崩溃场景写入，量级可忽略；若出现异常增长再立轮转票。
 
+## scan 修复批裁定记录（2026-10-21，票 127-135 = ocr scan + challenge-audit 后修复）
+
+- **已修**：水位前缀推进（127）、sqlite e.to_state（128）、launcher 真入口+spawn error（128）、孤儿实体清理（129）、单引号凭据脱敏（130）、opts 守卫（131）、repush finally（132）、exec 输出上限（133）、lockfile TOCTOU 重读版（134）、on 谓词校验（135=#128）
+- **记账**：lockfile 回收窗口缩至最小但仍非原子（O_EXCL 设计边界；完全原子需 flock-on-pidfile，post-MVP）
+- **P2**：intent.ts sameEventContent 嵌套 ===（死代码语义陷阱，无生产消费）；sqlite latestSeqForRef LIKE 未转义 %/_（ref 含 % 时误匹配——entity key 是 sha/url，含 % 概率极低）
+
 ## 后续调研票注记
 
 - **QuickJS-WASI 沙箱（终审裁定④衍生）**：用 pi v1.0 codemode / quickjs-wasi（独立 npm 包、纯库可嵌入

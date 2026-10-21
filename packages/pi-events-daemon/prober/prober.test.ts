@@ -658,3 +658,12 @@ describe("票 16 — 真 spawn 冒烟（真执行器 adapter 存在性证明，f
     expect(results[8].verdict).toBe("passed"); // hung 组被杀 → 槽位释放 → 补位跑完 → 不 wedge
   }, 20_000);
 });
+
+describe("票 130（scan-B）：单引号凭据形态脱敏", () => {
+  it("password='a b c'（单引号含空格）→ 整体掩码，不只掩前半", () => {
+    const p = new prober.Prober({ exec: null as never, clock: null as never, onResult: () => {} });
+    const out = p["maskText"]("error: password='alpha beta gamma' login failed");
+    expect(out).not.toContain("beta gamma");
+    expect(out).toContain("***");
+  });
+});

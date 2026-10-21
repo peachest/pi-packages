@@ -574,7 +574,7 @@ export class SqliteStore implements Store {
   // 票 123（候选2）事件级查询 seam——SQL 下推（与 MemoryStore 朴素实现 dualSuite 契约锁定）
   latestEventIdFor(ref: { type: string; key: string }, to: string): string | undefined {
     const r = this.st(
-      "SELECT o.notification_id AS id FROM outbox o JOIN events e ON e.event_id = o.notification_id WHERE e.entity_ref_type = ? AND e.entity_ref_key = ? AND e.to = ? ORDER BY o.event_seq DESC LIMIT 1",
+      "SELECT o.notification_id AS id FROM outbox o JOIN events e ON e.event_id = o.notification_id WHERE e.entity_ref_type = ? AND e.entity_ref_key = ? AND e.to_state = ? ORDER BY o.event_seq DESC LIMIT 1",
     ).get(ref.type, ref.key, to) as RawRow | undefined;
     return r ? String(r.id) : undefined;
   }

@@ -774,3 +774,36 @@ describe("票 44 — Transitioned 沿广播（观察面板 edge-driven 刷新）
     loops.stop();
   });
 });
+
+describe("票 127（scan-③）：水位连续前缀推进——失败缺口不跳过", () => {
+  it("乱序到达：seq2 成功先于 seq1 → watermark 不跳（暂存）；seq1 到达成功 → 前缀推进至 2（票 127 scan-③）", async () => {
+    const base = createMemoryStore();
+    base.putEntity({ type: REF.type, key: REF.key, state: null });
+    seedSub(base);
+    const nid1 = "evt:fixture:widget:external/fixture-1#1";
+    const nid2 = "evt:fixture:widget:external/fixture-1#2";
+    // 先只放 seq2（模拟 seq1 缺口——失败行重试期间 seq2 已成功）
+    base.tx((tx) => {
+      tx.putEvent({ eventId: nid2, eventSeq: 2, entityRefType: REF.type, entityRefKey: REF.key, from: "passed", to: "failed", contentIdentity: "c2", occurredAt: "2026-10-21T00:00:02Z" });
+      tx.putOutbox({ notificationId: nid2, eventSeq: 2 });
+    });
+    const clock = new FakeClock();
+    const pusher = new FakePusher();
+    const loops = startLoops(makeCtx(base, { clock, pusher }));
+    loops.sessionStart("s1");
+    clock.step(3000);
+    await micro();
+    // seq2 成功但 watermark 必须保持 0（缺口 seq1 未消费——不跳过）
+    expect(base.fanOutWatermark()).toBe(0);
+    // 补入 seq1 → 兜底扫消费 → 连续前缀 flush → watermark=2
+    base.tx((tx) => {
+      tx.putEvent({ eventId: nid1, eventSeq: 1, entityRefType: REF.type, entityRefKey: REF.key, from: "waiting", to: "passed", contentIdentity: "c1", occurredAt: "2026-10-21T00:00:01Z" });
+      tx.putOutbox({ notificationId: nid1, eventSeq: 1 });
+    });
+    clock.step(3000);
+    await micro();
+    expect(base.fanOutWatermark()).toBe(2);
+    expect(pusher.pushed.length).toBeGreaterThanOrEqual(2);
+    loops.stop();
+  });
+});
