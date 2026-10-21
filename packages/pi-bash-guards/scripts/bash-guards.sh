@@ -146,6 +146,35 @@ def _wt_segments(text):
     # Command positions within each line (same segment model as guard 2).
     return [seg for seg, _d in _wt_pairs(text) if seg]
 
+def _cwd_walk(pairs, start):
+    # (segment, cwd-at-that-point): cd segments move the cursor (bare cd →
+    # HOME; `cd -` unknowable → keep), delimiter runs track subshell depth —
+    # a cd inside ( … ) is popped when the group closes. Shared by R3 and P6
+    # so both judge commands by the directory they run in (rolling-r1 L191).
+    cur, stack = start, []
+    for seg, delim in pairs:
+        for ch in delim:
+            if ch == "(":
+                stack.append(cur)
+            elif ch == ")" and stack:
+                cur = stack.pop()
+        if not seg:
+            continue
+        mcd = re.match(r"^cd\b\s*(.*)$", seg)
+        if mcd:
+            try:
+                toks = shlex.split(mcd.group(1).strip())
+            except ValueError:
+                toks = mcd.group(1).split()
+            tgt = next((t for t in toks if t != "--" and not t.startswith("-")), None)
+            if tgt is None:
+                cur = os.path.expanduser("~")    # bare `cd` → HOME
+            elif tgt != "-":                     # `cd -`: OLDPWD unknowable, keep
+                tgt = os.path.expanduser(tgt)
+                cur = os.path.normpath(tgt if os.path.isabs(tgt) else os.path.join(cur, tgt))
+            continue
+        yield seg, cur
+
 # Override escape hatch (#138): an explicit marker comment in the command
 # text bypasses ALL guards for this one invocation, with a stderr warning as
 # the audit trail. Guards must never permanently block legitimate rescue
@@ -265,35 +294,44 @@ for _s in _wt_segments(cmd):
 # has a .git DIRECTORY and is never touched by this rule. rolling-r1 L191:
 # the .git test follows the COMMAND's directory, not the hook process cwd —
 # `cd <linked> && git checkout main` (subshell or plain) escaped when the
-# hook ran from a main checkout. Delimiters from _wt_pairs track subshell
-# depth: a cd inside ( … ) is popped when the group closes. File restores
-# (checkout -- <path>, checkout <rev> -- <path>, checkout <existing path>)
-# and new-branch creation (-b/-B/-c/-C/--orphan) stay allowed.
-_cur = os.getcwd()
-_r3_stack = []
-for _seg, _delim in _wt_pairs(cmd):
-    for _ch in _delim:                       # subshell depth, before the segment
-        if _ch == "(":
-            _r3_stack.append(_cur)
-        elif _ch == ")" and _r3_stack:
-            _cur = _r3_stack.pop()
-    if not _seg:
+# hook ran from a main checkout; _cwd_walk tracks cd + subshell depth.
+# rolling-r2 L239: the effective worktree root also has to honor `-C <dir>`
+# and repo discovery from a SUBDIRECTORY — resolve -C (chained, relative to
+# the tracked cwd), then walk ancestors for .git: FILE = linked worktree
+# (enforce), DIRECTORY = main checkout (allow), none = not a repo (allow).
+# File restores (checkout -- <path>, checkout <rev> -- <path>, checkout
+# <existing path>) and new-branch creation (-b/-B/-c/-C/--orphan) stay allowed.
+for _seg, _cur in _cwd_walk(_wt_pairs(cmd), os.getcwd()):
+    _m = re.match(r"^git\s+((?:-\S+\s+\S+\s+)*)(checkout|switch)(\s|$)", _seg)
+    if not _m:
         continue
-    _mcd = re.match(r"^cd\b\s*(.*)$", _seg)
-    if _mcd:
-        try:
-            _toks = shlex.split(_mcd.group(1).strip())
-        except ValueError:
-            _toks = _mcd.group(1).split()
-        _tgt = next((_t for _t in _toks if _t != "--" and not _t.startswith("-")), None)
-        if _tgt is None:
-            _cur = os.path.expanduser("~")    # bare `cd` → HOME
-        elif _tgt != "-":                     # `cd -`: OLDPWD unknowable, keep
-            _tgt = os.path.expanduser(_tgt)
-            _cur = os.path.normpath(_tgt if os.path.isabs(_tgt) else os.path.join(_cur, _tgt))
-        continue
-    _m = re.match(r"^git\s+(?:-\S+\s+\S+\s+)*(checkout|switch)(\s|$)", _seg)
-    if not _m or not os.path.isfile(os.path.join(_cur, ".git")):
+    _root = _cur
+    try:
+        _gt = shlex.split(_m.group(1))
+    except ValueError:
+        _gt = _m.group(1).split()
+    _j = 0
+    while _j < len(_gt):
+        if _gt[_j] == "-C" and _j + 1 < len(_gt):
+            _d = os.path.expanduser(_gt[_j + 1])
+            _root = os.path.normpath(_d if os.path.isabs(_d) else os.path.join(_root, _d))
+            _j += 2
+        else:
+            _j += 1
+    _linked = None
+    _p = _root
+    while True:
+        _gp = os.path.join(_p, ".git")
+        if os.path.isfile(_gp):
+            _linked = _p
+            break
+        if os.path.isdir(_gp):
+            break
+        _parent = os.path.dirname(_p)
+        if _parent == _p:
+            break
+        _p = _parent
+    if _linked is None:
         continue
     try:
         _args = shlex.split(_seg[_m.end():])
@@ -315,9 +353,9 @@ for _seg, _delim in _wt_pairs(cmd):
             continue
         _branch = _a
         break
-    if _branch is None or ("--" in _args and _m.group(1) == "checkout"):
+    if _branch is None or ("--" in _args and _m.group(2) == "checkout"):
         continue
-    if _m.group(1) == "checkout" and os.path.exists(os.path.join(_cur, _branch)):
+    if _m.group(2) == "checkout" and os.path.exists(os.path.join(_root, _branch)):
         continue  # bare <path> restore — the path exists in this tree
     block("`git checkout <branch>`/`git switch <branch>` inside a linked "
           "worktree moves this tree off its branch and strands the "

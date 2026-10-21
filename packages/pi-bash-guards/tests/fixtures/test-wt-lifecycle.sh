@@ -250,6 +250,15 @@ expect 2 "cp into extensions caught after mkdir segment"  "$PROJ" "mkdir -p ~/.p
 expect 0 "benign cp then echo still allowed"              "$PROJ" "cp x ~/tmp/x && echo done"
 expect 0 "env cp to tmp still allowed"                    "$PROJ" "env cp x ~/tmp/x"
 
+echo "== R3 effective-dir resolution: -C and subdirectory (rolling-r2 L239) =="
+mkdir -p "$MAIN/src" "$LINKED/src"
+expect 2 "git -C linked-wt switch blocked from main"      "$PROJ" "git -C $LINKED switch main" "$MAIN"
+expect 2 "git -C linked-wt subdir switch blocked"         "$PROJ" "git -C $LINKED/src switch main" "$MAIN"
+expect 2 "cwd in linked-wt subdir switch blocked"         "$PROJ" "git switch main" "$LINKED/src"
+expect 0 "git -C main checkout allowed"                   "$PROJ" "git -C $MAIN switch side" "$MAIN"
+expect 0 "git -C main subdir switch allowed"              "$PROJ" "git -C $MAIN/src switch main" "$MAIN"
+expect 0 "cwd in main subdir switch allowed"              "$PROJ" "git switch main" "$MAIN/src"
+
 echo
 echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" = 0 ]
