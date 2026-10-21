@@ -344,17 +344,34 @@ for _s in _wt_segments(cmd):
 
 # 4. Skipping repo hooks: commit --no-verify|-n, push --no-verify.
 #    (git push -n means --dry-run, NOT --no-verify — do not blanket-match -n.)
-if re.search(r"\bgit\s+(?:-\S+\s+\S+\s+)*commit(\s|$)", cmd) and re.search(r"(^|\s)(--no-verify|-n)(\s|$)", cmd):
-    block("git commit --no-verify skips repo hooks (AGENTS.md never-do). "
-          "Drop the --no-verify/-n flag. If a hook fails, run it manually "
-          "to see the error (e.g. bash .git/hooks/pre-commit) and fix the "
-          "reported issue instead of bypassing validation.")
-if re.search(r"\bgit\s+push\b", cmd) and re.search(r"(^|\s)--no-verify(\s|$)", cmd):
-    block("git push --no-verify skips pre-push guards (e.g. the gitleaks "
-          "secret scan in ~/skills). Drop --no-verify. To see what the hook "
-          "would flag before pushing, run: gitleaks git --log-opts "
-          "'origin/main..HEAD' -c ~/data/benchmark/config/gitleaks.toml . "
-          "— fix any finding, then push normally.")
+#    rolling-r2 L291: flags belong to their own invocation — each git segment
+#    is judged on its own option tokens, so `git commit -m x && git push -n`
+#    (push dry-run) and `git diff | head -n 20; git commit -m x` stay legal,
+#    and a flag spelled inside a -m message string is message text, not a
+#    flag. Exact-token match (attached forms like -mn parse as -m n): a
+#    message value that IS literally "-n"/"--no-verify" would false-block —
+#    accepted, absurd input.
+for _s in _wt_segments(cmd):
+    _m4 = re.match(r"^git\s+(?:-\S+\s+\S+\s+)*(commit|push)(\s|$)", _s)
+    if not _m4:
+        continue
+    try:
+        _a4 = shlex.split(_s)
+    except ValueError:
+        _a4 = _s.split()
+    _commit4 = _m4.group(1) == "commit"
+    for _t in _a4:
+        if _t == "--no-verify" or (_t == "-n" and _commit4):
+            if _commit4:
+                block("git commit --no-verify skips repo hooks (AGENTS.md never-do). "
+                      "Drop the --no-verify/-n flag. If a hook fails, run it manually "
+                      "to see the error (e.g. bash .git/hooks/pre-commit) and fix the "
+                      "reported issue instead of bypassing validation.")
+            block("git push --no-verify skips pre-push guards (e.g. the gitleaks "
+                  "secret scan in ~/skills). Drop --no-verify. To see what the hook "
+                  "would flag before pushing, run: gitleaks git --log-opts "
+                  "'origin/main..HEAD' -c ~/data/benchmark/config/gitleaks.toml . "
+                  "— fix any finding, then push normally.")
 
 # G1. Hand-copying into the pi agent dirs (global: the agent install lives
 # outside any one project). Mining: 14 commands/11 sessions, all in

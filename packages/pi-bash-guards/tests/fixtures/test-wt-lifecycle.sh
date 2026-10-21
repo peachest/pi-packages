@@ -236,6 +236,14 @@ expect 0 "trailing real comment still bypasses"       "$PROJ" "git worktree prun
 expect 0 "own-line comment marker still bypasses"     "$PROJ" "# guard-override: deliberate cleanup
 git worktree prune"
 
+echo "== bypass flag belongs to its own git invocation (rolling-r2 L291) =="
+expect 0 "push dry-run -n does not condemn the commit" "$PROJ" "git commit -m x && git push -n origin HEAD"
+expect 0 "head -n 20 does not condemn the commit"     "$PROJ" "git diff | head -n 20; git commit -m x"
+expect 0 "-n inside -m message is message text"       "$PROJ" "git commit -m 'mention -n flag in message'"
+expect 2 "commit with its own -n still blocked"       "$PROJ" "git commit -n -m x"
+expect 2 "commit with its own --no-verify still blocked" "$PROJ" "git commit --no-verify -m x"
+expect 2 "push with its own --no-verify still blocked" "$PROJ" "git push --no-verify origin main"
+
 echo
 echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" = 0 ]
