@@ -28,7 +28,7 @@ export const HINT_PART_COLLAPSE = HINT_PART_COLLAPSE_TEMPLATE.replace(
 /**
  * `HINT_SINGLE` / `HINT_MULTI` are the resting core hint for NON-multiSelect
  * question tabs only: `buildHintText` drops `NOTES` while the notes editor is
- * open (`state.notesVisible`) or the "Type something." row is capturing text
+ * open (`state.activeSideEditor`) or the "Type something." row is capturing text
  * (`state.inputMode`), and on multiSelect tabs it interleaves `TOGGLE` between
  * `NAV` and `NOTES`, so neither composite is a substring there — assert on
  * `HINT_PART_*` constants in those states instead. The collapse affordance is

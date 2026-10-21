@@ -52,7 +52,7 @@ function makeState(overrides: Partial<QuestionnaireState> = {}): QuestionnaireSt
 		currentTab: 0,
 		optionIndex: 0,
 		inputMode: false,
-		notesVisible: false,
+		activeSideEditor: null,
 		answers: new Map(),
 		multiSelectChecked: new Set(),
 		customDraftsByTab: new Map(),
@@ -61,7 +61,6 @@ function makeState(overrides: Partial<QuestionnaireState> = {}): QuestionnaireSt
 		rephraseCountByTab: new Map(),
 		submitChoiceIndex: 0,
 		notesDraft: "",
-		reasonVisible: false,
 		collapsed: false,
 		...overrides,
 	};
@@ -206,7 +205,7 @@ describe("rephrase state layer (ticket #131)", () => {
 	it("keeps notes and reason in independent slots on the same tab — neither overwrites the other", () => {
 		const ctx = makeCtx();
 		const seeded = makeState({ notesDraft: "偏好 Postgres 但可谈" });
-		const noted = reduce(seeded, { kind: "notes_exit" }, ctx);
+		const noted = reduce(seeded, { kind: "side_editor_exit", slot: "notes" }, ctx);
 		expect(noted.state.notesByTab.get(0)).toBe("偏好 Postgres 但可谈");
 
 		const out = reduce(noted.state, { kind: "rephrase_request", reason: "选项覆盖不全" }, ctx);

@@ -135,19 +135,16 @@ export class QuestionTabStrategy implements TabContentStrategy {
 	}
 
 	midRows(state: DialogState): Component[] {
-		// Reason-editor mount (#132): same shared `notesInput` editor as notes mode —
-		// `reasonVisible` and `notesVisible` are mutually exclusive (dispatch order in
-		// `routeKey`), so the slot below the body hosts whichever side editor is open.
-		if (state.reasonVisible) {
+		// Side-editor mount (#197, #132): one shared `notesInput` editor hosts whichever
+		// slot is open — `activeSideEditor` being a single union value is the type-level
+		// mutual exclusion (formerly two boolean flags + a dispatch-order convention).
+		if (state.activeSideEditor) {
+			const header =
+				state.activeSideEditor === "reason"
+					? t("notes.reason_header", REASON_HEADER)
+					: t("notes.header", NOTES_HEADER);
 			return [
-				new Text(this.config.theme.fg("muted", t("notes.reason_header", REASON_HEADER)), 1, 0),
-				this.config.notesInput,
-				new Spacer(1),
-			];
-		}
-		if (state.notesVisible) {
-			return [
-				new Text(this.config.theme.fg("muted", t("notes.header", NOTES_HEADER)), 1, 0),
+				new Text(this.config.theme.fg("muted", header), 1, 0),
 				this.config.notesInput,
 				new Spacer(1),
 			];
@@ -253,7 +250,7 @@ export class SubmitTabStrategy implements TabContentStrategy {
 		// (seeded with this text) is the live surface then, and a stale copy above it
 		// would read as a second note.
 		const globalNote = state.notesByTab.get(this.config.questions.length);
-		if (!state.notesVisible && globalNote && globalNote.length > 0) {
+		if (state.activeSideEditor !== "notes" && globalNote && globalNote.length > 0) {
 			c.addChild(new Text(this.config.theme.fg("muted", ` ● ${t("review.note_label", REVIEW_NOTE_LABEL)}`), 1, 0));
 			c.addChild(
 				new Text(`   ${this.config.theme.fg("muted", "→")} ${this.config.theme.fg("text", globalNote)}`, 1, 0),
@@ -267,11 +264,11 @@ export class SubmitTabStrategy implements TabContentStrategy {
 	}
 
 	midRows(state: DialogState): Component[] {
-		// notesVisible-gated mirror of QuestionTabStrategy.midRows: while the global-note
+		// notes-slot-gated mirror of QuestionTabStrategy.midRows: while the global-note
 		// editor is open, the shared notesInput mounts below the answer summary under its
 		// own header. The pseudo-index draft (notesByTab[questions.length]) is reducer-owned
 		// state; the strategy only renders.
-		if (!state.notesVisible) return [];
+		if (state.activeSideEditor !== "notes") return [];
 		return [
 			new Text(this.config.theme.fg("muted", t("notes.global_header", GLOBAL_NOTES_HEADER)), 1, 0),
 			this.config.notesInput,
@@ -341,7 +338,7 @@ export function buildHintText(
 ): string {
 	const parts: string[] = [t("hint.enter", HINT_PART_ENTER), t("hint.navigate", HINT_PART_NAV)];
 	if (question?.multiSelect === true) parts.push(t("hint.toggle", HINT_PART_TOGGLE));
-	if (question && !state.notesVisible && !state.inputMode) parts.push(t("hint.notes", HINT_PART_NOTES));
+	if (question && !state.activeSideEditor && !state.inputMode) parts.push(t("hint.notes", HINT_PART_NOTES));
 	if (isMulti) parts.push(t("hint.tab", HINT_PART_TAB));
 	parts.push(t("hint.cancel", HINT_PART_CANCEL));
 	if (collapseKey !== COLLAPSE_KEY_OFF) {
@@ -349,7 +346,7 @@ export function buildHintText(
 			t("hint.collapse", HINT_PART_COLLAPSE_TEMPLATE).replace(KEY_PLACEHOLDER, formatKeySpecForDisplay(collapseKey)),
 		);
 	}
-	if (state.notesVisible || state.inputMode) parts.push(t("hint.newline", HINT_PART_NEW_LINE));
+	if (state.activeSideEditor || state.inputMode) parts.push(t("hint.newline", HINT_PART_NEW_LINE));
 	if (state.inputMode) parts.push(t("hint.clear", HINT_PART_CLEAR));
 	return parts.join(" · ");
 }
@@ -362,8 +359,8 @@ export function buildHintText(
  */
 export function buildSubmitHintText(state: DialogState): string {
 	const parts: string[] = [t("hint.enter", HINT_PART_ENTER), t("hint.navigate", HINT_PART_NAV)];
-	if (!state.notesVisible) parts.push(t("review.global_hint", REVIEW_GLOBAL_HINT));
+	if (state.activeSideEditor !== "notes") parts.push(t("review.global_hint", REVIEW_GLOBAL_HINT));
 	parts.push(t("hint.cancel", HINT_PART_CANCEL));
-	if (state.notesVisible) parts.push(t("hint.newline", HINT_PART_NEW_LINE));
+	if (state.activeSideEditor === "notes") parts.push(t("hint.newline", HINT_PART_NEW_LINE));
 	return parts.join(" · ");
 }

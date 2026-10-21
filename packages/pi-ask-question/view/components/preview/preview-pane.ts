@@ -50,7 +50,7 @@ export {
  * live read.
  */
 export interface PreviewPaneProps {
-	notesVisible: boolean;
+	sideEditorOpen: boolean;
 	/** The question carries a saved note — the affordance offers to edit it rather than add one (#197). */
 	hasNote: boolean;
 	selectedIndex: number;
@@ -113,7 +113,7 @@ export class PreviewPane implements StatefulView<PreviewPaneProps>, Component {
 		this.optionListView = config.optionListView;
 		this.previewBlock = config.previewBlock;
 		this.theme = config.theme;
-		this.props = { notesVisible: false, hasNote: false, selectedIndex: 0, focused: false, inputMode: false };
+		this.props = { sideEditorOpen: false, hasNote: false, selectedIndex: 0, focused: false, inputMode: false };
 	}
 
 	setGlobalLeftWidth(getter: (paneWidth: number) => number): void {
@@ -131,8 +131,8 @@ export class PreviewPane implements StatefulView<PreviewPaneProps>, Component {
 	/** Render-time geometry from `DialogView` (not canonical state, so not a prop). */
 	/** The notes affordance under the preview: shown while focused with the notes editor closed. */
 	private notesAffordance(): NotesAffordance {
-		const { focused, notesVisible, hasNote } = this.props;
-		if (!focused || notesVisible) return "none";
+		const { focused, sideEditorOpen, hasNote } = this.props;
+		if (!focused || sideEditorOpen) return "none";
 		return hasNote ? "edit" : "add";
 	}
 

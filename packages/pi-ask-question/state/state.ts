@@ -2,14 +2,23 @@ import type { QuestionAnswer, QuestionData } from "../tool/types.ts";
 import type { WrappingSelectItem } from "../view/components/wrapping-select.ts";
 
 /**
+ * Which side editor (the shared editor slot below the body) is open, if any. The
+ * union IS the mutual-exclusion guarantee — two editors can never be open at once
+ * because the state can only hold one value (formerly `notesVisible`/`reasonVisible`
+ * booleans whose exclusivity was a dispatch-order convention).
+ */
+export type SideEditorSlot = "notes" | "reason" | null;
+
+/**
  * Canonical state for the questionnaire dialog. Single source of truth — both the
  * dispatcher (`routeKey`) and the view layer read this same shape.
  */
 export interface QuestionnaireState {
+	/** Which side editor (the shared notes/reason slot below the body) is open, if any. */
+	activeSideEditor: SideEditorSlot;
 	currentTab: number;
 	optionIndex: number;
 	inputMode: boolean;
-	notesVisible: boolean;
 	answers: ReadonlyMap<number, QuestionAnswer>;
 	multiSelectChecked: ReadonlySet<number>;
 	/** In-flight custom answers keyed by tab. A present empty string overrides an older answer. */
@@ -33,15 +42,8 @@ export interface QuestionnaireState {
 	rephraseCountByTab: ReadonlyMap<number, number>;
 	/** Focused row in the Submit-tab picker (0 = Submit, 1 = Cancel). Reset on tab switch. */
 	submitChoiceIndex: number;
-	/** Canonical mirror of the in-flight notes editor; runtime mirrors after `forward_notes_keystroke`. */
+	/** Canonical mirror of the in-flight side-editor text; runtime mirrors after `forward_notes_keystroke`. */
 	notesDraft: string;
-	/**
-	 * Reason-editor mode flag (#132): the shared side editor (the `notesVisible` one) is
-	 * open FOR THE REPHRASE REASON — seeded from / committed to `reasonByTab` instead of
-	 * `notesByTab`. Opened by `reason_enter` (`n` while the rephrase row is focused);
-	 * mutually exclusive with `notesVisible` by dispatch order in `routeKey`.
-	 */
-	reasonVisible: boolean;
 	/**
 	 * Collapsed mode: the questionnaire gets out of the way so the agent transcript behind
 	 * the bottom-anchored overlay becomes readable. Toggled by the configured collapse key

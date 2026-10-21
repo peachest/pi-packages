@@ -86,7 +86,7 @@ export const selectSubmitPickerProps: GlobalSelector<SubmitPickerProps> = (state
 };
 
 export const selectPreviewPaneProps: PerTabSelector<PreviewPaneProps> = (state, ctx) => ({
-	notesVisible: state.notesVisible,
+	sideEditorOpen: state.activeSideEditor === "notes",
 	hasNote: selectSavedNote(state.notesByTab, state.answers, ctx.i) !== undefined,
 	selectedIndex: state.optionIndex,
 	focused: ctx.activeView === "options",

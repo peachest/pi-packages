@@ -12,7 +12,7 @@ export interface StatefulView<P> extends Component {
 
 /**
  * Discriminated focus union — encodes the three-cell focus invariant
- * (`notesVisible`, submit-tab, options). Dispatcher cascade (`key-router.ts`)
+ * (`activeSideEditor`, submit-tab, options). Dispatcher cascade (`key-router.ts`)
  * and reducer's defensive clears (`state-reducer.ts`) enforce mutual exclusion;
  * this type makes it explicit so per-component `focused: boolean` flags
  * derive from one equality check against this discriminant rather than

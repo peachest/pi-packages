@@ -34,16 +34,8 @@ export type QuestionnaireAction =
 	 * forced editor path).
 	 */
 	| { kind: "rephrase_request"; reason?: string }
-	| { kind: "notes_enter" }
-	| { kind: "notes_exit" }
-	/**
-	 * Open the reason editor for the rephrase row (#132): the shared side editor opens in
-	 * reason mode — seeded from / committed to `reasonByTab`, never `notesByTab`. Reached
-	 * by `n` while the rephrase row is focused (see the universal-`n` gate in `routeKey`).
-	 */
-	| { kind: "reason_enter" }
-	/** Commit the reason editor: trimmed draft → `reasonByTab` (empty clears the slot). */
-	| { kind: "reason_exit" }
+	| { kind: "side_editor_enter"; slot: "notes" | "reason" }
+	| { kind: "side_editor_exit"; slot: "notes" | "reason" }
 	| { kind: "submit" }
 	| { kind: "submit_nav"; nextIndex: 0 | 1 }
 	| { kind: "notes_forward"; data: string }
@@ -190,24 +182,17 @@ function routeCollapsed(kb: QuestionnaireKeybindings, data: string): Questionnai
 	return { kind: "ignore" };
 }
 
-function routeNotesMode(kb: QuestionnaireKeybindings, data: string): QuestionnaireAction {
-	if (kb.matches(data, KEYBIND_CANCEL)) return { kind: "notes_exit" };
-	if (kb.matches(data, KEYBIND_NEW_LINE)) return { kind: "notes_forward", data };
-	if (isConfirm(kb, data)) return { kind: "notes_exit" };
-	return { kind: "notes_forward", data };
-}
-
 /**
- * Reason-mode router (#132): the shared side editor open for the rephrase reason —
- * same interaction shape as `routeNotesMode` (Esc/Enter commit, Shift+Enter newline,
- * everything else forwards to the editor), different commit slot. Text keystrokes reuse
- * the mode-agnostic `notes_forward` action — the forwarding effect drives the same
- * shared editor component regardless of which mode opened it.
+ * Side-editor router (notes and reason share one interaction shape — Esc/Enter commit,
+ * Shift+Enter newline, everything else forwards to the editor). The open slot comes
+ * from state, so the commit action closes the right editor; text keystrokes reuse the
+ * slot-agnostic `notes_forward` action — the forwarding effect drives the same shared
+ * editor component regardless of which slot opened it.
  */
-function routeReasonMode(kb: QuestionnaireKeybindings, data: string): QuestionnaireAction {
-	if (kb.matches(data, KEYBIND_CANCEL)) return { kind: "reason_exit" };
+function routeSideEditorMode(kb: QuestionnaireKeybindings, data: string, slot: "notes" | "reason"): QuestionnaireAction {
+	if (kb.matches(data, KEYBIND_CANCEL)) return { kind: "side_editor_exit", slot };
 	if (kb.matches(data, KEYBIND_NEW_LINE)) return { kind: "notes_forward", data };
-	if (isConfirm(kb, data)) return { kind: "reason_exit" };
+	if (isConfirm(kb, data)) return { kind: "side_editor_exit", slot };
 	return { kind: "notes_forward", data };
 }
 
@@ -261,13 +246,13 @@ function routeSubmitTab(
 	}
 	// Global note (#182): `n` on the Submit tab opens the notes editor scoped to the whole
 	// questionnaire at the pseudo-index (`questions.length` in notesByTab). Reachable only
-	// with the editor closed — `routeKey` dispatches notesVisible traffic to
+	// with the editor closed — `routeKey` dispatches side-editor traffic to
 	// `routeNotesMode` before the submit-tab block runs. The branch shadows nothing above
 	// it (cancel, tab switch, submit-nav, confirm): a literal `n` byte matches none of them
 	// under default bindings, and a user who deliberately binds one of those actions to
 	// `n` keeps that mapping because the earlier branch still wins (Enter still submits).
 	if (data === NOTES_ACTIVATE_KEY) {
-		return { kind: "notes_enter" };
+		return { kind: "side_editor_enter", slot: "notes" };
 	}
 	return { kind: "ignore" };
 }
@@ -354,8 +339,7 @@ export function routeKey(data: string, state: QuestionnaireState, runtime: Quest
 	}
 
 	if (state.collapsed) return routeCollapsed(kb, data);
-	if (state.notesVisible) return routeNotesMode(kb, data);
-	if (state.reasonVisible) return routeReasonMode(kb, data);
+	if (state.activeSideEditor) return routeSideEditorMode(kb, data, state.activeSideEditor);
 	if (state.inputMode) return routeInputMode(kb, data, state, runtime);
 	if (runtime.isMulti && state.currentTab === runtime.questions.length) {
 		return routeSubmitTab(kb, data, state, runtime);
@@ -369,7 +353,7 @@ export function routeKey(data: string, state: QuestionnaireState, runtime: Quest
 
 	// Universal `n` activation (FR-1): the notes editor opens on every question tab
 	// (single- or multi-select, preview or no-preview). The blocks above already
-	// swallow `n` when it should NOT reach here — notesVisible forwards to the
+	// swallow `n` when it should NOT reach here — an open editor forwards to the
 	// notes Input, inputMode forwards to the inline Input, the submit-tab block
 	// activates it via its own branch (the global note, ahead of its ignore
 	// fall-through), and tabSwitchAction ignores it — so by the time we reach this
@@ -383,8 +367,8 @@ export function routeKey(data: string, state: QuestionnaireState, runtime: Quest
 		// side-band is `reasonByTab`, not `notesByTab` (#132). Everywhere else `n` stays
 		// the universal notes key (FR-1, unchanged): notes remain reachable from any
 		// other row of the same tab, so a tab can carry both a note and a reason.
-		if (runtime.currentItem?.kind === "rephrase") return { kind: "reason_enter" };
-		return { kind: "notes_enter" };
+		if (runtime.currentItem?.kind === "rephrase") return { kind: "side_editor_enter", slot: "reason" };
+		return { kind: "side_editor_enter", slot: "notes" };
 	}
 
 	// Enter on the rephrase row marks the tab for re-ask (#131 action) with the tab's

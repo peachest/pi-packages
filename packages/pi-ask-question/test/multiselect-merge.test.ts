@@ -147,7 +147,7 @@ describe("SubmitTabStrategy multi two-line preview", () => {
 			submitPicker: undefined,
 			notesInput: {} as never,
 		});
-		const state = { answers: new Map(answers), notesByTab: new Map(), notesVisible: false };
+		const state = { answers: new Map(answers), notesByTab: new Map(), activeSideEditor: null };
 		return strategy.bodyComponent(state as never).render(80);
 	}
 

@@ -203,7 +203,7 @@ export class DialogView implements StatefulView<DialogProps> {
 		// Resting mid rows (a question's saved-note row, #197) come out of the spacer's slack,
 		// so a tab with a note keeps the shared height when the body leaves room. The open
 		// notes editor deliberately grows the dialog instead, so it is not absorbed.
-		const restingMidRows = state.notesVisible ? 0 : this.rowsAroundBody(strategy, width) - 1;
+		const restingMidRows = state.activeSideEditor ? 0 : this.rowsAroundBody(strategy, width) - 1;
 		const spacerRows = Math.max(
 			0,
 			this.config.getBodyHeight(width) +

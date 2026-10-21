@@ -66,8 +66,7 @@ function makeState(overrides: Partial<QuestionnaireState> = {}): QuestionnaireSt
 		currentTab: 0,
 		optionIndex: 0,
 		inputMode: false,
-		notesVisible: false,
-		reasonVisible: false,
+		activeSideEditor: null,
 		answers: new Map(),
 		multiSelectChecked: new Set(),
 		customDraftsByTab: new Map(),
@@ -187,15 +186,15 @@ describe("key-router rephrase wiring (ticket #132)", () => {
 
 	it("`n` on the rephrase row opens the reason editor; on an option row it stays the notes key", () => {
 		const onRephrase = routeKey("n", makeState({ optionIndex: 3 }), makeRuntime({ currentItem: multiItems[3], items: multiItems }));
-		expect(onRephrase).toEqual({ kind: "reason_enter" });
+		expect(onRephrase).toEqual({ kind: "side_editor_enter", slot: "reason" });
 		const onOption = routeKey("n", makeState({ optionIndex: 0 }), makeRuntime({ currentItem: multiItems[0], items: multiItems }));
-		expect(onOption).toEqual({ kind: "notes_enter" });
+		expect(onOption).toEqual({ kind: "side_editor_enter", slot: "notes" });
 	});
 
 	it("reason-mode routes like notes-mode: Esc/Enter commit, other keys forward to the shared editor", () => {
-		const base = makeState({ reasonVisible: true, notesDraft: "partial" });
-		expect(routeKey("\x1b", base, makeRuntime())).toEqual({ kind: "reason_exit" });
-		expect(routeKey("\r", base, makeRuntime())).toEqual({ kind: "reason_exit" });
+		const base = makeState({ activeSideEditor: "reason", notesDraft: "partial" });
+		expect(routeKey("\x1b", base, makeRuntime())).toEqual({ kind: "side_editor_exit", slot: "reason" });
+		expect(routeKey("\r", base, makeRuntime())).toEqual({ kind: "side_editor_exit", slot: "reason" });
 		expect(routeKey("x", base, makeRuntime())).toEqual({ kind: "notes_forward", data: "x" });
 	});
 });
@@ -204,14 +203,14 @@ describe("reason editor reducer wiring (ticket #132)", () => {
 	it("reason_enter seeds the shared editor draft from the reasonByTab slot; reason_exit commits the trimmed draft", () => {
 		const ctx = makeCtx();
 		const seeded = makeState({ reasonByTab: new Map([[0, "  选项太窄  "]]) });
-		const opened = reduce(seeded, { kind: "reason_enter" }, ctx);
-		expect(opened.state.reasonVisible).toBe(true);
+		const opened = reduce(seeded, { kind: "side_editor_enter", slot: "reason" }, ctx);
+		expect(opened.state.activeSideEditor).toBe("reason");
 		expect(opened.state.notesDraft).toBe("  选项太窄  ");
 		expect(opened.effects).toContainEqual({ kind: "set_notes_value", value: "  选项太窄  " });
 		expect(opened.effects).toContainEqual({ kind: "set_notes_focused", focused: true });
 
-		const exited = reduce({ ...opened.state, notesDraft: "选项太窄" }, { kind: "reason_exit" }, ctx);
-		expect(exited.state.reasonVisible).toBe(false);
+		const exited = reduce({ ...opened.state, notesDraft: "选项太窄" }, { kind: "side_editor_exit", slot: "reason" }, ctx);
+		expect(exited.state.activeSideEditor).toBe(null);
 		expect(exited.state.reasonByTab.get(0)).toBe("选项太窄");
 		expect(exited.state.notesByTab.size).toBe(0); // independent slot — never touches notes
 	});
@@ -219,7 +218,7 @@ describe("reason editor reducer wiring (ticket #132)", () => {
 	it("empty commit clears the slot and strips a stale reason mirror from the rephrase answer", () => {
 		const ctx = makeCtx();
 		const rephrased = reduce(makeState(), { kind: "rephrase_request", reason: "太模糊" }, ctx);
-		const cleared = reduce({ ...rephrased.state, currentTab: 0, notesDraft: "" }, { kind: "reason_exit" }, ctx);
+		const cleared = reduce({ ...rephrased.state, currentTab: 0, notesDraft: "" }, { kind: "side_editor_exit", slot: "reason" }, ctx);
 		expect(cleared.state.reasonByTab.has(0)).toBe(false);
 		const answer = cleared.state.answers.get(0);
 		expect(answer?.kind).toBe("rephrase");
@@ -228,9 +227,9 @@ describe("reason editor reducer wiring (ticket #132)", () => {
 
 	it("a note and a reason coexist on the same tab and reach the envelope in their own segments", () => {
 		const ctx = makeCtx();
-		let state = reduce(makeState({ notesDraft: "偏好 Postgres 但可谈" }), { kind: "notes_exit" }, ctx).state;
-		state = reduce({ ...state, notesDraft: "" }, { kind: "reason_enter" }, ctx).state;
-		state = reduce({ ...state, notesDraft: "选项覆盖不全" }, { kind: "reason_exit" }, ctx).state;
+		let state = reduce(makeState({ notesDraft: "偏好 Postgres 但可谈" }), { kind: "side_editor_exit", slot: "notes" }, ctx).state;
+		state = reduce({ ...state, notesDraft: "" }, { kind: "side_editor_enter", slot: "reason" }, ctx).state;
+		state = reduce({ ...state, notesDraft: "选项覆盖不全" }, { kind: "side_editor_exit", slot: "reason" }, ctx).state;
 		const done = reduce(state, { kind: "rephrase_request", reason: state.reasonByTab.get(0) }, ctx);
 		const rephrase = done.state.answers.get(0);
 		expect(rephrase).toMatchObject({ kind: "rephrase", reason: "选项覆盖不全", notes: "偏好 Postgres 但可谈" });
@@ -282,9 +281,8 @@ describe("view render: rephrase row and per-mode label (ticket #132)", () => {
 				[1, { questionIndex: 1, question: SINGLE_Q.question, kind: "rephrase", answer: null, reason: "选项太窄", rephraseCount: 1 }],
 			]),
 			notesByTab: new Map(),
-			notesVisible: false,
-			reasonVisible: false,
-		};
+			activeSideEditor: null,
+			};
 		const lines = strategy.bodyComponent(state as never).render(80);
 		expect(lines.some((l) => l.includes("→ 勾选: Option A"))).toBe(true);
 		expect(lines.some((l) => l.includes(`＋ 自定义: "draft"`))).toBe(true);

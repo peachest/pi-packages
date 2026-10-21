@@ -52,7 +52,7 @@ function initialState(): QuestionnaireState {
 		currentTab: 0,
 		optionIndex: 0,
 		inputMode: false,
-		notesVisible: false,
+		activeSideEditor: null,
 		answers: new Map(),
 		multiSelectChecked: new Set(),
 		customDraftsByTab: new Map(),
@@ -61,7 +61,6 @@ function initialState(): QuestionnaireState {
 		rephraseCountByTab: new Map(),
 		submitChoiceIndex: 0,
 		notesDraft: "",
-		reasonVisible: false,
 		collapsed: false,
 	};
 }

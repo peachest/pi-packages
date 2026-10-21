@@ -131,7 +131,7 @@ function switchTabResult(state: QuestionnaireState, nextTab: number, ctx: ApplyC
 		currentTab: nextTab,
 		optionIndex: 0,
 		inputMode: false,
-		notesVisible: false,
+		activeSideEditor: null,
 		submitChoiceIndex: 0,
 		multiSelectChecked: syncMultiSelectFromAnswers(state.answers, ctx.questions, nextTab),
 		notesDraft: notesValue,
@@ -272,50 +272,18 @@ const multiConfirmHandler: Handler<"multi_confirm"> = (state, action, ctx) => {
 	return doneFor(synced, ctx, false);
 };
 
-const notesEnterHandler: Handler<"notes_enter"> = (state, _action, _ctx) => {
-	const value = notesValueFor(state, state.currentTab);
-	return {
-		state: { ...state, notesVisible: true, notesDraft: value },
-		effects: [
-			{ kind: "set_notes_value", value },
-			{ kind: "set_notes_focused", focused: true },
-		],
-	};
-};
-
-const notesExitHandler: Handler<"notes_exit"> = (state, _action, _ctx) => {
-	const trimmed = state.notesDraft.trim();
-	const notes = new Map(state.notesByTab);
-	const answers = new Map(state.answers);
-	if (trimmed.length === 0) {
-		notes.delete(state.currentTab);
-		const prev = answers.get(state.currentTab);
-		if (prev?.notes) {
-			const stripped = { ...prev };
-			delete (stripped as { notes?: string }).notes;
-			answers.set(state.currentTab, stripped);
-		}
-	} else {
-		notes.set(state.currentTab, trimmed);
-		const prev = answers.get(state.currentTab);
-		if (prev) answers.set(state.currentTab, { ...prev, notes: trimmed });
-	}
-	return {
-		state: { ...state, notesByTab: notes, answers, notesVisible: false },
-		effects: [{ kind: "set_notes_focused", focused: false }],
-	};
-};
-
 /**
- * Reason editor seeding (#132): mirrors `notesEnterHandler` but seeds from the
- * `reasonByTab` slot. The draft shares the notes editor's `notesDraft` mirror —
- * only one side editor can be open at a time (dispatch order in `routeKey`), so
- * the single draft cell is unambiguous.
+ * Side-editor open (#197, #132): one parameterized pair serves both slots — the slot
+ * decides which side-band is seeded (`notesByTab` vs `reasonByTab`) and which header
+ * the view renders. The draft mirror is shared (`notesDraft`): only one side editor
+ * can be open at a time because `activeSideEditor` is a single union value, so the
+ * one draft cell is unambiguous (mutual exclusion is now type-level, not dispatch-order).
  */
-const reasonEnterHandler: Handler<"reason_enter"> = (state, _action, _ctx) => {
-	const value = state.reasonByTab.get(state.currentTab) ?? "";
+const sideEditorEnterHandler: Handler<"side_editor_enter"> = (state, action, _ctx) => {
+	const slot = action.slot;
+	const value = slot === "notes" ? notesValueFor(state, state.currentTab) : state.reasonByTab.get(state.currentTab) ?? "";
 	return {
-		state: { ...state, reasonVisible: true, notesDraft: value },
+		state: { ...state, activeSideEditor: slot, notesDraft: value },
 		effects: [
 			{ kind: "set_notes_value", value },
 			{ kind: "set_notes_focused", focused: true },
@@ -324,16 +292,36 @@ const reasonEnterHandler: Handler<"reason_enter"> = (state, _action, _ctx) => {
 };
 
 /**
- * Reason editor commit (#132): mirrors `notesExitHandler` but writes the independent
- * `reasonByTab` slot — never `notesByTab`, so a tab's note and reason coexist. An
- * existing rephrase answer's `reason` mirror is refreshed in kind-guarded shape (an
+ * Side-editor commit: trimmed draft → the slot's side-band (empty clears it). Notes
+ * also refresh the answer mirror (merged at confirm time for pre-answer notes);
+ * reason refreshes the rephrase answer's `reason` mirror in kind-guarded shape (an
  * empty commit strips it, conditional spread keeps `"reason" in answer` honest), so
  * the Submit review stays truthful when the user edits the reason after a rephrase.
  */
-const reasonExitHandler: Handler<"reason_exit"> = (state, _action, _ctx) => {
+const sideEditorExitHandler: Handler<"side_editor_exit"> = (state, action, _ctx) => {
 	const trimmed = state.notesDraft.trim();
-	const reasonByTab = new Map(state.reasonByTab);
 	const answers = new Map(state.answers);
+	if (action.slot === "notes") {
+		const notes = new Map(state.notesByTab);
+		if (trimmed.length === 0) {
+			notes.delete(state.currentTab);
+			const prev = answers.get(state.currentTab);
+			if (prev?.notes) {
+				const stripped = { ...prev };
+				delete (stripped as { notes?: string }).notes;
+				answers.set(state.currentTab, stripped);
+			}
+		} else {
+			notes.set(state.currentTab, trimmed);
+			const prev = answers.get(state.currentTab);
+			if (prev) answers.set(state.currentTab, { ...prev, notes: trimmed });
+		}
+		return {
+			state: { ...state, notesByTab: notes, answers, activeSideEditor: null },
+			effects: [{ kind: "set_notes_focused", focused: false }],
+		};
+	}
+	const reasonByTab = new Map(state.reasonByTab);
 	if (trimmed.length === 0) reasonByTab.delete(state.currentTab);
 	else reasonByTab.set(state.currentTab, trimmed);
 	const prev = answers.get(state.currentTab);
@@ -342,10 +330,11 @@ const reasonExitHandler: Handler<"reason_exit"> = (state, _action, _ctx) => {
 		answers.set(state.currentTab, trimmed.length === 0 ? rest : { ...rest, reason: trimmed });
 	}
 	return {
-		state: { ...state, reasonByTab, answers, reasonVisible: false },
+		state: { ...state, reasonByTab, answers, activeSideEditor: null },
 		effects: [{ kind: "set_notes_focused", focused: false }],
 	};
 };
+
 
 /**
  * Rephrase cap, per tab, per invocation (dialog-lifetime). The 3rd `rephrase_request`
@@ -431,10 +420,9 @@ const HANDLERS: { [K in QuestionnaireAction["kind"]]: Handler<K> } = {
 	multi_confirm: multiConfirmHandler,
 	cancel: cancelHandler,
 	rephrase_request: rephraseRequestHandler,
-	reason_enter: reasonEnterHandler,
-	reason_exit: reasonExitHandler,
-	notes_enter: notesEnterHandler,
-	notes_exit: notesExitHandler,
+
+	side_editor_enter: sideEditorEnterHandler,
+	side_editor_exit: sideEditorExitHandler,
 	notes_forward: notesForwardHandler,
 	submit: submitHandler,
 	submit_nav: submitNavHandler,
