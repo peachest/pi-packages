@@ -2,13 +2,23 @@ import { formatAnswerScalar } from "./format-answer.ts";
 import type { QuestionAnswer, QuestionnaireResult, QuestionParams } from "./types.ts";
 
 export const DECLINE_MESSAGE = "User declined to answer questions";
+/**
+ * Dedicated message for the rephrase-cap cancel (3rd rephrase of the same tab): the user
+ * did NOT refuse to engage — they rejected the question's wording three times — so this
+ * is deliberately not the canonical decline. Other answers ride `details` only (rpiv
+ * invariant: cancelled text never carries answers).
+ */
+export const REPHRASE_CAP_MESSAGE =
+	"用户已连续三次对问题表述不满意，本次问卷已取消。请改用普通文本在 chat 里与用户讨论该决策。";
 export const ENVELOPE_PREFIX = "User has answered your questions:";
 export const ENVELOPE_SUFFIX = "You can now continue with the user's answers in mind.";
 
 /**
  * Map a `QuestionnaireResult` (or null/cancelled) to the LLM-facing tool envelope.
  * Pure of `(result, params)`; cancelled and "no segments" both fall to `DECLINE_MESSAGE`
- * so the model sees a single canonical "didn't answer" signal regardless of why.
+ * so the model sees a single canonical "didn't answer" signal regardless of why — except
+ * the rephrase-cap cancel, which sends `REPHRASE_CAP_MESSAGE` instead (the dialog was
+ * force-closed after the 3rd rephrase of one question, not declined).
  * "No segments" means no answers AND no global note — the `global note:` segment is
  * pushed before the zero-segments check, so a note-bearing submit with zero answers
  * still yields the answered envelope. A partial submit names the questions left blank
@@ -18,6 +28,14 @@ export const ENVELOPE_SUFFIX = "You can now continue with the user's answers in 
  */
 export function buildQuestionnaireResponse(result: QuestionnaireResult | null | undefined, params: QuestionParams) {
 	if (!result || result.cancelled) {
+		if (result?.cancelReason === "rephrase_cap") {
+			return buildToolResult(REPHRASE_CAP_MESSAGE, {
+				answers: result.answers,
+				cancelled: true,
+				cancelReason: result.cancelReason,
+				...(result.globalNote && result.globalNote.length > 0 ? { globalNote: result.globalNote } : {}),
+			});
+		}
 		// Decline text stays canonical even when a global note rides the cancelled result;
 		// the note survives in `details` (like partial `answers`) for replay consumers.
 		return buildToolResult(DECLINE_MESSAGE, {
@@ -35,7 +53,11 @@ export function buildQuestionnaireResponse(result: QuestionnaireResult | null | 
 			const background = params.questions[i]?.background;
 			if (background && background.length > 0) segments.push(`background: ${background}.`);
 			segments.push(buildAnswerSegment(a));
-		} else unanswered.push(i);
+			// A rephrase answer is an answered kind (never a decline), but its segment alone
+			// doesn't tell the model what to DO — the instruction rides right after it.
+			if (a.kind === "rephrase") segments.push(buildRephraseInstruction(a));
+		}
+		else unanswered.push(i);
 	}
 	const hasGlobalNote = result.globalNote !== undefined && result.globalNote.length > 0;
 	if (segments.length === 0 && !hasGlobalNote) {
@@ -59,6 +81,17 @@ export function buildQuestionnaireResponse(result: QuestionnaireResult | null | 
 /** `unanswered: "<question>", "<question>".` — the questions shown but left blank on a partial submit. */
 export function buildUnansweredSegment(indexes: readonly number[], params: QuestionParams): string {
 	return `unanswered: ${indexes.map((i) => `"${params.questions[i]?.question}"`).join(", ")}.`;
+}
+
+/**
+ * Instruction segment following a rephrase answer's own segment. Pure of `a`. Names the
+ * question, the optional reason, and the per-tab rephrase count `N` carried on the
+ * answer (dialog state is gone by envelope time). Rephrase is an answered kind — this
+ * segment instructs the re-ask, it never declines.
+ */
+export function buildRephraseInstruction(a: QuestionAnswer): string {
+	const reason = a.reason && a.reason.length > 0 ? `（原因：${a.reason}）` : "";
+	return `用户对问题 "${a.question}" 不满意${reason}。请在下一轮更新 context 进度（已重问 ${a.rephraseCount ?? 1} 次）后用 ask_user 重新问这一题，展开术语并补全选项；其余已答答案保持有效。不得跳过该决策。`;
 }
 
 /**

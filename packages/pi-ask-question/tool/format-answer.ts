@@ -28,5 +28,7 @@ export function formatAnswerScalar(a: QuestionAnswer, _variant: FormatAnswerVari
 			return a.answer && a.answer.length > 0 ? a.answer : NO_INPUT_PLACEHOLDER;
 		case "option":
 			return a.answer ?? NO_INPUT_PLACEHOLDER;
+		case "rephrase":
+			return a.reason && a.reason.length > 0 ? `↻ 要求重问（原因：${a.reason}）` : "↻ 要求重问";
 	}
 }

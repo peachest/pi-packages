@@ -132,11 +132,13 @@ export type QuestionParams = Static<typeof QuestionParamsSchema>;
  * - `custom`: user typed free-text on a single-select question. `answer` is the typed text or null.
  * - `multi`: user committed a multi-select question. `selected` carries chosen labels and `answer`
  *   carries optional custom text.
+ * - `rephrase`: user rejected the question's wording and wants it re-asked next round. `answer`
+ *   is always null — the question ships unanswered; `reason`/`rephraseCount` carry the intent.
  */
 export interface QuestionAnswer {
 	questionIndex: number;
 	question: string;
-	kind: "option" | "custom" | "multi";
+	kind: "option" | "custom" | "multi" | "rephrase";
 	answer: string | null;
 	selected?: string[];
 	notes?: string;
@@ -148,6 +150,18 @@ export interface QuestionAnswer {
 	 * (`kind: "custom"`) answers.
 	 */
 	preview?: string;
+	/**
+	 * Rephrase-only: why the user wants the question re-asked. Lives on its own slot
+	 * (state `reasonByTab`) — never merged with or overwritten by `notes`. Optional:
+	 * a reason-less rephrase submits normally (user ruling — no forced editor path).
+	 */
+	reason?: string;
+	/**
+	 * Rephrase-only: the per-tab rephrase counter at the time this answer was written
+	 * (1-based, dialog-lifetime). Rides the answer so `buildQuestionnaireResponse` can
+	 * quote `已重问 N 次` after the dialog state is gone.
+	 */
+	rephraseCount?: number;
 }
 
 export type QuestionnaireError =
@@ -183,6 +197,13 @@ export interface QuestionnaireResult {
 	 * answered or the result is a decline, so those stay byte-identical.
 	 */
 	unanswered?: number[];
+	/**
+	 * Set only when a cancel was forced by the rephrase cap (3rd rephrase of the same
+	 * tab) — the envelope builder then sends the dedicated rephrase-cap message instead
+	 * of the canonical decline. Absent on every other result, keeping plain Esc-cancel
+	 * results byte-identical.
+	 */
+	cancelReason?: "rephrase_cap";
 	error?: QuestionnaireError;
 }
 

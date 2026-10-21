@@ -146,7 +146,12 @@ function switchTabResult(state: QuestionnaireState, nextTab: number, ctx: ApplyC
 	};
 }
 
-function doneFor(state: QuestionnaireState, ctx: ApplyContext, cancelled: boolean): ApplyResult {
+function doneFor(
+	state: QuestionnaireState,
+	ctx: ApplyContext,
+	cancelled: boolean,
+	cancelReason?: "rephrase_cap",
+): ApplyResult {
 	// Global note lift: the Submit-tab note lives at the `questions.length` pseudo-index
 	// in `notesByTab` — question tabs only occupy 0..questions.length-1, so this can never
 	// cross-contaminate a per-question note. Attached regardless of `cancelled` (the
@@ -157,6 +162,7 @@ function doneFor(state: QuestionnaireState, ctx: ApplyContext, cancelled: boolea
 		answers: orderedAnswers(state, ctx.questions),
 		cancelled,
 		...(globalNote && globalNote.length > 0 ? { globalNote } : {}),
+		...(cancelReason ? { cancelReason } : {}),
 	};
 	return { state, effects: [{ kind: "done", result }] };
 }
@@ -300,7 +306,55 @@ const notesExitHandler: Handler<"notes_exit"> = (state, _action, _ctx) => {
 	};
 };
 
+/**
+ * Rephrase cap, per tab, per invocation (dialog-lifetime). The 3rd `rephrase_request`
+ * on the same tab stops the dialog through the `rephrase_cap` cancel — the user has
+ * rejected the question's wording three times, so the agent must switch to plain-chat
+ * discussion instead of re-asking.
+ */
+export const REPHRASE_CAP = 3;
+
 const cancelHandler: Handler<"cancel"> = (s, _a, c) => doneFor(s, c, true);
+
+const rephraseRequestHandler: Handler<"rephrase_request"> = (state, action, ctx) => {
+	const tab = state.currentTab;
+	const q = ctx.questions[tab];
+	if (!q) return { state, effects: [] };
+	const count = (state.rephraseCountByTab.get(tab) ?? 0) + 1;
+	const rephraseCountByTab = new Map(state.rephraseCountByTab);
+	rephraseCountByTab.set(tab, count);
+	if (count >= REPHRASE_CAP) {
+		// Cap hit: force the rephrase_cap cancel. The capped tab ships no answer (its prior
+		// answer, if any, is void — the user rejected the question itself); every other
+		// answered tab survives in `details.answers` (rpiv cancelled invariant).
+		const answers = new Map(state.answers);
+		answers.delete(tab);
+		return doneFor({ ...state, answers, rephraseCountByTab }, ctx, true, "rephrase_cap");
+	}
+	const reason = action.reason?.trim();
+	const pendingNotes = state.notesByTab.get(tab);
+	const answers = new Map(state.answers);
+	answers.set(tab, {
+		questionIndex: tab,
+		question: q.question,
+		kind: "rephrase",
+		answer: null,
+		...(reason && reason.length > 0 ? { reason } : {}),
+		rephraseCount: count,
+		// Pending note rides the rephrase answer like it rides a confirm (confirmHandler),
+		// so a note authored before the rephrase still reaches the agent.
+		...(pendingNotes && pendingNotes.length > 0 ? { notes: pendingNotes } : {}),
+	});
+	const reasonByTab = new Map(state.reasonByTab);
+	if (reason && reason.length > 0) reasonByTab.set(tab, reason);
+	else reasonByTab.delete(tab);
+	const next: QuestionnaireState = { ...state, answers, reasonByTab, rephraseCountByTab };
+	// Focus follows the existing switchTab semantics to the next question; on the last
+	// question there is no next — the dialog still ends through the normal doneFor paths.
+	if (tab < ctx.questions.length - 1) return switchTabResult(next, tab + 1, ctx);
+	return { state: next, effects: [] };
+};
+
 const submitHandler: Handler<"submit"> = (s, _a, c) => doneFor(s, c, false);
 const submitNavHandler: Handler<"submit_nav"> = (s, a, _c) => ({
 	state: { ...s, submitChoiceIndex: a.nextIndex },
@@ -332,6 +386,7 @@ const HANDLERS: { [K in QuestionnaireAction["kind"]]: Handler<K> } = {
 	toggle: toggleHandler,
 	multi_confirm: multiConfirmHandler,
 	cancel: cancelHandler,
+	rephrase_request: rephraseRequestHandler,
 	notes_enter: notesEnterHandler,
 	notes_exit: notesExitHandler,
 	notes_forward: notesForwardHandler,

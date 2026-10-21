@@ -27,6 +27,12 @@ export type QuestionnaireAction =
 	| { kind: "toggle"; index: number }
 	| { kind: "multi_confirm"; selected: string[]; answer: string | null; autoAdvanceTab?: number }
 	| { kind: "cancel" }
+	/**
+	 * Mark the current tab as rephrase (question rejected, re-ask next round). Payload
+	 * only — no `routeKey` branch produces it yet (TUI wiring is ticket T4); the reducer
+	 * handler is registered and tested. `reason` is optional (no forced editor path).
+	 */
+	| { kind: "rephrase_request"; reason?: string }
 	| { kind: "notes_enter" }
 	| { kind: "notes_exit" }
 	| { kind: "submit" }

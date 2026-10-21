@@ -50,6 +50,8 @@ function initialState(): QuestionnaireState {
 		multiSelectChecked: new Set(),
 		customDraftsByTab: new Map(),
 		notesByTab: new Map(),
+		reasonByTab: new Map(),
+		rephraseCountByTab: new Map(),
 		submitChoiceIndex: 0,
 		notesDraft: "",
 		collapsed: false,

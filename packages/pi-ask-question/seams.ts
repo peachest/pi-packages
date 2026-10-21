@@ -15,18 +15,22 @@ export {
 export type { ValidationResult } from "./tool/validate-questionnaire.ts";
 // params schema + types
 export { QuestionParamsSchema } from "./tool/types.ts";
-export type { QuestionParams, QuestionAnswer, QuestionnaireResult } from "./tool/types.ts";
+export type { QuestionAnswer, QuestionData, QuestionParams, QuestionnaireResult } from "./tool/types.ts";
 // reducer
-export { reduce } from "./state/state-reducer.ts";
+export { reduce, REPHRASE_CAP } from "./state/state-reducer.ts";
 export type { QuestionnaireAction } from "./state/key-router.ts";
+export type { Effect, ApplyContext } from "./state/state-reducer.ts";
+export type { QuestionnaireState } from "./state/state.ts";
 // formatters + response envelope
 export { formatAnswerScalar } from "./tool/format-answer.ts";
 export {
 	buildQuestionnaireResponse,
 	buildAnswerSegment,
 	buildUnansweredSegment,
+	buildRephraseInstruction,
 	DECLINE_MESSAGE,
 	ENVELOPE_PREFIX,
+	REPHRASE_CAP_MESSAGE,
 } from "./tool/response-envelope.ts";
 // views
 export { MultiSelectView } from "./view/components/multi-select-view.ts";

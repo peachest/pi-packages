@@ -20,6 +20,17 @@ export interface QuestionnaireState {
 	 * pass otherwise). Merged into the answer at confirm time.
 	 */
 	notesByTab: ReadonlyMap<number, string>;
+	/**
+	 * Rephrase-reason side-band, keyed by tab index. Deliberately a separate slot from
+	 * `notesByTab` — a tab may carry both a note and a rephrase reason, and the two must
+	 * never overwrite each other. Mirrored onto the rephrase answer's `reason` field.
+	 */
+	reasonByTab: ReadonlyMap<number, string>;
+	/**
+	 * Per-tab rephrase counter (1-based). Dialog-lifetime only — no cross-invocation
+	 * persistence. Reaching `REPHRASE_CAP` (3) on a tab forces the `rephrase_cap` cancel.
+	 */
+	rephraseCountByTab: ReadonlyMap<number, number>;
 	/** Focused row in the Submit-tab picker (0 = Submit, 1 = Cancel). Reset on tab switch. */
 	submitChoiceIndex: number;
 	/** Canonical mirror of the in-flight notes editor; runtime mirrors after `forward_notes_keystroke`. */
