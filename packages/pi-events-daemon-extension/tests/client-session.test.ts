@@ -20,9 +20,6 @@ describe("票 136：createOpClient cfg.sessionId 缺省并入投递类 op", () =
       launcher: async () => { throw new Error("no daemon in test"); },
     });
     // 拦截：用内部 once 不可达——直接打 request 并捕获 params（需要 socket）。
-    // 简化：不开真 socket，request 会失败——但 params 构造逻辑可经由 export 的纯函数验证？
-    // 换契约面：cfg.sessionId 并入逻辑抽纯函数，直接测。
-    const { withDefaultSessionId } = await import("../lib/client.ts");
     expect(withDefaultSessionId("subscribe", { url: "x" }, "peer-sess-1")).toEqual({ url: "x", opts: { sessionId: "peer-sess-1" } });
     expect(withDefaultSessionId("subscribe", { url: "x", opts: { sessionId: "explicit" } }, "peer-sess-1")).toEqual({ url: "x", opts: { sessionId: "explicit" } });
     expect(withDefaultSessionId("query", {}, "peer-sess-1")).toEqual({}); // 非投递类不注入
