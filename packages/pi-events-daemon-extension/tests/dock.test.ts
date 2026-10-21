@@ -89,7 +89,7 @@ describe("票 45：行格式化", () => {
     const row = formatSubRow({
       subscriptionId: "abcdefgh12345678",
       sessionId: "s1",
-      entityRef: "k8s:pod/llm12-x",
+      entityRef: "k8s:pod/node1-x",
       state: "running",
       origin: "session",
       on: ["running", "failed"],
@@ -97,7 +97,7 @@ describe("票 45：行格式化", () => {
       backlog: 3,
       createdAt: "",
     });
-    expect(row).toContain("k8s:pod/llm12-x");
+    expect(row).toContain("k8s:pod/node1-x");
     expect(row).toContain("on=[running,failed]");
     expect(row).toContain("every 60000ms");
     expect(row).toContain("backlog=3");

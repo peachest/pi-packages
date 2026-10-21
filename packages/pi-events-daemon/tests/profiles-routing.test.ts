@@ -276,13 +276,13 @@ describe("组 5（票 119）：真实资产三模板 urlPattern——URL 形态�
     const { resolveUrl } = daemon.profiles;
     const registry = makeRegistry();
     registry.load(assets);
-    const gitblue = "https://gitblue.transwarp.io/applied-ai/kube-nodexpu-manager/-/pipelines/1366608";
-    const ci = resolveUrl(registry.profiles(), gitblue);
+    const ciUrl = "https://gitlab.blue.example/example-group/example-project/-/pipelines/1366608";
+    const ci = resolveUrl(registry.profiles(), ciUrl);
     expect(ci.ok).toBe(true);
     if (ci.ok) {
       expect(ci.template).toBe("ci");
       expect(ci.params.pipeline_id).toBe("1366608");
-      expect(ci.params.host).toBe("gitblue.transwarp.io");
+      expect(ci.params.host).toBe("gitlab.blue.example");
     }
   });
 

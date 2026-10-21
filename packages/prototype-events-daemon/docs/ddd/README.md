@@ -32,7 +32,7 @@ ddd-scope ──→ ddd-aggregates ──→ ddd-domain-interactions ──→ d
                                                           全部收敛 → v2 汇总 spec（#30）
 ```
 
-与 kube-nodexpu-manager（5 限界上下文）不同，本项目经 ddd-contexts 验证为
+与 example-npu-manager（5 限界上下文）不同，本项目经 ddd-contexts 验证为
 **单一限界上下文**：kernel 拥有全部语言，profile 只填充值（详见 `contexts/0000`）。
 这不是链没走完，是被判定的边界形态——战略层的 Core≈kernel 交叉验证（`subdomains/0000`）
 与 ADR 0005 的 kernel 试金石互为印证。
