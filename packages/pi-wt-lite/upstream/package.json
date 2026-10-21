@@ -1,0 +1,57 @@
+{
+  "name": "pi-worktrunk",
+  "version": "0.12.2",
+  "description": "Worktrunk commands, session placement, status, and agent tools for pi",
+  "type": "module",
+  "files": [
+    "worktrunk.ts",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-extension",
+    "worktrunk",
+    "git-worktree",
+    "status",
+    "commands",
+    "agent-tools",
+    "session-placement"
+  ],
+  "author": "Matthias Vallentin",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mavam/pi-worktrunk.git"
+  },
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
+  },
+  "scripts": {
+    "check": "tsc --noEmit && node --test --experimental-strip-types *.test.ts",
+    "test": "node --test --experimental-strip-types *.test.ts"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "^0.99.1",
+    "@earendil-works/pi-coding-agent": "^0.99.1",
+    "@earendil-works/pi-tui": "^0.99.1",
+    "@types/node": "^24.0.0",
+    "typebox": "^1.1.0",
+    "typescript": "^5.9.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "pi": {
+    "extensions": [
+      "./worktrunk.ts"
+    ]
+  }
+}

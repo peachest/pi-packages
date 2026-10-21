@@ -1,0 +1,185 @@
+diff --git a/upstream/worktrunk.ts b/upstream/worktrunk.ts
+index cf4d3d2..8619f67 100644
+--- a/upstream/worktrunk.ts
++++ b/upstream/worktrunk.ts
+@@ -1,7 +1,7 @@
+ import { randomUUID } from "node:crypto";
+ import { spawn } from "node:child_process";
+ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+-import { hostname, tmpdir } from "node:os";
++import { homedir, hostname, tmpdir } from "node:os";
+ import { existsSync, realpathSync, statSync, writeFileSync } from "node:fs";
+ import { basename, resolve, join, isAbsolute } from "node:path";
+ import { pathToFileURL } from "node:url";
+@@ -168,7 +168,15 @@ const CONTINUATION_MESSAGE_TYPE = "pi-worktrunk-continuation";
+ const MAX_CONTINUATION_OUTPUT = 50_000;
+ const CONTINUATION_ARG_PREFIX = "__pi_worktrunk_continuation=";
+ const WORKTRUNK_ALIAS_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
+-const MAX_REFERENCE_BYTES = 30_000;
++const REMOVE_SELF_GUARD_MESSAGE = "目标 worktree 是当前 session 所在目录。先 wt switch main 迁出，再 remove。（headless session 无 recover 网，此拦截是唯一防线）";
++const HEADLESS_MIGRATION_NOTICE = "本 session 为 headless 模式，session 自动迁移不可用；如需收尾请用 merge --no-remove 并向父 session 报告";
++const COMPACT_REFERENCE = `Worktrunk command reference (subset; run \`wt <cmd> --help\` via bash for full detail)
++- switch [BRANCH] [-c] [-b BASE] [-C REPO] — switch to or create a worktree; checkouts live at ~/projects/<repo>-<branch>. -c creates the branch (-b sets its base, default main). -C targets another repo checkout (bare repos).
++- remove [BRANCH...] [-D] [-f] [--no-delete-branch] — remove worktrees; branches deleted if merged
++- list [--branches] [--full] [--removes] — show worktrees and status
++- merge [TARGET] [--no-squash] [--no-rebase] [--no-remove] — squash-merge current branch into TARGET (default main); pre-merge hooks run as quality gate
++- step rebase [TARGET] | step push [TARGET] | step commit | step diff | step squash — single operations on the current worktree
++Any other subcommand (hook, config, step promote/relocate/tether/for-each/eval/prune, …): run via bash instead, e.g. \`wt hook show\`. Aliases registered via wt config also work as the command.`;
+ const MAX_EXAMPLES_PER_COMMAND = 3;
+ const HELP_DESCRIPTION_INDENT = 10;
+ const HELP_PROBE_CONCURRENCY = 8;
+@@ -850,6 +858,34 @@ function isBareCommand(invocation: Invocation, command: string): boolean {
+   return invocation.command === command && invocation.commandArgs.length === 0;
+ }
+ 
++/** Whether any `wt remove` target resolves to `cwd` itself or an ancestor of it.
++ * A bare `wt remove` defaults to the current worktree, so it always blocks. */
++export function removeTargetsSelf(
++  items: readonly WorktreeItem[],
++  commandArgs: readonly string[],
++  cwd: string,
++): boolean {
++  const branches = commandArgs.filter((arg) => !arg.startsWith("-"));
++  const targets = branches.length
++    ? branches.map((branch) => {
++        const requested = branch.startsWith("~")
++          ? join(homedir(), branch.slice(1))
++          : resolve(cwd, branch);
++        return items.find((item) =>
++          item.branch === branch ||
++          (item.worktree?.path !== undefined && canonicalPath(item.worktree.path) === canonicalPath(requested)),
++        )?.worktree?.path;
++      })
++    // Bare remove removes the current worktree (wt semantics).
++    : [items.find((item) => item.worktree?.current)?.worktree?.path ?? cwd];
++  const self = canonicalPath(cwd).replace(/\/+$/, "");
++  return targets.some((target) => {
++    if (target === undefined) return false;
++    const path = canonicalPath(target).replace(/\/+$/, "");
++    return path === self || self.startsWith(`${path}/`);
++  });
++}
++
+ function relationText(relation?: Relation): string { return `ahead ${relation?.ahead ?? 0}, behind ${relation?.behind ?? 0}`; }
+ function changeText(item: WorktreeItem): string {
+   const changes = item.worktree?.changes ?? {};
+@@ -1064,6 +1100,11 @@ export default function extension(
+   async function safeList(cwd: string, signal?: AbortSignal): Promise<WorktreeItem[]> {
+     try { return await client.list(cwd, signal); } catch { return []; }
+   }
++  async function removeSelfGuard(invocation: Invocation, cwd: string, signal?: AbortSignal): Promise<string | undefined> {
++    if (invocation.command !== "remove") return undefined;
++    const blocked = removeTargetsSelf(await safeList(cwd, signal), invocation.commandArgs, cwd);
++    return blocked ? REMOVE_SELF_GUARD_MESSAGE : undefined;
++  }
+   async function readWorktreeIdentity(cwd: string): Promise<RepositoryIdentity | undefined> {
+     try {
+       const result = await pi.exec("git", ["rev-parse", "--absolute-git-dir"], { cwd, timeout: 5000 });
+@@ -1135,27 +1176,17 @@ export default function extension(
+     installedCommands = parseWorktrunkCommands(rootOutput);
+     for (const { name } of installedCommands) commandNames.add(name);
+ 
+-    const [version, reference, settings] = await Promise.all([
++    const [version, settings] = await Promise.all([
+       runWt(["--version"], {
+         cwd: ctx.cwd,
+         signal: ctx.signal,
+         timeout: HELP_PROBE_TIMEOUT_MS,
+       }).catch(() => undefined),
+-      buildReference(installedCommands, rootOutput, async (path) => {
+-        const help = await runWt(
+-          [...path, "--help-md"],
+-          {
+-            cwd: ctx.cwd,
+-            signal: ctx.signal,
+-            timeout: HELP_PROBE_TIMEOUT_MS,
+-          },
+-        );
+-        return help.code === 0 && help.stdout?.trim() ? help.stdout : undefined;
+-      }).catch(() => ""),
+       client.settings(ctx.cwd, ctx.signal).catch(() => undefined),
+     ]);
+     if (version?.code === 0) installedVersion = version.stdout?.trim();
+-    worktrunkReference = reference;
++    // Compact curated reference instead of the generated full catalog (token budget).
++    worktrunkReference = COMPACT_REFERENCE;
+     if (settings !== undefined) aliases = parseWorktrunkAliases(settings);
+     for (const { name } of aliases) aliasNames.add(name);
+   }
+@@ -1356,6 +1387,11 @@ export default function extension(
+       }
+       args = ["switch", selected.worktree.path];
+     }
++    const guardMessage = await removeSelfGuard(invocation, ctx.cwd, ctx.signal);
++    if (guardMessage) {
++      displayCommand(ctx, args, guardMessage, true, modelOrigin);
++      return { result: { code: 1 }, output: guardMessage, moved: false, canContinue: false };
++    }
+ 
+     const scope = approvalScope(invocation, ctx.cwd);
+     const canPrompt = interactive && ctx.hasUI;
+@@ -1409,6 +1445,10 @@ export default function extension(
+       output = [output, await describeApprovalFailure(output, scope, ctx.cwd, ctx.signal)].filter(Boolean).join("\n");
+     }
+     output = [...notes, output].filter(Boolean).join("\n\n");
++    if (result.code === 0 && !result.killed && !interactive &&
++        (invocation.command === "merge" || invocation.command === "remove")) {
++      output = [output, HEADLESS_MIGRATION_NOTICE].filter(Boolean).join("\n\n");
++    }
+     progress.hide();
+     displayCommand(ctx, args, output, result.code !== 0 || Boolean(result.killed), modelOrigin);
+     const base: Execution = { result, output, moved: false, canContinue: false };
+@@ -1539,12 +1579,12 @@ export default function extension(
+     pi.registerTool({
+       name: "worktrunk",
+       label: "Worktrunk",
+-      description: `Run Worktrunk commands using the command reference generated from the installed binary. The command's remaining arguments pass directly to wt without shell expansion. Pi follows Worktrunk's directory-change directive, including from aliases and foreground hooks. If its working directory is gone, Pi recovers to a verified surviving worktree without running the requested command; re-evaluate the command there before retrying. Calls must be sequential: issue one Worktrunk call, wait for its result, then issue the next; a call made while another is still pending fails. Inspection commands return structured results immediately. In TUI/RPC, other commands return status queued and run after this turn. In codemode, end the script immediately on queued or stopped; do not run dependent tools until the continuation arrives. Command failures return status failed with diagnostics, not a thrown exception.${versionNotice}${referenceCatalog}${aliasCatalog}`,
+-      promptSnippet: "Run Worktrunk commands using the installed command, option, and example reference",
++      description: `Run Worktrunk (wt) to manage git worktrees. Arguments pass directly to wt without shell expansion; do NOT repeat the command name inside args ("switch -c foo" means command: "switch", args: ["-c", "foo"]). Calls must be sequential: issue one Worktrunk call, wait for its result, then issue the next. Pi follows wt's directory-change directive: switch moves this session into the worktree automatically. If the working directory is gone, Pi recovers to a surviving worktree without running the command. Command failures return status failed with diagnostics, not a thrown exception. Reference for the common subset below; other subcommands run via bash.${versionNotice}${referenceCatalog}${aliasCatalog}`,
++      promptSnippet: "Run Worktrunk commands (switch/remove/list/merge/step subset reference)",
+       promptGuidelines: [
+-        "Use worktrunk for Worktrunk commands. Select a command and its remaining arguments from the worktrunk reference and examples.",
++        "Use worktrunk for Worktrunk commands; args must not repeat the command name.",
+         "The worktrunk tool follows Worktrunk's requested directory automatically.",
+-        "In codemode, inspect worktrunk's status. End the script immediately on queued or stopped; queued commands have not run yet. Check failed before using results. Never run Worktrunk calls in parallel.",
++        "In codemode, end the script immediately on queued or stopped; do not run dependent tools until the continuation arrives. Never run Worktrunk calls in parallel.",
+         "Never pass -y/--yes to worktrunk; approving project commands is the user's decision, and Pi asks the user when Worktrunk needs approval.",
+       ],
+       parameters: Type.Object({
+@@ -1591,6 +1631,8 @@ export default function extension(
+               `Command not run: Pi's working directory is no longer usable. Restart Pi in ${target?.path ?? "a surviving worktree"}.`);
+           }
+           if (ctx.mode === "print" || ctx.mode === "json" || (usable && canRunInline(invocation, aliasNames.has(params.command)))) {
++            const guardMessage = await removeSelfGuard(invocation, ctx.cwd, signal);
++            if (guardMessage) return toolReply("failed", args, ctx.cwd, guardMessage);
+             let result: WtResult;
+             try { result = await invoke(args, { cwd: ctx.cwd, signal }); }
+             catch (error) {
+@@ -1601,6 +1643,10 @@ export default function extension(
+               ? await pendingApprovals(approvalScope(invocation, ctx.cwd), ctx.cwd, signal)
+               : undefined;
+             const approval = approvalFailureDetails(output, pending);
++            const migrationNotice = result.code === 0 && !result.killed &&
++              (invocation.command === "merge" || invocation.command === "remove") &&
++              (ctx.mode === "print" || ctx.mode === "json")
++              ? HEADLESS_MIGRATION_NOTICE : undefined;
+             let stopReason: string | undefined;
+             try {
+               const destination = await directedDestination(result.directive, identity);
+@@ -1624,14 +1670,14 @@ export default function extension(
+             }
+             if (stopReason) {
+               ctx.abort();
+-              return toolReply("stopped", args, ctx.cwd, [output, approval, stopReason].filter(Boolean).join("\n\n"), result);
++              return toolReply("stopped", args, ctx.cwd, [output, approval, stopReason, migrationNotice].filter(Boolean).join("\n\n"), result);
+             }
+             if (result.code !== 0 || result.killed) {
+               const failure = formatWtFailure(args, result, ctx.cwd);
+               return toolReply("failed", args, ctx.cwd,
+                 [failure, aliasFailureSummary(invocation, failure, result.code), approvalFailureDetails(failure, pending)].filter(Boolean).join("\n"), result);
+             }
+-            return toolReply("completed", args, ctx.cwd, output || `wt ${args.join(" ")} completed successfully.`, result);
++            return toolReply("completed", args, ctx.cwd, [output || `wt ${args.join(" ")} completed successfully.`, migrationNotice].filter(Boolean).join("\n\n"), result);
+           }
+           const nonce = randomUUID();
+           placementInFlight = true;
