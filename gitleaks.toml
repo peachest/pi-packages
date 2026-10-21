@@ -48,6 +48,9 @@ paths = [
     '''\.pi/.*''',
     '''\.pi-subagents/.*''',
     '''\.scratch/.*''',
+    # security-guard test fixtures: obviously-fake placeholder creds (AbCdEfGh…,
+    # dummy, 1234567890 sequences) exercising the guards themselves (#137 suite A/C)
+    '''packages/pi-bash-guards/tests/fixtures/.*''',
     '''\.venv/.*''',
     '''__pycache__/.*''',
     # vendored upstream build artifact; its 172.16.0.0/12 mention is public
