@@ -18,6 +18,9 @@ const PACKAGES_ROOT = "packages";
 const R = PACKAGES_ROOT;
 const PACKAGE_INTERNALS = `^${R}/[^/]+/[^/]+/`;
 
+/** Vendored upstream copies (built JS from other repos) — not part of any package's own graph. */
+const UPSTREAM = `^${R}/[^/]+/upstream/`;
+
 /** @type {import('dependency-cruiser').IConfiguration} */
 module.exports = {
   forbidden: [
