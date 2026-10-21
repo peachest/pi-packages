@@ -270,12 +270,30 @@ for l in code:
     if not re.match(r"^(ln|cp)\s", l):
         continue
     try:
-        args = [a for a in shlex.split(l)[1:] if not a.startswith("-")]
+        argv = shlex.split(l)[1:]
     except ValueError:
-        args = l.split()[1:]
-    if not args:
+        argv = l.split()[1:]
+    # rolling-r1 L279: -t/--target-directory redirects the destination; the
+    # generic flag filter dropped it and judged a source argument instead.
+    target_dir = None
+    positional = []
+    _i = 0
+    while _i < len(argv):
+        _a = argv[_i]
+        if _a in ("-t", "--target-directory") and _i + 1 < len(argv):
+            target_dir = argv[_i + 1]
+            _i += 2
+            continue
+        if _a.startswith("--target-directory="):
+            target_dir = _a.split("=", 1)[1]
+            _i += 1
+            continue
+        if not _a.startswith("-"):
+            positional.append(_a)
+        _i += 1
+    dest = target_dir or (positional[-1] if positional else "")
+    if not dest:
         continue
-    dest = args[-1]
     if re.search(r"(\.pi/agent/(extensions|skills)|\.agents/skills)(/|\s|['\"]|$)", dest):
         block("placing files into ~/.pi/agent/extensions or ~/.agents/skills by "
               "hand is forbidden (AGENTS.md) — installs drift and shadow the "

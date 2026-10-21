@@ -162,6 +162,12 @@ FEOF
 )
 expect 0 "heredoc doc body not blocked"         "$PROJ" "$DOC"
 
+echo "== G1 hand-copy destination parsing (rolling-r1) =="
+expect 2 "cp -t into extensions blocked"       "$PROJ" "cp -t ~/.pi/agent/extensions x"
+expect 2 "cp --target-directory= into skills blocked" "$PROJ" "cp --target-directory=~/.agents/skills x"
+expect 0 "cp -t to tmp allowed"                "$PROJ" "cp -t ~/tmp x"
+expect 0 "cp -t FROM skills into tmp allowed (reads)" "$PROJ" "cp -t ~/tmp ~/.agents/skills/hook-me/SKILL.md"
+
 echo "== guard-2 segment hardening (rolling-r1) =="
 D=dock; D=${D}er  # literal spelled obliquely so this fixture file never trips other guards
 expect 2 "docker hidden behind ssh segment blocked"  "$PROJ" "ssh host true; ${D} rm x"
