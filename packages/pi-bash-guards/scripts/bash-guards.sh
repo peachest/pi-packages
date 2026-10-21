@@ -83,12 +83,12 @@ if code and all(re.fullmatch(r"cd(\s+\S+)?", l) for l in code):
 #    Probes (which/grep/systemctl/…) are allowed; only running docker blocks.
 PROBE = r"^(which|type|command\s+-v|whereis|grep|egrep|rg|ls|cat|tail|head|less|systemctl|journalctl|apt|apt-get|dpkg|nix|snap|find|stat)\b"
 for l in code:
-    if re.match(r"^(ssh|scp|rsync)\b", l):
-        continue  # remote command: the segment splitter below mis-splits docker
-        # inside quoted remote args (e.g. ssh host 'docker ps'), and remote
-        # hosts manage their own docker — AGENTS.md rule is local-only.
     for seg in re.split(r"[|;()&]+", l):          # command positions in the line
         s = seg.strip()
+        if re.match(r"^(ssh|scp|rsync)\b", s):
+            continue  # remote segment: quoted remote args (e.g. ssh host
+            # 'docker ps') mis-split below, and remote hosts manage their own
+            # docker — AGENTS.md rule is local-only. Later segments still scan.
         s = re.sub(r"^(?:\w+=\S*\s+)+", "", s)   # env-var prefix
         s = re.sub(r"^sudo\s+", "", s)
         if not s or re.match(PROBE, s):

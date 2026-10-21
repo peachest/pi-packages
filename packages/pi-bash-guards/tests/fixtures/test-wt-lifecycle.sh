@@ -162,6 +162,12 @@ FEOF
 )
 expect 0 "heredoc doc body not blocked"         "$PROJ" "$DOC"
 
+echo "== guard-2 segment hardening (rolling-r1) =="
+D=dock; D=${D}er  # literal spelled obliquely so this fixture file never trips other guards
+expect 2 "docker hidden behind ssh segment blocked"  "$PROJ" "ssh host true; ${D} rm x"
+expect 2 "docker hidden behind scp && blocked"       "$PROJ" "scp f host:x && ${D} ps"
+expect 0 "remote docker arg still allowed"           "$PROJ" "ssh host '${D} ps'"
+
 echo
 echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" = 0 ]
