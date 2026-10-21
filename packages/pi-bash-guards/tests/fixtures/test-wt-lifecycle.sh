@@ -218,6 +218,60 @@ expect 2 "command-wrapped container cmd blocked"      "$PROJ" "command ${D} ps"
 expect 0 "command -v probe still allowed"             "$PROJ" "command -v ${D}"
 expect 2 "if-wrapped raw merge blocked"               "$PROJ" "if true; then git merge origin/main; fi"
 
+echo "== quoted punctuation is argument text, not a command boundary (rolling-r2 L165) =="
+expect 0 "quoted ; literal is not a merge command"    "$PROJ" "printf '%s\\n' 'example; git merge topic'"
+expect 0 "quoted ; literal is not a container cmd"    "$PROJ" "printf '%s\\n' 'example; ${D} ps'"
+expect 0 "quoted && literal is not a container cmd"   "$PROJ" "printf '%s\\n' 'a && ${D} ps'"
+expect 0 "quoted remote cmd with ; still allowed"     "$PROJ" "ssh host 'true; ${D} ps'"
+expect 2 "genuine chained merge still blocked"        "$PROJ" "echo start; git merge origin/main"
+
+echo "== override marker only where a real bash comment starts (rolling-r2 L68) =="
+expect 2 "marker inside quoted string is not authorization" "$PROJ" "printf '%s\\n' '# guard-override: example'; git worktree prune"
+expect 2 "marker inside double quotes is not authorization" "$PROJ" "echo \"see # guard-override: docs\"; git worktree prune"
+expect 2 "marker inside heredoc body is not authorization"  "$PROJ" "cat <<'EOF'
+# guard-override: docs claim this bypasses
+EOF
+git worktree prune"
+expect 0 "trailing real comment still bypasses"       "$PROJ" "git worktree prune # guard-override: rescue"
+expect 0 "own-line comment marker still bypasses"     "$PROJ" "# guard-override: deliberate cleanup
+git worktree prune"
+
+echo "== bypass flag belongs to its own git invocation (rolling-r2 L291) =="
+expect 0 "push dry-run -n does not condemn the commit" "$PROJ" "git commit -m x && git push -n origin HEAD"
+expect 0 "head -n 20 does not condemn the commit"     "$PROJ" "git diff | head -n 20; git commit -m x"
+expect 0 "-n inside -m message is message text"       "$PROJ" "git commit -m 'mention -n flag in message'"
+expect 2 "commit with its own -n still blocked"       "$PROJ" "git commit -n -m x"
+expect 2 "commit with its own --no-verify still blocked" "$PROJ" "git commit --no-verify -m x"
+expect 2 "push with its own --no-verify still blocked" "$PROJ" "git push --no-verify origin main"
+
+echo "== G1 destination is per cp/ln segment (rolling-r2 L340) =="
+expect 2 "cp into extensions not masked by trailing echo" "$PROJ" "cp x ~/.pi/agent/extensions/x && echo done"
+expect 2 "cp into extensions caught after mkdir segment"  "$PROJ" "mkdir -p ~/.pi/agent/extensions && cp x ~/.pi/agent/extensions/x"
+expect 0 "benign cp then echo still allowed"              "$PROJ" "cp x ~/tmp/x && echo done"
+expect 0 "env cp to tmp still allowed"                    "$PROJ" "env cp x ~/tmp/x"
+
+echo "== R3 effective-dir resolution: -C and subdirectory (rolling-r2 L239) =="
+mkdir -p "$MAIN/src" "$LINKED/src"
+expect 2 "git -C linked-wt switch blocked from main"      "$PROJ" "git -C $LINKED switch main" "$MAIN"
+expect 2 "git -C linked-wt subdir switch blocked"         "$PROJ" "git -C $LINKED/src switch main" "$MAIN"
+expect 2 "cwd in linked-wt subdir switch blocked"         "$PROJ" "git switch main" "$LINKED/src"
+expect 0 "git -C main checkout allowed"                   "$PROJ" "git -C $MAIN switch side" "$MAIN"
+expect 0 "git -C main subdir switch allowed"              "$PROJ" "git -C $MAIN/src switch main" "$MAIN"
+expect 0 "cwd in main subdir switch allowed"              "$PROJ" "git switch main" "$MAIN/src"
+
+echo "== P6 probes the repo the commit targets (rolling-r2 L410) =="
+# p6-b: github remote + transwarp identity (wrong for github). Committing
+# INTO it from a cleanly-configured session repo must be judged by p6-b's
+# own config, not the hook-process cwd's repo.
+P6B="$FX/p6-b-wrong"
+git init -q "$P6B"
+git -C "$P6B" config user.email yuxi.hou@transwarp.io
+git -C "$P6B" remote add origin https://github.com/x/y.git
+expect 2 "git -C wrong-repo commit judged by target repo"  "$PROJ" "git -C $P6B commit -m x" "$P6GH"
+expect 2 "cd wrong-repo commit judged by target repo"      "$PROJ" "cd $P6B && git commit -m x" "$P6GH"
+expect 0 "git -C right-repo commit judged by target repo"  "$PROJ" "git -C $P6GH commit -m x" "$MAIN"
+expect 0 "git -C wrong-repo + inline matching identity ok" "$PROJ" "git -C $P6B -c user.email=1938913473@qq.com commit -m x" "$MAIN"
+
 echo
 echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" = 0 ]

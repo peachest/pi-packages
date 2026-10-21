@@ -61,27 +61,8 @@ if "__PI_SECRET_STORE__" in cmd:
     cmd = re.sub(r"^:\s*__PI_SECRET_STORE__\s*;.*?\bfi\s*;\s*", "", cmd, count=1, flags=re.S)
     code = [l.strip() for l in cmd.split("\n") if l.strip() and not l.strip().startswith("#")]
 
-# Override escape hatch (#138): an explicit marker comment in the command
-# text bypasses ALL guards for this one invocation, with a stderr warning as
-# the audit trail. Guards must never permanently block legitimate rescue
-# work; misuse of the marker still leaves this line behind.
-if re.search(r"#\s*guard-override\b", cmd):
-    print("guard-override: explicit marker found — guards bypassed for this "
-          "command (audit trail).", file=sys.stderr)
-    sys.exit(0)
-
-# ---- global guards (every session cwd) ----
-
-# 1. Whole command is a bare cd — a no-op, bash tool uses a fresh shell.
-if code and all(re.fullmatch(r"cd(\s+\S+)?", l) for l in code):
-    block("bare `cd <dir>` is a no-op: the bash tool runs each command in a "
-          "fresh shell, so the working directory does not persist. "
-          "Re-run as: (cd <dir> && <command>) — e.g. "
-          "(cd /mnt/disk1/hyx/projects/HAMi && git status) — or use absolute paths.")
-
-# 2. docker in command position — use sudo nerdctl (AGENTS.md).
-#    Probes (which/grep/systemctl/…) are allowed; only running docker blocks.
-PROBE = r"^(which|type|command\s+-v|whereis|grep|egrep|rg|ls|cat|tail|head|less|systemctl|journalctl|apt|apt-get|dpkg|nix|snap|find|stat)\b"
+# ---- command-position parsing (one shared model: override marker, guard 2,
+# R1-R4, guard 4, G1, P6) ----
 
 def _cmd_strip(s):
     # Shared command-position prefix normalization (guard 2 and _wt_segments
@@ -100,8 +81,149 @@ def _cmd_strip(s):
             break
     return s
 
+def _split_punct(line):
+    # Split a line into (segment, preceding-delimiter-run) pairs on shell
+    # control punctuation (| ; & ( )) OUTSIDE single/double quotes. Quoted
+    # punctuation is argument text, not a command boundary (rolling-r2 L165:
+    # printf 'a; git merge' manufactured a fake command position). Unquoted
+    # $( …) still splits — those commands really run; a quoted "$( …)" body
+    # stays one segment (missed block, never false block — same fail-open
+    # direction as _wt_lines' quoted-<< limit).
+    out, buf, pend, q = [], [], "", None
+    for ch in line:
+        if q:
+            buf.append(ch)
+            if ch == q:
+                q = None
+        elif ch in "'\"":
+            q = ch
+            buf.append(ch)
+        elif ch in "|;()&":
+            if buf:
+                out.append(("".join(buf), pend))
+                buf, pend = [], ch
+            else:
+                pend += ch          # extend the run (&&, ||, (( ))
+        else:
+            buf.append(ch)
+    if buf or pend:
+        out.append(("".join(buf), pend))
+    return out
+
+def _wt_lines(text):
+    # Lines with heredoc BODIES removed: body lines are document text, not
+    # commands. The opener line is kept (it is a real command). Fail-open
+    # direction only: a quoted "<<" in a non-heredoc line can fake a delimiter
+    # and hide later lines from these rules — missed block, never false block.
+    out, delim = [], None
+    for raw in text.split("\n"):
+        if delim is not None:
+            if raw.strip() == delim:
+                delim = None
+            continue
+        m = re.search(r"(?<!\S)<<-?\s*(['\"]?)([A-Za-z_]\w*)\1", raw)
+        if m:
+            delim = m.group(2)
+        out.append(raw)
+    return out
+
+def _wt_pairs(text):
+    # (segment, preceding-delimiter) pairs with the _wt_segments normalization
+    # (heredoc bodies dropped, comment lines skipped, rtk stripped, prefixes
+    # stripped). The delimiter lets callers track subshell depth: R3 must
+    # judge `(cd X && git checkout …)` by X, not by the hook process cwd
+    # (rolling-r1 L191).
+    pairs = []
+    for l in _wt_lines(text):
+        l = re.sub(r"^rtk\s+", "", l.strip())
+        if not l or l.startswith("#"):
+            continue
+        for seg, delim in _split_punct(l):
+            pairs.append((_cmd_strip(seg.strip()), delim))
+    return pairs
+
+def _wt_segments(text):
+    # Command positions within each line (same segment model as guard 2).
+    return [seg for seg, _d in _wt_pairs(text) if seg]
+
+def _cwd_walk(pairs, start):
+    # (segment, cwd-at-that-point): cd segments move the cursor (bare cd →
+    # HOME; `cd -` unknowable → keep), delimiter runs track subshell depth —
+    # a cd inside ( … ) is popped when the group closes. Shared by R3 and P6
+    # so both judge commands by the directory they run in (rolling-r1 L191).
+    cur, stack = start, []
+    for seg, delim in pairs:
+        for ch in delim:
+            if ch == "(":
+                stack.append(cur)
+            elif ch == ")" and stack:
+                cur = stack.pop()
+        if not seg:
+            continue
+        mcd = re.match(r"^cd\b\s*(.*)$", seg)
+        if mcd:
+            try:
+                toks = shlex.split(mcd.group(1).strip())
+            except ValueError:
+                toks = mcd.group(1).split()
+            tgt = next((t for t in toks if t != "--" and not t.startswith("-")), None)
+            if tgt is None:
+                cur = os.path.expanduser("~")    # bare `cd` → HOME
+            elif tgt != "-":                     # `cd -`: OLDPWD unknowable, keep
+                tgt = os.path.expanduser(tgt)
+                cur = os.path.normpath(tgt if os.path.isabs(tgt) else os.path.join(cur, tgt))
+            continue
+        yield seg, cur
+
+# Override escape hatch (#138): an explicit marker comment in the command
+# text bypasses ALL guards for this one invocation, with a stderr warning as
+# the audit trail. Guards must never permanently block legitimate rescue
+# work; misuse of the marker still leaves this line behind. rolling-r2 L68:
+# the marker is honored only where bash itself would start a comment — '#'
+# outside quotes, at line start or after whitespace, on a line that is not a
+# heredoc body (_wt_lines drops bodies). A marker quoted inside an argument
+# or pasted into documentation is text, not authorization.
+def _comment_start(line):
+    # Index where a real bash comment begins on this line, or None: '#'
+    # outside single/double quotes, preceded by line start or whitespace (a
+    # '#' glued to a word is part of that word in bash).
+    q = None
+    for i, ch in enumerate(line):
+        if q:
+            if ch == q:
+                q = None
+        elif ch in ("'", '"'):
+            q = ch
+        elif ch == "#" and (i == 0 or line[i - 1] in " \t"):
+            return i
+    return None
+
+_override = False
+for _l in _wt_lines(cmd):
+    _ci = _comment_start(_l)
+    if _ci is not None and re.match(r"#\s*guard-override\b", _l[_ci:]):
+        _override = True
+        break
+if _override:
+    print("guard-override: explicit marker found — guards bypassed for this "
+          "command (audit trail).", file=sys.stderr)
+    sys.exit(0)
+
+# ---- global guards (every session cwd) ----
+
+# 1. Whole command is a bare cd — a no-op, bash tool uses a fresh shell.
+if code and all(re.fullmatch(r"cd(\s+\S+)?", l) for l in code):
+    block("bare `cd <dir>` is a no-op: the bash tool runs each command in a "
+          "fresh shell, so the working directory does not persist. "
+          "Re-run as: (cd <dir> && <command>) — e.g. "
+          "(cd /mnt/disk1/hyx/projects/HAMi && git status) — or use absolute paths.")
+
+# 2. docker in command position — use sudo nerdctl (AGENTS.md).
+#    Probes (which/grep/systemctl/…) are allowed; only running docker blocks.
+PROBE = r"^(which|type|command\s+-v|whereis|grep|egrep|rg|ls|cat|tail|head|less|systemctl|journalctl|apt|apt-get|dpkg|nix|snap|find|stat)\b"
+
 for l in code:
-    for seg in re.split(r"[|;()&]+", l):          # command positions in the line
+    for seg, _d in _split_punct(l):           # command positions in the line
         s = seg.strip()
         if re.match(r"^(ssh|scp|rsync)\b", s):
             continue  # remote segment: quoted remote args (e.g. ssh host
@@ -133,43 +255,6 @@ if re.search(r"\bgit\s+worktree\s+add\b", cmd):
 # repeat that. Known limit: single-token global opts before the subcommand
 # (`git --git-dir=x worktree remove`) escape the pair-form opt skip — upgrade
 # if ever seen in the wild.
-
-def _wt_lines(text):
-    # Lines with heredoc BODIES removed: body lines are document text, not
-    # commands. The opener line is kept (it is a real command). Fail-open
-    # direction only: a quoted "<<" in a non-heredoc line can fake a delimiter
-    # and hide later lines from these rules — missed block, never false block.
-    out, delim = [], None
-    for raw in text.split("\n"):
-        if delim is not None:
-            if raw.strip() == delim:
-                delim = None
-            continue
-        m = re.search(r"(?<!\S)<<-?\s*(['\"]?)([A-Za-z_]\w*)\1", raw)
-        if m:
-            delim = m.group(2)
-        out.append(raw)
-    return out
-
-def _wt_pairs(text):
-    # (segment, preceding-delimiter) pairs with the _wt_segments normalization
-    # (heredoc bodies dropped, comment lines skipped, rtk stripped, prefixes
-    # stripped). The delimiter lets callers track subshell depth: R3 must
-    # judge `(cd X && git checkout …)` by X, not by the hook process cwd
-    # (rolling-r1 L191).
-    pairs = []
-    for l in _wt_lines(text):
-        l = re.sub(r"^rtk\s+", "", l.strip())
-        if not l or l.startswith("#"):
-            continue
-        parts = re.split(r"([|;()&]+)", l)
-        for _i in range(0, len(parts), 2):
-            pairs.append((_cmd_strip(parts[_i].strip()), parts[_i - 1] if _i else ""))
-    return pairs
-
-def _wt_segments(text):
-    # Command positions within each line (same segment model as guard 2).
-    return [seg for seg, _d in _wt_pairs(text) if seg]
 
 # R1. Deleting/pruning worktrees by raw git — wt owns removal (it refuses to
 # remove the worktree the session sits in; raw git happily self-deletes the
@@ -209,35 +294,44 @@ for _s in _wt_segments(cmd):
 # has a .git DIRECTORY and is never touched by this rule. rolling-r1 L191:
 # the .git test follows the COMMAND's directory, not the hook process cwd —
 # `cd <linked> && git checkout main` (subshell or plain) escaped when the
-# hook ran from a main checkout. Delimiters from _wt_pairs track subshell
-# depth: a cd inside ( … ) is popped when the group closes. File restores
-# (checkout -- <path>, checkout <rev> -- <path>, checkout <existing path>)
-# and new-branch creation (-b/-B/-c/-C/--orphan) stay allowed.
-_cur = os.getcwd()
-_r3_stack = []
-for _seg, _delim in _wt_pairs(cmd):
-    for _ch in _delim:                       # subshell depth, before the segment
-        if _ch == "(":
-            _r3_stack.append(_cur)
-        elif _ch == ")" and _r3_stack:
-            _cur = _r3_stack.pop()
-    if not _seg:
+# hook ran from a main checkout; _cwd_walk tracks cd + subshell depth.
+# rolling-r2 L239: the effective worktree root also has to honor `-C <dir>`
+# and repo discovery from a SUBDIRECTORY — resolve -C (chained, relative to
+# the tracked cwd), then walk ancestors for .git: FILE = linked worktree
+# (enforce), DIRECTORY = main checkout (allow), none = not a repo (allow).
+# File restores (checkout -- <path>, checkout <rev> -- <path>, checkout
+# <existing path>) and new-branch creation (-b/-B/-c/-C/--orphan) stay allowed.
+for _seg, _cur in _cwd_walk(_wt_pairs(cmd), os.getcwd()):
+    _m = re.match(r"^git\s+((?:-\S+\s+\S+\s+)*)(checkout|switch)(\s|$)", _seg)
+    if not _m:
         continue
-    _mcd = re.match(r"^cd\b\s*(.*)$", _seg)
-    if _mcd:
-        try:
-            _toks = shlex.split(_mcd.group(1).strip())
-        except ValueError:
-            _toks = _mcd.group(1).split()
-        _tgt = next((_t for _t in _toks if _t != "--" and not _t.startswith("-")), None)
-        if _tgt is None:
-            _cur = os.path.expanduser("~")    # bare `cd` → HOME
-        elif _tgt != "-":                     # `cd -`: OLDPWD unknowable, keep
-            _tgt = os.path.expanduser(_tgt)
-            _cur = os.path.normpath(_tgt if os.path.isabs(_tgt) else os.path.join(_cur, _tgt))
-        continue
-    _m = re.match(r"^git\s+(?:-\S+\s+\S+\s+)*(checkout|switch)(\s|$)", _seg)
-    if not _m or not os.path.isfile(os.path.join(_cur, ".git")):
+    _root = _cur
+    try:
+        _gt = shlex.split(_m.group(1))
+    except ValueError:
+        _gt = _m.group(1).split()
+    _j = 0
+    while _j < len(_gt):
+        if _gt[_j] == "-C" and _j + 1 < len(_gt):
+            _d = os.path.expanduser(_gt[_j + 1])
+            _root = os.path.normpath(_d if os.path.isabs(_d) else os.path.join(_root, _d))
+            _j += 2
+        else:
+            _j += 1
+    _linked = None
+    _p = _root
+    while True:
+        _gp = os.path.join(_p, ".git")
+        if os.path.isfile(_gp):
+            _linked = _p
+            break
+        if os.path.isdir(_gp):
+            break
+        _parent = os.path.dirname(_p)
+        if _parent == _p:
+            break
+        _p = _parent
+    if _linked is None:
         continue
     try:
         _args = shlex.split(_seg[_m.end():])
@@ -259,9 +353,9 @@ for _seg, _delim in _wt_pairs(cmd):
             continue
         _branch = _a
         break
-    if _branch is None or ("--" in _args and _m.group(1) == "checkout"):
+    if _branch is None or ("--" in _args and _m.group(2) == "checkout"):
         continue
-    if _m.group(1) == "checkout" and os.path.exists(os.path.join(_cur, _branch)):
+    if _m.group(2) == "checkout" and os.path.exists(os.path.join(_root, _branch)):
         continue  # bare <path> restore — the path exists in this tree
     block("`git checkout <branch>`/`git switch <branch>` inside a linked "
           "worktree moves this tree off its branch and strands the "
@@ -288,17 +382,34 @@ for _s in _wt_segments(cmd):
 
 # 4. Skipping repo hooks: commit --no-verify|-n, push --no-verify.
 #    (git push -n means --dry-run, NOT --no-verify — do not blanket-match -n.)
-if re.search(r"\bgit\s+(?:-\S+\s+\S+\s+)*commit(\s|$)", cmd) and re.search(r"(^|\s)(--no-verify|-n)(\s|$)", cmd):
-    block("git commit --no-verify skips repo hooks (AGENTS.md never-do). "
-          "Drop the --no-verify/-n flag. If a hook fails, run it manually "
-          "to see the error (e.g. bash .git/hooks/pre-commit) and fix the "
-          "reported issue instead of bypassing validation.")
-if re.search(r"\bgit\s+push\b", cmd) and re.search(r"(^|\s)--no-verify(\s|$)", cmd):
-    block("git push --no-verify skips pre-push guards (e.g. the gitleaks "
-          "secret scan in ~/skills). Drop --no-verify. To see what the hook "
-          "would flag before pushing, run: gitleaks git --log-opts "
-          "'origin/main..HEAD' -c ~/data/benchmark/config/gitleaks.toml . "
-          "— fix any finding, then push normally.")
+#    rolling-r2 L291: flags belong to their own invocation — each git segment
+#    is judged on its own option tokens, so `git commit -m x && git push -n`
+#    (push dry-run) and `git diff | head -n 20; git commit -m x` stay legal,
+#    and a flag spelled inside a -m message string is message text, not a
+#    flag. Exact-token match (attached forms like -mn parse as -m n): a
+#    message value that IS literally "-n"/"--no-verify" would false-block —
+#    accepted, absurd input.
+for _s in _wt_segments(cmd):
+    _m4 = re.match(r"^git\s+(?:-\S+\s+\S+\s+)*(commit|push)(\s|$)", _s)
+    if not _m4:
+        continue
+    try:
+        _a4 = shlex.split(_s)
+    except ValueError:
+        _a4 = _s.split()
+    _commit4 = _m4.group(1) == "commit"
+    for _t in _a4:
+        if _t == "--no-verify" or (_t == "-n" and _commit4):
+            if _commit4:
+                block("git commit --no-verify skips repo hooks (AGENTS.md never-do). "
+                      "Drop the --no-verify/-n flag. If a hook fails, run it manually "
+                      "to see the error (e.g. bash .git/hooks/pre-commit) and fix the "
+                      "reported issue instead of bypassing validation.")
+            block("git push --no-verify skips pre-push guards (e.g. the gitleaks "
+                  "secret scan in ~/skills). Drop --no-verify. To see what the hook "
+                  "would flag before pushing, run: gitleaks git --log-opts "
+                  "'origin/main..HEAD' -c ~/data/benchmark/config/gitleaks.toml . "
+                  "— fix any finding, then push normally.")
 
 # G1. Hand-copying into the pi agent dirs (global: the agent install lives
 # outside any one project). Mining: 14 commands/11 sessions, all in
@@ -312,13 +423,18 @@ if re.search(r"\bgit\s+push\b", cmd) and re.search(r"(^|\s)--no-verify(\s|$)", c
 #   skills:   edit ~/skills source -> commit (post-commit hook reinstalls)
 #   packages: edit ~/skills extensions + package.json manifest -> pi install
 import shlex
-for l in code:
-    if not re.match(r"^(ln|cp)\s", l):
+for _seg in _wt_segments(cmd):
+    # rolling-r2 L340: judge each cp/ln command segment's own argument list —
+    # the whole line is not one argv (`cp x ~/.pi/… && echo done` made `done`
+    # the destination; `mkdir -p … && cp x ~/.pi/…` was skipped wholesale).
+    # Segments come pre-stripped by _cmd_strip, so env/sudo-wrapped copies
+    # land here too; heredoc bodies are already gone.
+    if not re.match(r"^(ln|cp)\s", _seg):
         continue
     try:
-        argv = shlex.split(l)[1:]
+        argv = shlex.split(_seg)[1:]
     except ValueError:
-        argv = l.split()[1:]
+        argv = _seg.split()[1:]
     # rolling-r1 L279: -t/--target-directory redirects the destination; the
     # generic flag filter dropped it and judged a source argument instead.
     target_dir = None
@@ -405,59 +521,106 @@ if in_projects:
     #   b) allow when the configured email matches the expected identity of
     #      ANY configured remote — a repo-local user.email is a deliberate
     #      choice, only an email matching NO remote's platform blocks.
-    if re.search(r"\bgit\s+(?:-\S+\s+\S+\s+)*commit(\s|$)", cmd) and not re.search(r"(^|\s)(--no-verify|-n)(\s|$)", cmd):
-        try:
-            email = subprocess.run(["git", "config", "user.email"], capture_output=True,
-                                   text=True, timeout=5).stdout.strip()
-        except Exception:
-            email = ""
+    # P6. Commit identity must match the repo's remote platform (pi-arena: 35
+    # commits one day split across two identities; base-charts: 4/5 commits
+    # with the wrong author, fixed by history rewrite).
+    #
+    # Multi-remote repos (ascend-device-plugin family: origin=github fork,
+    # push target=internal gitblue): a single-remote origin lookup is a false
+    # positive generator. Two mechanisms:
+    #   a) push-remote resolution chain: branch.<cur>.pushRemote →
+    #      remote.pushDefault → origin;
+    #   b) allow when the configured email matches the expected identity of
+    #      ANY configured remote — a repo-local user.email is a deliberate
+    #      choice, only an email matching NO remote's platform blocks.
+    #
+    # rolling-r2 L410: every probe runs against the repo the commit TARGETS —
+    # -C/--git-dir global options of the segment, cwd tracked through cd
+    # segments (_cwd_walk) — not the hook process cwd. The old process-cwd
+    # probes let `git -C /other commit` and `cd /other && git commit` read
+    # the session repo's identity/remotes. The full-text `--no-verify` gate
+    # exclusion is gone: guard 4 already blocks those commits before this
+    # point, and the old exclusion let a later `git push -n` silence the
+    # check for an earlier clean commit. No fallback outside command
+    # positions (the old full-text-matched fallback re-probed the hook cwd
+    # and false-blocked string literals like echo 'git commit').
+    if re.search(r"\bgit\s+(?:-\S+\s+\S+\s+)*commit(\s|$)", cmd):
         expected = {"gitblue": "yuxi.hou@transwarp.io", "transwarp": "yuxi.hou@transwarp.io",
                     "github": "1938913473@qq.com"}
         DEFAULT_EMAIL = "yuxi.hou@transwarp.io"
-        try:
-            remotes = subprocess.run(["git", "remote", "-v"], capture_output=True,
-                                     text=True, timeout=5).stdout
-        except Exception:
-            remotes = ""
-        remote_urls = sorted({m.group(1).lower() for m in re.finditer(r"^\S+\s+(\S+)\s+\(fetch\)$", remotes, re.M)})
-        want_any = {v for url in remote_urls for k, v in expected.items() if k in url}
-        if remote_urls:
-            if not want_any:
-                sys.exit(0)  # rolling-r1 L350: unknown remote platform — fail
-                # open, never block every commit in the repo for it
-            # push-remote resolution chain, for naming the platform in the
-            # message. rolling-r1 L352: same fail-open as the other probes —
-            # a timeout/missing git here must not raise out of the hook.
+
+        def _p6_judge(seg, cur):
+            # Identity verdict for one commit segment, probed in the repo it
+            # targets. Returns without blocking when the target is not a
+            # resolvable repo or its remote platform is unknown — fail open,
+            # never block on our own probe failure (rolling-r1 L350/L352).
+            _mg = re.match(r"^git\s+((?:-\S+\s+\S+\s+)*)commit(\s|$)", seg)
+            if not _mg:
+                return
             try:
-                branch = subprocess.run(["git", "branch", "--show-current"], capture_output=True,
-                                        text=True, timeout=5, check=False).stdout.strip()
-                push_remote = subprocess.run(["git", "config", f"branch.{branch}.pushRemote"],
-                                             capture_output=True, text=True, timeout=5, check=False).stdout.strip() \
-                    or subprocess.run(["git", "config", "remote.pushDefault"], capture_output=True,
-                                      text=True, timeout=5, check=False).stdout.strip() or "origin"
-            except (OSError, subprocess.SubprocessError):
-                sys.exit(0)
-            push_url = next((u for u in remote_urls if push_remote and push_remote in
-                             {r.group(1) for r in re.finditer(rf"^{re.escape(push_remote)}\s+(\S+)\s+\(fetch\)$", remotes, re.M)}),
-                            remote_urls[0])
-            platform = next((k for k in expected if k in push_url), push_remote or "the default")
-        else:
-            platform = "the default"
-            want_any = {DEFAULT_EMAIL}  # no remote: default identity is the only match
-        suggest = next(iter(sorted(want_any)), DEFAULT_EMAIL)
-        # rolling-r1 L334: scan only real `git -c user.email=…` arguments at
-        # command positions — a literal inside a -m message body is not an
-        # identity override. Per commit segment: with an inline override the
-        # commit runs under it; without one it runs under the configured email.
-        _saw_commit = False
-        for _s in _wt_segments(cmd):
-            if not re.match(r"^git\s+(?:-\S+\s+\S+\s+)*commit(\s|$)", _s):
-                continue
-            _saw_commit = True
-            try:
-                _argv = shlex.split(_s)
+                _gt = shlex.split(_mg.group(1))
             except ValueError:
-                _argv = _s.split()
+                _gt = _mg.group(1).split()
+            _pre, _i, _dir = [], 0, cur
+            while _i < len(_gt):
+                _a = _gt[_i]
+                if _a == "-C" and _i + 1 < len(_gt):
+                    _d = os.path.expanduser(_gt[_i + 1])
+                    _dir = os.path.normpath(_d if os.path.isabs(_d) else os.path.join(_dir, _d))
+                    _pre += ["-C", _dir]
+                    _i += 2
+                elif _a.startswith("--git-dir="):
+                    _d = os.path.expanduser(_a.split("=", 1)[1])
+                    _d = os.path.normpath(_d if os.path.isabs(_d) else os.path.join(_dir, _d))
+                    _pre += ["--git-dir=" + _d]
+                    _i += 1
+                else:
+                    _pre.append(_a)   # -c key=val and friends pass through
+                    _i += 1
+            try:
+                _pe = subprocess.run(["git"] + _pre + ["config", "user.email"],
+                                     capture_output=True, text=True, timeout=5, cwd=_dir)
+                _pr = subprocess.run(["git"] + _pre + ["remote", "-v"],
+                                     capture_output=True, text=True, timeout=5, cwd=_dir)
+            except (OSError, subprocess.SubprocessError):
+                return
+            if _pe.returncode not in (0, 1) or _pr.returncode != 0:
+                return  # rc 1 = email unset (legal); other rc = not a resolvable repo
+            email = _pe.stdout.strip()
+            remotes = _pr.stdout
+            remote_urls = sorted({m.group(1).lower() for m in re.finditer(r"^\S+\s+(\S+)\s+\(fetch\)$", remotes, re.M)})
+            want_any = {v for url in remote_urls for k, v in expected.items() if k in url}
+            if remote_urls:
+                if not want_any:
+                    return  # rolling-r1 L350: unknown remote platform — fail open
+                # push-remote resolution chain, for naming the platform in the
+                # message. rolling-r1 L352: same fail-open as the other probes —
+                # a timeout/missing git here must not raise out of the hook.
+                try:
+                    branch = subprocess.run(["git"] + _pre + ["branch", "--show-current"],
+                                            capture_output=True, text=True, timeout=5, check=False, cwd=_dir).stdout.strip()
+                    push_remote = subprocess.run(["git"] + _pre + ["config", f"branch.{branch}.pushRemote"],
+                                                 capture_output=True, text=True, timeout=5, check=False, cwd=_dir).stdout.strip() \
+                        or subprocess.run(["git"] + _pre + ["config", "remote.pushDefault"],
+                                          capture_output=True, text=True, timeout=5, check=False, cwd=_dir).stdout.strip() or "origin"
+                except (OSError, subprocess.SubprocessError):
+                    return
+                push_url = next((u for u in remote_urls if push_remote and push_remote in
+                                 {r.group(1) for r in re.finditer(rf"^{re.escape(push_remote)}\s+(\S+)\s+\(fetch\)$", remotes, re.M)}),
+                                remote_urls[0])
+                platform = next((k for k in expected if k in push_url), push_remote or "the default")
+            else:
+                platform = "the default"
+                want_any = {DEFAULT_EMAIL}  # no remote: default identity is the only match
+            suggest = next(iter(sorted(want_any)), DEFAULT_EMAIL)
+            # rolling-r1 L334: scan only real `git -c user.email=…` arguments —
+            # a literal inside a -m message body is not an identity override.
+            # With an inline override the commit runs under it; without one it
+            # runs under the configured email of the target repo.
+            try:
+                _argv = shlex.split(seg)
+            except ValueError:
+                _argv = seg.split()
             _inline = None
             _i = 0
             while _i < len(_argv):
@@ -486,14 +649,10 @@ if in_projects:
                       f"(pi-arena, 35 commits in two identities). Fix first: "
                       f"`git config user.email {suggest}` (repo-local), or "
                       f"commit with `git -c user.email={suggest} commit …`.")
-        if not _saw_commit and email not in want_any:
-            block(f"committing as {email or '(no email configured)'} — matches no "
-                  f"remote platform of this repo ({platform} is the push target; "
-                  f"expected {', '.join(sorted(want_any))}) — "
-                  f"mixed identities forced a history rewrite once already "
-                  f"(pi-arena, 35 commits in two identities). Fix first: "
-                  f"`git config user.email {suggest}` (repo-local), or "
-                  f"commit with `git -c user.email={suggest} commit …`.")
+
+        for _seg, _cur in _cwd_walk(_wt_pairs(cmd), os.getcwd()):
+            if re.match(r"^git\s+(?:-\S+\s+\S+\s+)*commit(\s|$)", _seg):
+                _p6_judge(_seg, _cur)
 
 sys.exit(0)
 PY
