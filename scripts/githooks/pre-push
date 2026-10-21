@@ -10,7 +10,9 @@
 #          (weaker: no internal-domain rules).
 
 set -u
-GITLEAKS_CONFIG="$(cd "$(dirname "$0")/.." && pwd)/gitleaks.toml"
+# git runs hooks with cwd=repo top; $0 may be a relative path — resolve via git
+REPO_TOP=$(git rev-parse --show-toplevel)
+GITLEAKS_CONFIG="$REPO_TOP/gitleaks.toml"
 
 cmd=(gitleaks git --redact)
 if [ -f "$GITLEAKS_CONFIG" ]; then
