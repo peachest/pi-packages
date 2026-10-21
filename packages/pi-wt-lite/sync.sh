@@ -7,7 +7,7 @@
 #          ./sync.sh package
 #
 # What it does:
-#   1. Verifies upstream/ is currently clean (patch fully applied) — abort otherwise.
+#   1. Verifies upstream/ matches HEAD (staged drift included — abort otherwise; patch fully applied).
 #   2. Replaces worktrunk.ts + package.json + LICENSE from the extracted upstream dir
 #      (README.md intentionally not copied — upstream README describes the unpatched tool).
 #   3. Replays lite.patch with plain git apply (--3way would fail against the
@@ -25,9 +25,9 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 UP="$HERE/upstream"
 PATCH="$HERE/lite.patch"
 
-# 1. upstream must currently match the patch (no local drift)
-git -C "$HERE" diff --quiet -- upstream/ || {
-  echo "ERROR: upstream/ has uncommitted local changes; commit or stash first." >&2
+# 1. upstream must match HEAD (diff against HEAD so staged changes count as drift too)
+git -C "$HERE" diff --quiet HEAD -- upstream/ || {
+  echo "ERROR: upstream/ has uncommitted local changes (staged or not); commit or stash first." >&2
   exit 1
 }
 
