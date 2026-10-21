@@ -25,10 +25,14 @@ npm pack pi-worktrunk@<ver> && tar xzf pi-worktrunk-<ver>.tgz
 ./sync.sh package        # 冲突即报错，人工裁决后重生成 patch
 ```
 
-重生成 patch 必须带 `--relative`（否则路径是仓库根相对，sync.sh 无法命中）：
+重生成 patch 的基线必须是 npm pristine 副本（repo index 里是已打补丁的树，`git diff -- upstream/` 会以旧补丁为基线累积叠加），并保持 `upstream/` 相对路径：
 
 ```bash
-git diff --relative -- upstream/ > lite.patch
+diff -u --label a/upstream/worktrunk.ts --label b/upstream/worktrunk.ts <pristine-pkg>/worktrunk.ts upstream/worktrunk.ts > lite.patch
+diff -u --label a/upstream/package.json --label b/upstream/package.json <pristine-pkg>/package.json upstream/package.json >> lite.patch
+```
+
+重生成后必验：pristine + lite.patch 重新应用结果与 upstream/ 三文件逐字节 cmp 一致。
 
 上游若升级（pi-worktrunk 发布新版本或 vendored 自 wt 升级后需手动 diff 同步），需重审：①`--help-md` 探测的 token 开销是否已被上游优化（是则 COMPACT_REFERENCE 可退役）；②新增子命令是否值得进紧凑参考；③与 `~/.config/worktrunk/config.toml` 全局配置的措辞是否仍一致。
 

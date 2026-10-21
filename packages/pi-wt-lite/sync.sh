@@ -50,6 +50,9 @@ if git -C "$TOP" apply --directory="${PREFIX%/}" "$PATCH"; then
   echo "Next: bump version in package.json, update README source-version note, commit."
 else
   echo "CONFLICT: lite.patch failed to apply. Upstream moved into patched regions." >&2
-  echo "Resolve by hand in upstream/, then regenerate: git diff -- upstream/ > lite.patch" >&2
+  echo "Resolve by hand in upstream/, then regenerate lite.patch against the pristine npm copy ($SRC)" >&2
+  echo "— never against the repo index (it holds the already-patched tree; that baseline accumulates patches):" >&2
+  echo "  diff -u --label a/upstream/worktrunk.ts --label b/upstream/worktrunk.ts \"$SRC/worktrunk.ts\" \"$UP/worktrunk.ts\"" >&2
+  echo "  diff -u --label a/upstream/package.json --label b/upstream/package.json \"$SRC/package.json\" \"$UP/package.json\"" >&2
   exit 1
 fi
