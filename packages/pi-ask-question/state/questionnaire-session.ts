@@ -121,6 +121,10 @@ export class QuestionnaireSession {
 			initialState: this.state,
 			getCurrentTab: () => this.state.currentTab,
 			collapseKey: this.collapseKey,
+			// Recall panel (params echo): the brief + anchors live on every tab of the dialog,
+			// not only on the settled transcript card.
+			context: config.params.context,
+			recent: config.params.recent,
 			rowBudget: config.rowBudget,
 		});
 

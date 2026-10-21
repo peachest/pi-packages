@@ -1,4 +1,5 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
+import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import {
 	ASK_USER_WIDGET_KEY,
@@ -258,8 +259,21 @@ describe("transcript decision card (ticket #134)", () => {
 });
 
 describe("persistent collapse widget (ticket #134)", () => {
-	it("copy: `❓ ask_user 等待回答（已答 n/m）· <key> 重新打开`", () => {
-		expect(buildWidgetLine(1, 2, "Ctrl+]")).toBe("❓ ask_user 等待回答（已答 1/2）· Ctrl+] 重新打开");
+	// Test env has no @juicesharp/rpiv-i18n, so `t` degrades to the canonical-English
+	// fallback — the same mode every other t()-based assertion in this suite runs in.
+	it("copy (en fallback): `❓ ask_user waiting for answers (n/m answered) · <key> to reopen`", () => {
+		expect(buildWidgetLine(1, 2, "Ctrl+]")).toBe(
+			"❓ ask_user waiting for answers (1/2 answered) · Ctrl+] to reopen",
+		);
+	});
+
+	it("en/zh locale entries carry the exact placeholders the template replaces", async () => {
+		for (const code of ["en", "zh"]) {
+			const raw = await readFile(new URL(`../locales/${code}.json`, import.meta.url), "utf8");
+			for (const placeholder of ["{answered}", "{total}", "{key}"]) {
+				expect(JSON.parse(raw).widget_line, `${code}.json widget_line`).toContain(placeholder);
+			}
+		}
 	});
 
 	it("widget registers under the stable key `ask_user`", () => {

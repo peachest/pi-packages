@@ -20,6 +20,8 @@
   "hint.expand_line": "{key} 展开 · Esc 取消",
   "hint.cancel": "Esc 取消",
 
+  "widget_line": "❓ ask_user 等待回答（已答 {answered}/{total}）· {key} 重新打开",
+
   "review.heading": "检查你的答案",
   "review.ready": "准备提交答案了吗？",
   "review.incomplete": "⚠ 提交前请先回答以下问题：",

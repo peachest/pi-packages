@@ -1,5 +1,5 @@
 import { DynamicBorder, type Theme } from "@earendil-works/pi-coding-agent";
-import { type Component, Container, type Editor, Spacer } from "@earendil-works/pi-tui";
+import { type Component, Container, type Editor, Spacer, Text } from "@earendil-works/pi-tui";
 import type { QuestionnaireState } from "../state/state.ts";
 import type { QuestionData } from "../tool/types.ts";
 import type { PreviewPaneProps } from "./components/preview/preview-pane.ts";
@@ -29,6 +29,38 @@ export {
 	READY_PROMPT,
 	REVIEW_HEADING,
 } from "./dialog-copy.ts";
+
+/**
+ * Recall panel under the top border, visible on every tab: the authored `context`
+ * brief (three sentences, one rendered line per authored line, wrapped by `Text`)
+ * plus the `recent` anchors as a single `→` row. Style mirrors the Submit review
+ * rows — muted `● label` / `→ body`, text body, continuation lines indented under
+ * the body column — so the panel reads as the same review language. Labels are the
+ * tool's own parameter names (spec-anchored), matching the transcript decision card.
+ */
+export function buildHeaderPanelLines(
+	context: string,
+	recent: readonly string[] | undefined,
+	theme: Theme,
+): string[] {
+	const lines: string[] = [];
+	if (context.trim().length > 0) {
+		lines.push(theme.fg("muted", " ● context"));
+		context.split("\n").forEach((line, i) => {
+			lines.push(
+				i === 0
+					? `   ${theme.fg("muted", "→")} ${theme.fg("text", line)}`
+					: `     ${theme.fg("text", line)}`,
+			);
+		});
+	}
+	const anchors = (recent ?? []).filter((r) => r.length > 0);
+	if (anchors.length > 0) {
+		lines.push(theme.fg("muted", " ● recent"));
+		lines.push(`   ${theme.fg("muted", "→")} ${theme.fg("text", anchors.join("; "))}.`);
+	}
+	return lines;
+}
 
 /**
  * Rows the scroll window must keep for the body before the heading (header badge +
@@ -82,6 +114,8 @@ export interface DialogConfig {
 	 * The footer hint interpolates it, and drops the collapse part when `"off"`.
 	 */
 	collapseKey: string;
+	/** Pre-themed recall panel rows (context brief + recent anchors), rendered under the top border on every tab. */
+	headerPanelLines: readonly string[];
 }
 
 /**
@@ -98,10 +132,14 @@ export class DialogView implements StatefulView<DialogProps> {
 	private readonly questionStrategy: TabContentStrategy;
 	private readonly submitStrategy: TabContentStrategy | undefined;
 	private readonly maxFooterRowCount: number;
+	private readonly panelComponents: Component[];
 
 	constructor(config: DialogConfig, initialProps: DialogProps) {
 		this.config = config;
 		this.liveProps = initialProps;
+		// Panel rows are static per mount (context/recent never change) — wrap once here,
+		// render per width below (a long context line wraps like a long question heading).
+		this.panelComponents = config.headerPanelLines.map((line) => new Text(line, 1, 0));
 		this.questionStrategy = new QuestionTabStrategy({
 			theme: config.theme,
 			questions: config.questions,
@@ -145,8 +183,11 @@ export class DialogView implements StatefulView<DialogProps> {
 		const headingHeight = headingRowCache.reduce((rows, c) => rows + c.render(width).length, 0);
 
 		// Fixed region sizes (deterministic from structure).
-		// TabBar.render() returns [tabLine, ""] — always 2 rows.
-		const topFixed = 1 + (this.config.isMulti && this.config.tabBar ? 2 : 0) + 1;
+		// TabBar.render() returns [tabLine, ""] — always 2 rows. Panel rows join the fixed
+		// top (recall panel stays visible on every tab, like the border); height is measured
+		// in rendered rows since a long context line wraps.
+		const panelHeight = this.panelComponents.reduce((rows, c) => rows + c.render(width).length, 0);
+		const topFixed = 1 + panelHeight + (this.config.isMulti && this.config.tabBar ? 2 : 0) + 1;
 		const bottomFixed = 1 + strategy.footerRowCount;
 		const termRows = this.config.getTerminalRows();
 
@@ -243,6 +284,7 @@ export class DialogView implements StatefulView<DialogProps> {
 		const border = () => new DynamicBorder((s) => theme.fg("accent", s));
 
 		container.addChild(border());
+		for (const c of this.panelComponents) container.addChild(c);
 		if (isMulti && tabBar) container.addChild(tabBar);
 		container.addChild(new Spacer(1));
 

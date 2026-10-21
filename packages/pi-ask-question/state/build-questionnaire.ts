@@ -16,7 +16,7 @@ import { PreviewPane } from "../view/components/preview/preview-pane.ts";
 import { SubmitPicker } from "../view/components/submit-picker.ts";
 import { TabBar } from "../view/components/tab-bar.ts";
 import type { WrappingSelectItem, WrappingSelectTheme } from "../view/components/wrapping-select.ts";
-import { DialogView } from "../view/dialog-builder.ts";
+import { buildHeaderPanelLines, DialogView } from "../view/dialog-builder.ts";
 import { QuestionnairePropsAdapter } from "../view/props-adapter.ts";
 import type { StatefulView } from "../view/stateful-view.ts";
 import type { TabBodyHeights, TabComponents } from "../view/tab-components.ts";
@@ -47,6 +47,10 @@ export interface QuestionnaireBuildConfig {
 	 * of runtime context.
 	 */
 	collapseKey: string;
+	/** Authored context brief — recall panel material, rendered under the top border. */
+	context: string;
+	/** Optional verifiable anchors alongside the context (same recall panel). */
+	recent?: readonly string[];
 	/**
 	 * Maps `tui.terminal.rows` to the rows the dialog may render — identity for the
 	 * overlay, a capped share for the inline editor slot (`../presentation.ts`). Applied
@@ -123,6 +127,8 @@ class QuestionnaireBuilder {
 	private readonly initialState: QuestionnaireState;
 	private readonly getCurrentTab: () => number;
 	private readonly collapseKey: string;
+	private readonly context: string;
+	private readonly recent: readonly string[] | undefined;
 	private readonly rowBudget: (terminalRows: number) => number;
 
 	private readonly selectTheme: WrappingSelectTheme;
@@ -141,6 +147,8 @@ class QuestionnaireBuilder {
 		this.initialState = config.initialState;
 		this.getCurrentTab = config.getCurrentTab;
 		this.collapseKey = config.collapseKey;
+		this.context = config.context;
+		this.recent = config.recent;
 		this.rowBudget = config.rowBudget;
 
 		this.selectTheme = this.makeSelectTheme();
@@ -277,6 +285,7 @@ class QuestionnaireBuilder {
 				getCurrentBodyHeight: heights.current,
 				getTerminalRows: this.getTerminalRows,
 				collapseKey: this.collapseKey,
+				headerPanelLines: buildHeaderPanelLines(this.context, this.recent, this.theme),
 			},
 			{ state: this.initialState, activePreviewPane: this.pickInitialActivePreview(tabs) },
 		);

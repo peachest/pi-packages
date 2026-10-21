@@ -46,4 +46,5 @@ export { RESERVED_LABELS, SENTINEL_LABELS } from "./tool/types.ts";
 export { buildItemsForQuestion } from "./ask-user-question.ts";
 export { buildCallSummaryLine, buildDecisionCardLines, CARD_PREVIEW_LINES } from "./view/decision-card.ts";
 export { ASK_USER_WIDGET_KEY, buildWidgetLine } from "./view/collapse-widget.ts";
+export { buildHeaderPanelLines } from "./view/dialog-builder.ts";
 export { QuestionnaireSession } from "./state/questionnaire-session.ts";
