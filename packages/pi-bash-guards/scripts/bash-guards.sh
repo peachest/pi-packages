@@ -1,0 +1,240 @@
+#!/usr/bin/env bash
+# pi-hooks custom guard: AGENTS.md never-do rules, enforced at tool level.
+# Registered in ~/.pi/agent/kendex/hooks.json (tool_call listener, matcher "Bash").
+#
+# Evidence (session mining 2026-09-15, ~/tmp/mine-hook-candidates.py,
+# 2369 sessions): docker-in-command-position 353 calls/77 sessions,
+# git worktree add 139/63, whole-command bare cd 49/38,
+# git commit --no-verify 17/7.
+#
+# 2026-10-20 extension (four-round mining, ~/tmp/hook-mining/): layered
+# guards. The layer comes from the transcript_path slug directory: sessions
+# under ~/projects get the projects guards (P1 secrets, P2 git add -A,
+# P3 long sleep, P6 commit identity); every session gets the global ones
+# (the original four below, plus G1 no hand-copying into the pi agent dir).
+# Spec: ~/tmp/hook-mining/hook-candidates-full.md. Backup of the pre-
+# extension script: ~/tmp/hook-mining/bash-guards.sh.bak-20261020.
+#
+# 2026-10-21 packaged: canonical source moved into pi-mypackage
+# (packages/pi-bash-guards/scripts/bash-guards.sh, branch feat/pi-bash-guards).
+# This file is a SYNC TARGET — edit the package source, then run
+# `npm run sync` in packages/pi-bash-guards (or scripts/install.sh) to
+# publish here. Do not hand-edit; hand edits are overwritten on next sync.
+# Evidence archives & test fixtures historically under ~/tmp/hook-mining/
+# now live in the package: tests/fixtures/*.sh. P1 credential detection
+# moved to the pi-secret-store extension (#124, 2026-10-20) — not here.
+#
+# Verdicts (Claude Code convention this extension reads): exit 2 + stderr
+# blocks the call with that reason; exit 0 allows.
+
+read -r payload
+python3 - "$payload" <<'PY'
+import json, os, re, subprocess, sys
+
+try:
+    payload = json.loads(sys.argv[1])
+    cmd = (payload.get("tool_input") or {}).get("command", "")
+except Exception:
+    sys.exit(0)  # unreadable payload: never block on our own parsing bug
+
+def block(msg):
+    print(msg, file=sys.stderr)
+    sys.exit(2)
+
+# Layer: the transcript lives at ~/.pi/agent/sessions/<slug>/<file>.jsonl and
+# the slug dir encodes the session cwd. No transcript or odd shape -> global
+# only (fewer false blocks beats wider coverage).
+transcript = payload.get("transcript_path", "")
+in_projects = "--mnt-disk1-hyx-projects" in os.path.basename(os.path.dirname(transcript))
+
+code = [l.strip() for l in cmd.split("\n") if l.strip() and not l.strip().startswith("#")]
+code = [re.sub(r"^rtk\s+", "", l) for l in code]  # rtk wraps every bash command on this host
+cmd = re.sub(r"^rtk\s+", "", cmd)
+
+# pi-secret-store injects a sourcing prefix before the command
+# (`: __PI_SECRET_STORE__; if [ -f … ]; then …; fi; <cmd>`). Strip it so the
+# line-anchored checks below (bare cd, G1) see the command the agent wrote.
+# Works regardless of listener order: absent marker = no-op; if the injected
+# shape ever changes and this stops matching, the marker check above still
+# keeps the original four guards intact.
+if "__PI_SECRET_STORE__" in cmd:
+    cmd = re.sub(r"^:\s*__PI_SECRET_STORE__\s*;.*?\bfi\s*;\s*", "", cmd, count=1, flags=re.S)
+    code = [l.strip() for l in cmd.split("\n") if l.strip() and not l.strip().startswith("#")]
+
+# ---- global guards (every session cwd) ----
+
+# 1. Whole command is a bare cd — a no-op, bash tool uses a fresh shell.
+if code and all(re.fullmatch(r"cd(\s+\S+)?", l) for l in code):
+    block("bare `cd <dir>` is a no-op: the bash tool runs each command in a "
+          "fresh shell, so the working directory does not persist. "
+          "Re-run as: (cd <dir> && <command>) — e.g. "
+          "(cd /mnt/disk1/hyx/projects/HAMi && git status) — or use absolute paths.")
+
+# 2. docker in command position — use sudo nerdctl (AGENTS.md).
+#    Probes (which/grep/systemctl/…) are allowed; only running docker blocks.
+PROBE = r"^(which|type|command\s+-v|whereis|grep|egrep|rg|ls|cat|tail|head|less|systemctl|journalctl|apt|apt-get|dpkg|nix|snap|find|stat)\b"
+for l in code:
+    if re.match(r"^(ssh|scp|rsync)\b", l):
+        continue  # remote command: the segment splitter below mis-splits docker
+        # inside quoted remote args (e.g. ssh host 'docker ps'), and remote
+        # hosts manage their own docker — AGENTS.md rule is local-only.
+    for seg in re.split(r"[|;()&]+", l):          # command positions in the line
+        s = seg.strip()
+        s = re.sub(r"^(?:\w+=\S*\s+)+", "", s)   # env-var prefix
+        s = re.sub(r"^sudo\s+", "", s)
+        if not s or re.match(PROBE, s):
+            continue
+        if re.match(r"^docker(\s|$)", s):
+            block("docker is forbidden on this node (AGENTS.md). "
+                  "Re-run with nerdctl, same subcommand: `sudo nerdctl "
+                  + s[len("docker"):].strip() + "` — e.g. docker pull X → "
+                  "sudo nerdctl pull X. Images/containers are managed via "
+                  "sudo nerdctl; base images auto-pull to the buildkit namespace.")
+
+# 3. Raw worktree creation — wt owns worktree lifecycle (AGENTS.md).
+if re.search(r"\bgit\s+worktree\s+add\b", cmd):
+    block("raw `git worktree add` is forbidden (AGENTS.md): worktrees are "
+          "managed by wt, which computes sibling paths (~/projects/<repo>-"
+          "<branch-slug>) and runs dependency hooks. Re-run as: "
+          "`wt switch -c <branch>` — e.g. wt switch -c feat/x. Removal: "
+          "wt remove <branch>, never delete the directory by hand.")
+
+# 4. Skipping repo hooks: commit --no-verify|-n, push --no-verify.
+#    (git push -n means --dry-run, NOT --no-verify — do not blanket-match -n.)
+if re.search(r"\bgit\s+(?:-\S+\s+\S+\s+)*commit(\s|$)", cmd) and re.search(r"(^|\s)(--no-verify|-n)(\s|$)", cmd):
+    block("git commit --no-verify skips repo hooks (AGENTS.md never-do). "
+          "Drop the --no-verify/-n flag. If a hook fails, run it manually "
+          "to see the error (e.g. bash .git/hooks/pre-commit) and fix the "
+          "reported issue instead of bypassing validation.")
+if re.search(r"\bgit\s+push\b", cmd) and re.search(r"(^|\s)--no-verify(\s|$)", cmd):
+    block("git push --no-verify skips pre-push guards (e.g. the gitleaks "
+          "secret scan in ~/skills). Drop --no-verify. To see what the hook "
+          "would flag before pushing, run: gitleaks git --log-opts "
+          "'origin/main..HEAD' -c ~/data/benchmark/config/gitleaks.toml . "
+          "— fix any finding, then push normally.")
+
+# G1. Hand-copying into the pi agent dirs (global: the agent install lives
+# outside any one project). Mining: 14 commands/11 sessions, all in
+# pi-mypackage sessions; root AGENTS.md forbids it with zero enforcement.
+# Guarded targets: ~/.pi/agent/extensions (extensions) and ~/.agents/skills
+# (npx skill chain install point; ~/.pi/agent/skills was retired 2026-10-15,
+# kept in the pattern to catch the old habit). Only the COPY DESTINATION is
+# judged — the last non-flag argument of ln/cp — so reading from the install
+# dir (cp ~/.agents/skills/x/SKILL.md ~/tmp/) stays legal. Both sanctioned
+# channels go through installers, never ln/cp:
+#   skills:   edit ~/skills source -> commit (post-commit hook reinstalls)
+#   packages: edit ~/skills extensions + package.json manifest -> pi install
+import shlex
+for l in code:
+    if not re.match(r"^(ln|cp)\s", l):
+        continue
+    try:
+        args = [a for a in shlex.split(l)[1:] if not a.startswith("-")]
+    except ValueError:
+        args = l.split()[1:]
+    if not args:
+        continue
+    dest = args[-1]
+    if re.search(r"(\.pi/agent/(extensions|skills)|\.agents/skills)(/|\s|['\"]|$)", dest):
+        block("placing files into ~/.pi/agent/extensions or ~/.agents/skills by "
+              "hand is forbidden (AGENTS.md) — installs drift and shadow the "
+              "managed copies. Channels: skills -> edit the ~/skills source repo "
+              "and commit (post-commit reinstall runs for you); extensions/pi "
+              "packages -> edit ~/skills/extensions + package.json manifest, "
+              "then `pi install /mnt/disk1/hyx/skills`; third-party packages -> "
+              "`pi install npm:<name>`. If you only meant to READ from the "
+              "install dir, copy from it into ~/tmp instead — that stays allowed "
+              "(only the destination is guarded).")
+
+# ---- projects guards (session cwd under ~/projects) ----
+
+if in_projects:
+    # P1 (credential fingerprints) moved 2026-10-20 into the pi-secret-store
+    # package (tool_call listener inside the extension, checked before env
+    # injection): peachest/pi-packages#124. This file no longer owns it.
+    # P2. git add -A / --all / . — stage files explicitly (AGENTS.md repo
+    # rule; 15 repos, ~960 calls mined).
+    if re.search(r"\bgit\s+add\s+(?:-\S*\s+)*(?:-A\b|--all\b|\.(?:\s|$))", cmd):
+        block("`git add -A/-a-all/.` stages everything including other "
+              "sessions' in-progress work — AGENTS.md requires staging only "
+              "this task's files. Re-run with explicit paths: `git add "
+              "<file1> <file2>` (find them with `git status --short`), or "
+              "`git add -u` to stage modifications of already-tracked files "
+              "only.")
+
+    # P3. Foreground sleep >= 60s parks the whole turn (14 repos, ~700 calls,
+    # tens of hours of wall clock; near-zero bg adoption). Nudge, don't
+    # block: exit 2 with a redirect is the nudge channel pi-hooks gives us.
+    for m in re.finditer(r"\bsleep\s+(\d+)([smh]?)\b", cmd):
+        n, unit = int(m.group(1)), m.group(2)
+        seconds = n * {"": 1, "s": 1, "m": 60, "h": 3600}[unit]
+        if seconds >= 60:
+            block(f"foreground `sleep {m.group(1)}{unit}` parks this whole turn "
+                  f"for {seconds}s while nothing else can happen. Long waits "
+                  f"should be event-driven: use the pi-events-daemon tools "
+                  f"(`subscribe` with a check/entity — it wakes this session "
+                  f"on completion), or `bg_run` for one-shot background "
+                  f"commands. Genuine short backoff: keep it under 60s or "
+                  f"split into repeated short sleeps around real work.")
+
+    # P6. Commit identity must match the repo's remote platform (pi-arena: 35
+    # commits one day split across two identities; base-charts: 4/5 commits
+    # with the wrong author, fixed by history rewrite).
+    #
+    # Multi-remote repos (ascend-device-plugin family: origin=github fork,
+    # push target=internal gitblue): a single-remote origin lookup is a false
+    # positive generator. Two mechanisms:
+    #   a) push-remote resolution chain: branch.<cur>.pushRemote →
+    #      remote.pushDefault → origin;
+    #   b) allow when the configured email matches the expected identity of
+    #      ANY configured remote — a repo-local user.email is a deliberate
+    #      choice, only an email matching NO remote's platform blocks.
+    if re.search(r"\bgit\s+(?:-\S+\s+\S+\s+)*commit(\s|$)", cmd) and not re.search(r"(^|\s)(--no-verify|-n)(\s|$)", cmd):
+        inline = re.search(r"user\.email[= ]\s*[\"']?([^\"'\s;&|]+)", cmd)
+        try:
+            email = subprocess.run(["git", "config", "user.email"], capture_output=True,
+                                   text=True, timeout=5).stdout.strip()
+        except Exception:
+            email = ""
+        expected = {"gitblue": "yuxi.hou@transwarp.io", "transwarp": "yuxi.hou@transwarp.io",
+                    "github": "1938913473@qq.com"}
+        DEFAULT_EMAIL = "yuxi.hou@transwarp.io"
+        try:
+            remotes = subprocess.run(["git", "remote", "-v"], capture_output=True,
+                                     text=True, timeout=5).stdout
+        except Exception:
+            remotes = ""
+        remote_urls = sorted({m.group(1).lower() for m in re.finditer(r"^\S+\s+(\S+)\s+\(fetch\)$", remotes, re.M)})
+        want_any = {v for url in remote_urls for k, v in expected.items() if k in url}
+        if remote_urls:
+            # push-remote resolution chain, for naming the platform in the message
+            branch = subprocess.run(["git", "branch", "--show-current"], capture_output=True,
+                                    text=True, timeout=5).stdout.strip()
+            push_remote = subprocess.run(["git", "config", f"branch.{branch}.pushRemote"],
+                                         capture_output=True, text=True, timeout=5).stdout.strip() \
+                or subprocess.run(["git", "config", "remote.pushDefault"], capture_output=True,
+                                  text=True, timeout=5).stdout.strip() or "origin"
+            push_url = next((u for u in remote_urls if push_remote and push_remote in
+                             {r.group(1) for r in re.finditer(rf"^{re.escape(push_remote)}\s+(\S+)\s+\(fetch\)$", remotes, re.M)}),
+                            remote_urls[0])
+            platform = next((k for k in expected if k in push_url), push_remote or "the default")
+        else:
+            platform = "the default"
+            want_any = {DEFAULT_EMAIL}  # no remote: default identity is the only match
+        suggest = next(iter(sorted(want_any)), DEFAULT_EMAIL)
+        # A command that first sets config, then commits, must set a matching one.
+        if inline and inline.group(1) not in want_any:
+            block(f"git -c user.email={inline.group(1)} matches no remote platform "
+                  f"of this repo ({platform} is the push target; expected "
+                  f"{', '.join(sorted(want_any))}). Commit with the matching identity.")
+        if not inline and email not in want_any:
+            block(f"committing as {email or '(no email configured)'} — matches no "
+                  f"remote platform of this repo ({platform} is the push target; "
+                  f"expected {', '.join(sorted(want_any))}) — "
+                  f"mixed identities forced a history rewrite once already "
+                  f"(pi-arena, 35 commits in two identities). Fix first: "
+                  f"`git config user.email {suggest}` (repo-local), or "
+                  f"commit with `git -c user.email={suggest} commit …`.")
+
+sys.exit(0)
+PY

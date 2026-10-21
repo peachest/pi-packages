@@ -164,6 +164,8 @@ module.exports = {
   ],
   options: {
     doNotFollow: { path: "node_modules" },
+    // vendored 构建产物不进依赖图（票 #124：upstream/ 内 5 条 no-circular 假红）
+    exclude: { path: "^packages/[^/]+/upstream/" },
     enhancedResolveOptions: {
       extensions: [".ts", ".tsx", ".js", ".jsx", ".json"],
     },
