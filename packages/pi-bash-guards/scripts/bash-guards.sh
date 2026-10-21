@@ -395,7 +395,6 @@ if in_projects:
     #      ANY configured remote — a repo-local user.email is a deliberate
     #      choice, only an email matching NO remote's platform blocks.
     if re.search(r"\bgit\s+(?:-\S+\s+\S+\s+)*commit(\s|$)", cmd) and not re.search(r"(^|\s)(--no-verify|-n)(\s|$)", cmd):
-        inline = re.search(r"user\.email[= ]\s*[\"']?([^\"'\s;&|]+)", cmd)
         try:
             email = subprocess.run(["git", "config", "user.email"], capture_output=True,
                                    text=True, timeout=5).stdout.strip()
@@ -430,12 +429,48 @@ if in_projects:
             platform = "the default"
             want_any = {DEFAULT_EMAIL}  # no remote: default identity is the only match
         suggest = next(iter(sorted(want_any)), DEFAULT_EMAIL)
-        # A command that first sets config, then commits, must set a matching one.
-        if inline and inline.group(1) not in want_any:
-            block(f"git -c user.email={inline.group(1)} matches no remote platform "
-                  f"of this repo ({platform} is the push target; expected "
-                  f"{', '.join(sorted(want_any))}). Commit with the matching identity.")
-        if not inline and email not in want_any:
+        # rolling-r1 L334: scan only real `git -c user.email=…` arguments at
+        # command positions — a literal inside a -m message body is not an
+        # identity override. Per commit segment: with an inline override the
+        # commit runs under it; without one it runs under the configured email.
+        _saw_commit = False
+        for _s in _wt_segments(cmd):
+            if not re.match(r"^git\s+(?:-\S+\s+\S+\s+)*commit(\s|$)", _s):
+                continue
+            _saw_commit = True
+            try:
+                _argv = shlex.split(_s)
+            except ValueError:
+                _argv = _s.split()
+            _inline = None
+            _i = 0
+            while _i < len(_argv):
+                _a = _argv[_i]
+                if _a == "-c" and _i + 1 < len(_argv):
+                    _kv = _argv[_i + 1]
+                    _i += 2
+                elif _a.startswith("-c") and len(_a) > 2:
+                    _kv = _a[2:]
+                    _i += 1
+                else:
+                    _i += 1
+                    continue
+                if _kv.startswith("user.email="):
+                    _inline = _kv[len("user.email="):]  # last -c wins (git semantics)
+            if _inline is not None:
+                if _inline not in want_any:
+                    block(f"git -c user.email={_inline} matches no remote platform "
+                          f"of this repo ({platform} is the push target; expected "
+                          f"{', '.join(sorted(want_any))}). Commit with the matching identity.")
+            elif email not in want_any:
+                block(f"committing as {email or '(no email configured)'} — matches no "
+                      f"remote platform of this repo ({platform} is the push target; "
+                      f"expected {', '.join(sorted(want_any))}) — "
+                      f"mixed identities forced a history rewrite once already "
+                      f"(pi-arena, 35 commits in two identities). Fix first: "
+                      f"`git config user.email {suggest}` (repo-local), or "
+                      f"commit with `git -c user.email={suggest} commit …`.")
+        if not _saw_commit and email not in want_any:
             block(f"committing as {email or '(no email configured)'} — matches no "
                   f"remote platform of this repo ({platform} is the push target; "
                   f"expected {', '.join(sorted(want_any))}) — "
