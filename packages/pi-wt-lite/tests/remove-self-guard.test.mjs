@@ -5,7 +5,7 @@ import { homedir } from "node:os";
 import assert from "node:assert/strict";
 
 register("./stub-loader.mjs", import.meta.url);
-const { removeTargetsSelf, removeSelfGuardDecision, parseWtInvocation } = await import(
+const { removeTargetsSelf, removeSelfGuardDecision, parseWtInvocation, normalizeDuplicatedVerb } = await import(
   "../upstream/worktrunk.ts"
 );
 
@@ -92,5 +92,15 @@ assert.equal(
   ]),
   false,
 );
+
+// Verb normalization: models composing the CLI string duplicate the verb into
+// args[0]; the tool strips it instead of failing (2026-10-22 peer 01a1626a hit
+// it 3x in one session).
+assert.deepEqual(normalizeDuplicatedVerb("remove", ["remove", "ci/x"]), ["ci/x"], "duplicated verb stripped");
+assert.deepEqual(normalizeDuplicatedVerb("switch", ["switch", "-c", "x"]), ["-c", "x"], "switch duplication too");
+assert.deepEqual(normalizeDuplicatedVerb("remove", ["ci/x"]), ["ci/x"], "no duplication: unchanged");
+assert.deepEqual(normalizeDuplicatedVerb("remove", ["-D", "ci/x"]), ["-D", "ci/x"], "flags first: unchanged");
+assert.deepEqual(normalizeDuplicatedVerb("step", ["commit"]), ["commit"], "step subcommand unchanged");
+assert.deepEqual(normalizeDuplicatedVerb("weird-alias", ["weird-alias", "x"]), ["weird-alias", "x"], "unknown verb not stripped (positional arg could be legit)");
 
 console.log("remove-self-guard: all assertions passed");

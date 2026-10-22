@@ -173,7 +173,7 @@ const REMOVE_SELF_LIST_FAILURE_MESSAGE = "无法核实 remove 目标：worktree 
 const HEADLESS_MIGRATION_NOTICE = "本 session 为 headless 模式，session 自动迁移不可用；如需收尾请用 merge --no-remove 并向父 session 报告";
 const COMPACT_REFERENCE = `Worktrunk command reference (subset; run \`wt <cmd> --help\` via bash for full detail)
 - switch [BRANCH] [-c] [-b BASE] [-C REPO] — switch to or create a worktree; checkouts live at ~/projects/<repo>-<branch>. -c creates the branch (-b sets its base, default main). -C targets another repo checkout (bare repos).
-- remove [BRANCH...] [-D] [-f] [--no-delete-branch] — remove worktrees; branches deleted if merged
+- remove [BRANCH...] [-D] [-f] [--no-delete-branch] — remove worktrees; branches deleted if merged. If the session sits in the target tree, wt refuses: switch out first (any branch, e.g. the main checkout's).
 - list [--branches] [--full] [--removes] — show worktrees and status
 - merge [TARGET] [--no-squash] [--no-rebase] [--no-remove] — squash-merge current branch into TARGET (default main); pre-merge hooks run as quality gate
 - step rebase [TARGET] | step push [TARGET] | step commit | step diff | step squash — single operations on the current worktree
@@ -552,6 +552,14 @@ export function parseAliasArguments(input: string): string[] {
   return args;
 }
 const GLOBAL_OPTIONS_WITH_VALUES = new Set(["-C", "--config", "--config-set"]);
+
+export function normalizeDuplicatedVerb(command: string | undefined, rawArgs: string[]): string[] {
+  const KNOWN_VERBS = new Set(["switch", "remove", "list", "merge", "step", "hook", "config"]);
+  if (command !== undefined && rawArgs[0] === command && KNOWN_VERBS.has(command)) {
+    return rawArgs.slice(1);
+  }
+  return rawArgs;
+}
 
 export function parseWtInvocation(input: string): Invocation {
   const args = parseAliasArguments(input);
@@ -1438,7 +1446,14 @@ export default function extension(
       outputSchema: WorktrunkOutput,
       executionMode: "sequential",
       async execute(_id, params, _signal, _update, ctx) {
-        const args = [params.command, ...(params.args ?? [])];
+        // Models composing the CLI string put the verb in both command and args[0]
+        // ("wt switch -c x" split as command:"switch", args:["switch","-c","x"]).
+        // Strip the duplicate here — the error class dies instead of failing the call.
+        const rawArgs = normalizeDuplicatedVerb(params.command, [...(params.args ?? [])]);
+        if (rawArgs.length !== (params.args ?? []).length) {
+          console.error(`[pi-wt-lite] normalized duplicated verb in args: ${params.command} ${(params.args ?? []).join(" ")}`);
+        }
+        const args = [params.command, ...rawArgs];
         const invocation = parseWtInvocation(args.map(quoteArgument).join(" "));
         if (isBareCommand(invocation, "switch")) {
           throw new WorktrunkError("The worktrunk tool requires an explicit target for `wt switch`.");

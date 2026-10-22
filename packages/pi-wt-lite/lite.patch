@@ -1,5 +1,4 @@
 diff --git a/upstream/package.json b/upstream/package.json
-index 631443e..fa0162d 100644
 --- a/upstream/package.json
 +++ b/upstream/package.json
 @@ -29,10 +29,10 @@
@@ -18,7 +17,6 @@ index 631443e..fa0162d 100644
    "scripts": {
      "check": "tsc --noEmit && node --test --experimental-strip-types *.test.ts",
 diff --git a/upstream/worktrunk.ts b/upstream/worktrunk.ts
-index cf4d3d2..8486e84 100644
 --- a/upstream/worktrunk.ts
 +++ b/upstream/worktrunk.ts
 @@ -1,7 +1,7 @@
@@ -30,7 +28,7 @@ index cf4d3d2..8486e84 100644
  import { existsSync, realpathSync, statSync, writeFileSync } from "node:fs";
  import { basename, resolve, join, isAbsolute } from "node:path";
  import { pathToFileURL } from "node:url";
-@@ -168,10 +168,17 @@ const CONTINUATION_MESSAGE_TYPE = "pi-worktrunk-continuation";
+@@ -168,10 +168,17 @@
  const MAX_CONTINUATION_OUTPUT = 50_000;
  const CONTINUATION_ARG_PREFIX = "__pi_worktrunk_continuation=";
  const WORKTRUNK_ALIAS_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
@@ -41,7 +39,7 @@ index cf4d3d2..8486e84 100644
 +const HEADLESS_MIGRATION_NOTICE = "本 session 为 headless 模式，session 自动迁移不可用；如需收尾请用 merge --no-remove 并向父 session 报告";
 +const COMPACT_REFERENCE = `Worktrunk command reference (subset; run \`wt <cmd> --help\` via bash for full detail)
 +- switch [BRANCH] [-c] [-b BASE] [-C REPO] — switch to or create a worktree; checkouts live at ~/projects/<repo>-<branch>. -c creates the branch (-b sets its base, default main). -C targets another repo checkout (bare repos).
-+- remove [BRANCH...] [-D] [-f] [--no-delete-branch] — remove worktrees; branches deleted if merged
++- remove [BRANCH...] [-D] [-f] [--no-delete-branch] — remove worktrees; branches deleted if merged. If the session sits in the target tree, wt refuses: switch out first (any branch, e.g. the main checkout's).
 +- list [--branches] [--full] [--removes] — show worktrees and status
 +- merge [TARGET] [--no-squash] [--no-rebase] [--no-remove] — squash-merge current branch into TARGET (default main); pre-merge hooks run as quality gate
 +- step rebase [TARGET] | step push [TARGET] | step commit | step diff | step squash — single operations on the current worktree
@@ -51,7 +49,7 @@ index cf4d3d2..8486e84 100644
  const HELP_PROBE_TIMEOUT_MS = 10_000;
  
  class WorktrunkError extends Error {
-@@ -492,180 +499,6 @@ export function parseExamples(output: string): string[][] {
+@@ -492,180 +499,6 @@
    return examples;
  }
  
@@ -232,7 +230,22 @@ index cf4d3d2..8486e84 100644
  export function parseWorktrunkCommands(output: string): WorktrunkCommand[] {
    return parseCommands(output).map(({ syntax, description }) => ({ name: syntax, description }));
  }
-@@ -850,6 +683,48 @@ function isBareCommand(invocation: Invocation, command: string): boolean {
+@@ -720,6 +553,14 @@
+ }
+ const GLOBAL_OPTIONS_WITH_VALUES = new Set(["-C", "--config", "--config-set"]);
+ 
++export function normalizeDuplicatedVerb(command: string | undefined, rawArgs: string[]): string[] {
++  const KNOWN_VERBS = new Set(["switch", "remove", "list", "merge", "step", "hook", "config"]);
++  if (command !== undefined && rawArgs[0] === command && KNOWN_VERBS.has(command)) {
++    return rawArgs.slice(1);
++  }
++  return rawArgs;
++}
++
+ export function parseWtInvocation(input: string): Invocation {
+   const args = parseAliasArguments(input);
+   let commandIndex: number | undefined;
+@@ -850,6 +691,48 @@
    return invocation.command === command && invocation.commandArgs.length === 0;
  }
  
@@ -281,7 +294,7 @@ index cf4d3d2..8486e84 100644
  function relationText(relation?: Relation): string { return `ahead ${relation?.ahead ?? 0}, behind ${relation?.behind ?? 0}`; }
  function changeText(item: WorktreeItem): string {
    const changes = item.worktree?.changes ?? {};
-@@ -1064,6 +939,13 @@ export default function extension(
+@@ -1064,6 +947,13 @@
    async function safeList(cwd: string, signal?: AbortSignal): Promise<WorktreeItem[]> {
      try { return await client.list(cwd, signal); } catch { return []; }
    }
@@ -295,7 +308,7 @@ index cf4d3d2..8486e84 100644
    async function readWorktreeIdentity(cwd: string): Promise<RepositoryIdentity | undefined> {
      try {
        const result = await pi.exec("git", ["rev-parse", "--absolute-git-dir"], { cwd, timeout: 5000 });
-@@ -1135,27 +1017,17 @@ export default function extension(
+@@ -1135,27 +1025,17 @@
      installedCommands = parseWorktrunkCommands(rootOutput);
      for (const { name } of installedCommands) commandNames.add(name);
  
@@ -326,7 +339,7 @@ index cf4d3d2..8486e84 100644
      if (settings !== undefined) aliases = parseWorktrunkAliases(settings);
      for (const { name } of aliases) aliasNames.add(name);
    }
-@@ -1356,6 +1228,12 @@ export default function extension(
+@@ -1356,6 +1236,12 @@
        }
        args = ["switch", selected.worktree.path];
      }
@@ -339,7 +352,7 @@ index cf4d3d2..8486e84 100644
  
      const scope = approvalScope(invocation, ctx.cwd);
      const canPrompt = interactive && ctx.hasUI;
-@@ -1409,6 +1287,10 @@ export default function extension(
+@@ -1409,6 +1295,10 @@
        output = [output, await describeApprovalFailure(output, scope, ctx.cwd, ctx.signal)].filter(Boolean).join("\n");
      }
      output = [...notes, output].filter(Boolean).join("\n\n");
@@ -350,7 +363,7 @@ index cf4d3d2..8486e84 100644
      progress.hide();
      displayCommand(ctx, args, output, result.code !== 0 || Boolean(result.killed), modelOrigin);
      const base: Execution = { result, output, moved: false, canContinue: false };
-@@ -1539,12 +1421,12 @@ export default function extension(
+@@ -1539,12 +1429,12 @@
      pi.registerTool({
        name: "worktrunk",
        label: "Worktrunk",
@@ -367,7 +380,23 @@ index cf4d3d2..8486e84 100644
          "Never pass -y/--yes to worktrunk; approving project commands is the user's decision, and Pi asks the user when Worktrunk needs approval.",
        ],
        parameters: Type.Object({
-@@ -1591,6 +1473,8 @@ export default function extension(
+@@ -1556,7 +1446,14 @@
+       outputSchema: WorktrunkOutput,
+       executionMode: "sequential",
+       async execute(_id, params, _signal, _update, ctx) {
+-        const args = [params.command, ...(params.args ?? [])];
++        // Models composing the CLI string put the verb in both command and args[0]
++        // ("wt switch -c x" split as command:"switch", args:["switch","-c","x"]).
++        // Strip the duplicate here — the error class dies instead of failing the call.
++        const rawArgs = normalizeDuplicatedVerb(params.command, [...(params.args ?? [])]);
++        if (rawArgs.length !== (params.args ?? []).length) {
++          console.error(`[pi-wt-lite] normalized duplicated verb in args: ${params.command} ${(params.args ?? []).join(" ")}`);
++        }
++        const args = [params.command, ...rawArgs];
+         const invocation = parseWtInvocation(args.map(quoteArgument).join(" "));
+         if (isBareCommand(invocation, "switch")) {
+           throw new WorktrunkError("The worktrunk tool requires an explicit target for `wt switch`.");
+@@ -1591,6 +1488,8 @@
                `Command not run: Pi's working directory is no longer usable. Restart Pi in ${target?.path ?? "a surviving worktree"}.`);
            }
            if (ctx.mode === "print" || ctx.mode === "json" || (usable && canRunInline(invocation, aliasNames.has(params.command)))) {
@@ -376,7 +405,7 @@ index cf4d3d2..8486e84 100644
              let result: WtResult;
              try { result = await invoke(args, { cwd: ctx.cwd, signal }); }
              catch (error) {
-@@ -1601,6 +1485,10 @@ export default function extension(
+@@ -1601,6 +1500,10 @@
                ? await pendingApprovals(approvalScope(invocation, ctx.cwd), ctx.cwd, signal)
                : undefined;
              const approval = approvalFailureDetails(output, pending);
@@ -387,7 +416,7 @@ index cf4d3d2..8486e84 100644
              let stopReason: string | undefined;
              try {
                const destination = await directedDestination(result.directive, identity);
-@@ -1624,14 +1512,14 @@ export default function extension(
+@@ -1624,14 +1527,14 @@
              }
              if (stopReason) {
                ctx.abort();
