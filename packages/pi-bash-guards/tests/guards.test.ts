@@ -23,8 +23,10 @@
  * linked worktree boundary, heredoc-body literal false-positive regression.
  *
  * GUARD env override points the fixtures at any guard script; default is the
- * packaged source (scripts/bash-guards.sh), NOT the live synced copy — the
+ * packaged source (scripts/bash-guards.py), NOT the live synced copy — the
  * package tests its own source, `npm run sync` is responsible for parity.
+ * Fixtures invoke `bash "$GUARD"`: the engine's exec-polyglot line makes the
+ * pure-python file bash-executable (spec #142), so fixtures stay untouched.
  */
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, cpSync, mkdirSync } from "node:fs";
@@ -33,7 +35,7 @@ import { join, resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 const PKG = resolve(__dirname, "..");
-const GUARD = join(PKG, "scripts", "bash-guards.sh");
+const GUARD = join(PKG, "scripts", "bash-guards.py");
 
 interface SuiteResult {
 	output: string;
@@ -129,7 +131,7 @@ describe("packaged guard sanity (direct payload probes)", () => {
 	it("blocks docker in command position (global guard, any cwd)", () => {
 		let blocked = false;
 		try {
-			execFileSync("bash", [GUARD], {
+			execFileSync("python3", [GUARD], {
 				input: JSON.stringify({
 					tool_input: { command: "docker ps" },
 					transcript_path: "/tmp/anywhere/x.jsonl",
@@ -144,7 +146,7 @@ describe("packaged guard sanity (direct payload probes)", () => {
 	});
 
 	it("allows plain ls (exit 0)", () => {
-		const out = execFileSync("bash", [GUARD], {
+		const out = execFileSync("python3", [GUARD], {
 			input: JSON.stringify({
 				tool_input: { command: "ls -la" },
 				transcript_path: "/tmp/anywhere/x.jsonl",
