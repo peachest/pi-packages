@@ -186,7 +186,11 @@ function buildInitialPrompt(
     "## 交接附言（上一届原话）",
     handoffNote,
     "",
-    "上岗第一步：读上面四个文件确认现状，然后从 STATE.md Backlog 第一条继续推进。",
+    "上岗 checklist：",
+    "1. 读上面四个文件确认现状（SESSION id 用 agent-session-id 工具取，sessions.log 上岗登记按 SPEC §7 纪律 5 追加，同时废弃前任悬空的 null 条目）；",
+    "2. 核对前任名下的 daemon 订阅归属：订阅随 session 生死，将死 session 名下的订阅 cancel 后重挂到本 session（pi-events-daemon 继承功能在联合开发中，见其仓 ticket）；",
+    "3. 按 STATE「活跃后台资产」节的可寻回标识找回脱离 session 的任务（远端节点脚本、-d 容器等）；",
+    "4. 全部确认后从 STATE.md Backlog 第一条继续推进。",
   ].join("\n");
 }
 
@@ -282,9 +286,13 @@ export default function renewExtension(pi: ExtensionAPI) {
         logRenewEvent(onDuty.agentDir, "START", `session ${sessionId.slice(0, 8)} agent=${onDuty.agentName}`);
         pi.sendUserMessage(
           [
-            "换届流程启动（/renew）。请立即执行：",
-            "1. 更新你的 STATE.md：刷新战役快照与活跃后台任务、重排 Backlog、把「交接附言」一节写实（本届做了什么/未完成什么/下一届第一动作——按 SPEC §7 纪律 4/6）。",
-            "2. 更新完成后调用 agent-renew-ready 工具确认。不要做其他事。",
+            "换届流程启动（/renew）。请按以下 checklist 逐项执行：",
+            "1. 后台资产分类处置（SPEC §7 纪律 6）：",
+            "   a. 绑定本 session 进程的（subagent、非 detached bg 任务）：等完成/收尾后再继续换届；确实等不了的先终止或写明交接处理方式；",
+            "   b. 脱离 session 进程的（daemon 订阅、远端节点脚本、-d 容器等）：在 STATE.md「活跃后台任务」节记录可寻回标识（订阅 id/容器/节点名/任务 id），换屇后新 session 按标识找回；",
+            "   c. daemon 订阅专项：把需要在换届后继续生效的订阅 cancel 掉，由新 session 重新挂（daemon 订阅随 session 生死，无法继承——继承功能在联合开发中，见 pi-events-daemon 仓 ticket）；",
+            "2. 更新 STATE.md：刷新战役快照与活跃后台资产（含标识）、重排 Backlog、交接附言写实（本届做了什么/未完成什么/下一届第一动作），并附上隐性操作知识指针（哪些经验/教训/直觉判断沉淀在哪个文档，让下一届不用重新探索）——按 SPEC §7 纪律 4/7；",
+            "3. 全部完成后调用 agent-renew-ready 工具确认。不要做其他事。",
           ].join("\n")
         );
 
