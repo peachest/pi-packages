@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Sync the packaged guard script into the live kendex hooks directory and
+# Sync the packaged guard engine into the live kendex hooks directory and
 # verify the registry still points at it. Run from anywhere:
 #   bash <pkg>/scripts/install.sh   (or `npm run sync` inside the package)
 set -euo pipefail
 
 PKG_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SRC="$PKG_DIR/scripts/bash-guards.sh"
-DST="${HOME}/.pi/agent/kendex/hooks/bash-guards.sh"
+SRC="$PKG_DIR/scripts/bash-guards.py"
+DST="${HOME}/.pi/agent/kendex/hooks/bash-guards.py"
 REG="${HOME}/.pi/agent/kendex/hooks.json"
 
 [ -f "$SRC" ] || { echo "FAIL: source missing: $SRC" >&2; exit 1; }
@@ -44,8 +44,8 @@ sys.exit(1)
 ' "$REG" "$DST"; then
   echo "hooks.json: registry entry present ✓"
 else
-  echo "WARN: $REG missing, invalid, or has no active Bash-matcher hook referencing bash-guards.sh." >&2
-  echo "      If guards never fire, register a tool_call listener (matcher \"Bash\", command \"bash $DST\", timeout 10) in pi-hooks." >&2
+  echo "WARN: $REG missing, invalid, or has no active Bash-matcher hook referencing bash-guards.py." >&2
+  echo "      If guards never fire, register a tool_call listener (matcher \"Bash\", command \"python3 $DST\", timeout 10) in pi-hooks." >&2
 fi
 
 # Byte-identical verification
