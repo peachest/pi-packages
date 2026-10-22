@@ -47,8 +47,8 @@ GH_UP="https://github.com/Project-HAMi/ascend-device-plugin.git"
 BLUE="ssh://git@gitblue.example:10022/llm/llmops/hami/ascend-device-plugin.git"
 HAMI_BLUE="ssh://git@gitblue.example:10022/llm/llmops/hami/HAMi.git"
 HAMI_GH="https://github.com/Project-HAMi/HAMi.git"
-TW=yuxi.hou@transwarp.io
-QQ=1938913473@qq.com
+TW=dev@corp.example
+QQ=dev@personal.example
 PROJ="--mnt-disk1-hyx-projects"
 
 echo "== 1. single github origin (pi-mypackage shape) =="
@@ -88,11 +88,8 @@ echo "== 6. pushRemote overrides (branch.<b>.pushRemote=internal on ascend shape
 D=$(mkrepo ascend-push-remote "origin=$GH_FORK,internal=$BLUE" "$TW")
 git -C "$D" config remote.pushDefault internal
 t 0 "pushDefault=internal: transwarp commits"         "$D" "$PROJ" "git commit -m x"
-t 2 "pushDefault=internal: inline qq blocked?"        "$D" "$PROJ" "git -c user.email=$QQ commit -m x"
-# NOTE: currently ANY-remote match wins, so qq (github origin exists) still passes.
-# This case documents the semantic: with remote.pushDefault=internal the qq push
-# would target github via explicit remote, still legal → any-match stays 0.
-PASS=$((PASS-1)); FAIL=$((FAIL-1))  # re-judge: expect 0
+# Semantic: any-remote match wins — qq (github origin exists) is a legal push
+# target even with remote.pushDefault=internal (explicit-remote push).
 t 0 "pushDefault=internal: inline qq (fork push still legal)" "$D" "$PROJ" "git -c user.email=$QQ commit -m x"
 
 echo "== 7. no remote (local-only: pi-arena shape) =="

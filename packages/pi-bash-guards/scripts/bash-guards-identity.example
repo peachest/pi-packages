@@ -1,0 +1,7 @@
+# bash-guards P6 identity map — node-local values, never commit the real one.
+# Copy to ~/.pi/agent/bash-guards-identity.conf and fill in.
+# KEY = remote-URL substring → expected git identity email for that platform.
+gitblue.example=dev@corp.example
+gitlab.example=dev@corp.example
+github=dev@personal.example
+DEFAULT_EMAIL=dev@corp.example

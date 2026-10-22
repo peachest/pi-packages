@@ -484,9 +484,26 @@ def _match_p3(ctx):
 # check for an earlier clean commit. No fallback outside command
 # positions (the old full-text-matched fallback re-probed the hook cwd
 # and false-blocked string literals like echo 'git commit').
-P6_EXPECTED = {"gitblue": "yuxi.hou@transwarp.io", "transwarp": "yuxi.hou@transwarp.io",
-               "github": "1938913473@qq.com"}
-P6_DEFAULT_EMAIL = "yuxi.hou@transwarp.io"
+# Identity map is node-local, not source code: loaded from
+# ~/.pi/agent/bash-guards-identity.conf (KEY=VALUE, keys are remote-URL
+# substrings; DEFAULT_EMAIL for repos with no remote). The shipped example
+# holds placeholder values — the real values live only on the node.
+P6_EXPECTED = {"gitblue.example": "dev@corp.example", "github": "dev@personal.example"}
+P6_DEFAULT_EMAIL = "dev@corp.example"
+_IDENTITY_CONF = os.environ.get("BASH_GUARDS_IDENTITY_CONF", os.path.expanduser("~/.pi/agent/bash-guards-identity.conf"))
+if os.path.isfile(_IDENTITY_CONF):
+    try:
+        for line in open(_IDENTITY_CONF):
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            if k == "DEFAULT_EMAIL":
+                P6_DEFAULT_EMAIL = v.strip()
+            else:
+                P6_EXPECTED[k.strip()] = v.strip()
+    except OSError:
+        pass  # unreadable conf: ship defaults, fail open
 
 def _p6_probe(seg, cur):
     # Identity verdict for one commit segment, probed in the repo it targets.

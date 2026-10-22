@@ -25,6 +25,12 @@ GUARD="${GUARD:-$HOME/.pi/agent/kendex/hooks/bash-guards.sh}"
 PASS=0; FAIL=0
 
 PROJ="$HOME/.pi/agent/sessions/--mnt-disk1-hyx-projects--/2026-10-21T00-00-00-000Z_c.jsonl"
+# Sandbox github repo for identity-sensitive ambient cases (P6 probes the cwd
+# repo's identity; must not depend on the checkout the suite runs from).
+SUITE_REPO="$HOME/tmp/hook-mining/fake-gh-repo"
+mkdir -p "$SUITE_REPO"; git -C "$SUITE_REPO" init -q 2>/dev/null
+git -C "$SUITE_REPO" remote add origin https://github.com/x/y 2>/dev/null || true
+git -C "$SUITE_REPO" config user.email dev@personal.example
 
 json_for() {
   python3 -c "
@@ -100,7 +106,7 @@ LINKED="$FX/linked-wt"
 # plus an unknown-platform remote repo (platform not in the expected map).
 P6GH="$FX/p6-gh"
 git init -q "$P6GH"
-git -C "$P6GH" config user.email 1938913473@qq.com
+git -C "$P6GH" config user.email dev@personal.example
 git -C "$P6GH" remote add origin https://github.com/peachest/pi-packages.git
 P6UNK="$FX/p6-unknown"
 git init -q "$P6UNK"
@@ -189,7 +195,7 @@ expect 0 "unknown platform remote: commit allowed"   "$PROJ" "git commit -m x" "
 expect 2 "no-remote default identity still enforced" "$PROJ" "git commit -m x" "$MAIN"
 expect 0 "email literal in -m message not an identity" "$PROJ" "git commit -m 'docs: see user.email=someone@example.com note'" "$P6GH"
 expect 2 "inline -c stranger still blocked"          "$PROJ" "git -c user.email=wrong@evil.com commit -m x" "$P6GH"
-expect 0 "inline -c matching identity allowed"        "$PROJ" "git -c user.email=1938913473@qq.com commit -m x" "$P6GH"
+expect 0 "inline -c matching identity allowed"        "$PROJ" "git -c user.email=dev@personal.example commit -m x" "$P6GH"
 
 echo "== G1 hand-copy destination parsing (rolling-r1) =="
 expect 2 "cp -t into extensions blocked"       "$PROJ" "cp -t ~/.pi/agent/extensions x"
@@ -237,9 +243,9 @@ expect 0 "own-line comment marker still bypasses"     "$PROJ" "# guard-override:
 git worktree prune"
 
 echo "== bypass flag belongs to its own git invocation (rolling-r2 L291) =="
-expect 0 "push dry-run -n does not condemn the commit" "$PROJ" "git commit -m x && git push -n origin HEAD"
-expect 0 "head -n 20 does not condemn the commit"     "$PROJ" "git diff | head -n 20; git commit -m x"
-expect 0 "-n inside -m message is message text"       "$PROJ" "git commit -m 'mention -n flag in message'"
+( cd "$SUITE_REPO" && expect 0 "push dry-run -n does not condemn the commit" "$PROJ" "git commit -m x && git push -n origin HEAD" )
+( cd "$SUITE_REPO" && expect 0 "head -n 20 does not condemn the commit" "$PROJ" "git diff | head -n 20; git commit -m x" )
+( cd "$SUITE_REPO" && expect 0 "-n inside -m message is message text" "$PROJ" "git commit -m 'mention -n flag in message'" )
 expect 2 "commit with its own -n still blocked"       "$PROJ" "git commit -n -m x"
 expect 2 "commit with its own --no-verify still blocked" "$PROJ" "git commit --no-verify -m x"
 expect 2 "push with its own --no-verify still blocked" "$PROJ" "git push --no-verify origin main"
@@ -265,12 +271,12 @@ echo "== P6 probes the repo the commit targets (rolling-r2 L410) =="
 # own config, not the hook-process cwd's repo.
 P6B="$FX/p6-b-wrong"
 git init -q "$P6B"
-git -C "$P6B" config user.email yuxi.hou@transwarp.io
+git -C "$P6B" config user.email dev@corp.example
 git -C "$P6B" remote add origin https://github.com/x/y.git
 expect 2 "git -C wrong-repo commit judged by target repo"  "$PROJ" "git -C $P6B commit -m x" "$P6GH"
 expect 2 "cd wrong-repo commit judged by target repo"      "$PROJ" "cd $P6B && git commit -m x" "$P6GH"
 expect 0 "git -C right-repo commit judged by target repo"  "$PROJ" "git -C $P6GH commit -m x" "$MAIN"
-expect 0 "git -C wrong-repo + inline matching identity ok" "$PROJ" "git -C $P6B -c user.email=1938913473@qq.com commit -m x" "$MAIN"
+expect 0 "git -C wrong-repo + inline matching identity ok" "$PROJ" "git -C $P6B -c user.email=dev@personal.example commit -m x" "$MAIN"
 
 echo
 echo "PASS=$PASS FAIL=$FAIL"

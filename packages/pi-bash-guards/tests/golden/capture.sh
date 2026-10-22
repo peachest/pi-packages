@@ -36,11 +36,15 @@ mkdir -p "$HOME_SBOX/tmp" \
 	"$HOME_SBOX/.pi/agent/sessions/--mnt-disk1-hyx-projects-pi-mypackage--" \
 	"$HOME_SBOX/.pi/agent/sessions/--mnt-disk1-hyx-skills--"
 
-# Hermetic git: no env leakage from the invoking shell.
-unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM || true
-git config --global user.email yuxi.hou@transwarp.io
-git config --global user.name test
-git config --global --add safe.directory '*'
+# Hermetic git: no env leakage from the invoking shell — and no writes to the
+# node's real global config (a capture once overwrote it; git config --global
+# is never acceptable inside a test harness). A sandbox gitconfig stands in.
+GIT_CONFIG_GLOBAL="$HOME_SBOX/gitconfig"
+GIT_CONFIG_SYSTEM=/dev/null
+export GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM
+git config --file "$GIT_CONFIG_GLOBAL" user.email dev@corp.example
+git config --file "$GIT_CONFIG_GLOBAL" user.name test
+git config --file "$GIT_CONFIG_GLOBAL" --add safe.directory '*'
 
 rm -f "$OUT"
 
@@ -66,12 +70,28 @@ rm -f "$err"
 exit $ec
 WEOF
 chmod +x "$WRAPPER"
+# Deterministic identity: the engine's conf is env-overridable; point every
+# suite run at a sandbox conf so ambient node config can't leak into verdicts.
+IDENT_SBOX="$HOME_SBOX/bash-guards-identity.conf"
+cat > "$IDENT_SBOX" <<IDCONF
+gitblue.example=dev@corp.example
+gitlab.example=dev@corp.example
+github=dev@personal.example
+DEFAULT_EMAIL=dev@corp.example
+IDCONF
+export BASH_GUARDS_IDENTITY_CONF="$IDENT_SBOX"
 export GUARD="$WRAPPER" GUARD_REAL="$REAL" GOLDEN_LOG="$OUT"
 
 # ---- 1-3. the three fixture suites, unmodified ------------------------------
-bash "$FIXTURES/test-bash-guards.sh" >/dev/null
-bash "$FIXTURES/test-p6-multiremote.sh" >/dev/null
-bash "$FIXTURES/test-wt-lifecycle.sh" >/dev/null
+# Suite A's P6 cases probe the CURRENT repo's git config — run them from a
+# sandbox repo with the placeholder identity so ambient checkouts never leak.
+SUITE_A_REPO="$HOME_SBOX/suite-a-repo"
+git init -q "$SUITE_A_REPO" 2>/dev/null
+git -C "$SUITE_A_REPO" remote add origin https://github.com/x/y 2>/dev/null || true
+git -C "$SUITE_A_REPO" config user.email dev@personal.example
+( cd "$SUITE_A_REPO" && bash "$FIXTURES/test-bash-guards.sh" >/dev/null )
+( cd "$SUITE_A_REPO" && bash "$FIXTURES/test-p6-multiremote.sh" >/dev/null )
+( cd "$SUITE_A_REPO" && bash "$FIXTURES/test-wt-lifecycle.sh" >/dev/null )
 
 # ---- 4. bypass-boundary payloads (r1/r2/r3/debt/override edges) -------------
 # Capture-only: the old engine is the oracle here, the golden diff is the
@@ -93,7 +113,7 @@ git init -q "$P6B"
 git -C "$P6B" config user.email stranger@example.com
 P6GH="$BP/p6-gh"        # github platform, matching repo-local identity
 git init -q "$P6GH"
-git -C "$P6GH" config user.email 1938913473@qq.com
+git -C "$P6GH" config user.email dev@personal.example
 git -C "$P6GH" remote add origin https://github.com/peachest/pi-packages.git
 P6UNK="$BP/p6-unknown"  # unknown platform -> fail-open
 git init -q "$P6UNK"
@@ -205,7 +225,7 @@ bp "$HOME_SBOX" "sleep 0.5m"
 bp "$HOME_SBOX" "sleep 1h"
 # P6 identity edges
 bp "$P6B" "git commit -m x"
-bp "$P6B" "git -c user.email=yuxi.hou@transwarp.io commit -m x"
+bp "$P6B" "git -c user.email=dev@corp.example commit -m x"
 bp "$P6GH" "git commit --no-verify -m x"
 bp "$P6UNK" "git commit -m x"
 
