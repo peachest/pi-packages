@@ -46,6 +46,8 @@ diff -u --label a/upstream/package.json --label b/upstream/package.json <pristin
 
 历史上首次迁移（旧 skills 仓 `d972f3c:extensions/pi-wt-lite.ts` → 本包）的零行为变化等价性已于 2026-10-21 验证，持续的等价性证明由 `verify.sh` 承担。
 
+**实盘合规轨迹（remove-self guard 首例正例）**：2026-10-22 peer session（HAMi 仓 ci/llm30-trivy-scan 收尾）在 session 仍处于待删 worktree 内时调 `wt remove`，guard 以 exit 1 + 引导文案（"先 wt switch main 迁出，再 remove"）拦截（trace：`custom_message` `pi-worktrunk-continuation`，06:32:19）；peer 6 秒内遵引导迁出主检出后重删成功，随后 squash 合并场景先 diff 内容再 `-D` 删分支，全程无残留。此前该 guard 的证据全是事故反例（cwd 失效 spawn ENOENT），这是首条拦截→遵从→干净收尾的正向闭环。
+
 安装方式见仓库根 AGENTS.md（`pi install` 规范）；settings.json 中原 `../../skills` 扩展目录条目保留（仍服务 pi-herdr-peer.ts），本包以 `../../projects/pi-mypackage/packages/pi-wt-lite` 相对路径条目接入。
 
 ## 已知债（spec#137 review 裁定）
