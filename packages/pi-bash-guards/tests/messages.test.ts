@@ -16,6 +16,7 @@ const GUARD = resolve(__dirname, "..", "scripts", "bash-guards.py");
 
 const RENDERER = `
 import importlib.util, json, sys
+sys.dont_write_bytecode = True  # importing the engine must not leave __pycache__ in scripts/
 spec = importlib.util.spec_from_file_location("bg", sys.argv[1])
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
@@ -44,12 +45,14 @@ const CASES: Array<[string, Record<string, unknown>, string]> = [
 	["P6", { kind: "email", email: "stranger@x.y", platform: "github", expected: "1938913473@qq.com", suggest: "1938913473@qq.com" }, "git config user.email 1938913473@qq.com"],
 ];
 
+const PYENV = { ...process.env, PYTHONDONTWRITEBYTECODE: "1" }; // no __pycache__ in scripts/
+
 describe("bash-guards message three-element contract (spec #142)", () => {
 	it("renders all 16 verdict messages with their recommended-command token", () => {
 		const out = execFileSync(
 			"python3",
 			["-c", RENDERER, GUARD, JSON.stringify(CASES.map(([msg, params]) => ({ msg, params })))],
-			{ encoding: "utf8" },
+			{ encoding: "utf8", env: PYENV },
 		);
 		const rendered: string[] = JSON.parse(out);
 		expect(rendered).toHaveLength(CASES.length);
@@ -66,7 +69,7 @@ spec = importlib.util.spec_from_file_location("bg", sys.argv[1])
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
 print(json.dumps([{ "id": r["id"], "scope": r["scope"], "hasMatcher": callable(r["matcher"]) or isinstance(r["matcher"], str), "msg": r["message"] in mod.MESSAGES} for r in mod.RULES]))`, GUARD],
-			{ encoding: "utf8" },
+			{ encoding: "utf8", env: PYENV },
 		);
 		const rules: Array<{ id: string; scope: string; hasMatcher: boolean; msg: boolean }> = JSON.parse(out);
 		expect(rules).toHaveLength(13);
