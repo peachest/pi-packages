@@ -168,7 +168,7 @@ const CONTINUATION_MESSAGE_TYPE = "pi-worktrunk-continuation";
 const MAX_CONTINUATION_OUTPUT = 50_000;
 const CONTINUATION_ARG_PREFIX = "__pi_worktrunk_continuation=";
 const WORKTRUNK_ALIAS_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
-const REMOVE_SELF_GUARD_MESSAGE = "目标 worktree 是当前 session 所在目录。先 wt switch main 迁出，再 remove。（headless session 无 recover 网，此拦截是唯一防线）";
+const REMOVE_SELF_GUARD_MESSAGE = "目标 worktree 是当前 session 所在目录。先 wt switch <主检出分支> 迁出（用 wt list 看 * 号行确认本仓主检出在哪条分支），再 remove。";
 const REMOVE_SELF_LIST_FAILURE_MESSAGE = "无法核实 remove 目标：worktree 列表获取失败。先跑 wt list 确认目标不含当前 session 目录，再重试。";
 const HEADLESS_MIGRATION_NOTICE = "本 session 为 headless 模式，session 自动迁移不可用；如需收尾请用 merge --no-remove 并向父 session 报告";
 const COMPACT_REFERENCE = `Worktrunk command reference (subset; run \`wt <cmd> --help\` via bash for full detail)
