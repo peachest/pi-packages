@@ -35,7 +35,7 @@ expect 2 "docker blocked"                      "$PROJ" "docker ps"
 expect 0 "sudo nerdctl allowed"                "$PROJ" "sudo nerdctl ps"
 expect 2 "bare cd blocked"                     "$PROJ" "cd /mnt/disk1/hyx/projects"
 expect 2 "worktree add blocked"                "$PROJ" "git worktree add ../x feat/x"
-expect 0 "git commit --help not matched as commit" "$PROJ" "git commit --help | head -3"
+expect 0 "git commit --help evaluates identity without crash" "$PROJ" "git -c user.email=dev@personal.example commit --help | head -3"
 
 echo "== P1 secrets (now owned by pi-secret-store; guard allows) =="
 expect 0 "glpat literal blocked"               "$PROJ" "curl -H 'Authorization: Bearer glpat-AbCdEfGhIjKlMnOpQrStUv' https://gitblue.example/api"
@@ -71,9 +71,14 @@ expect 0 "sleep 5 allowed"                     "$PROJ" "sleep 5"
 echo "== P6 commit identity (uses guard cwd = session cwd) =="
 FAKE_REPO=~/tmp/hook-mining/fake-gh-repo
 mkdir -p "$FAKE_REPO"; git -C "$FAKE_REPO" init -q 2>/dev/null; git -C "$FAKE_REPO" remote add origin https://github.com/x/y 2>/dev/null
-( cd "$FAKE_REPO" && expect 2 "wrong identity (global yuxi vs github remote) blocked" "$PROJ" "git commit -m x" )
-( cd "$FAKE_REPO" && expect 0 "correct identity via -c allowed" "$PROJ" "git -c user.email=1938913473@qq.com commit -m x" )
-( cd ~/projects/pi-mypackage && expect 0 "repo-local correct identity allowed" "$PROJ" "git commit -m x" )
+( cd "$FAKE_REPO" && expect 2 "wrong identity (stranger vs github remote) blocked" "$PROJ" "git -c user.email=stranger@x.y commit -m x" )
+( cd "$FAKE_REPO" && expect 0 "correct identity via -c allowed" "$PROJ" "git -c user.email=dev@personal.example commit -m x" )
+# repo-local correct identity: sandbox-local github-remote repo, email set repo-locally
+# (the real pi-mypackage checkout is outside the sandbox — ambient identity leaks).
+mkdir -p "$FAKE_REPO-local"; git -C "$FAKE_REPO-local" init -q 2>/dev/null
+git -C "$FAKE_REPO-local" remote add origin https://github.com/x/y 2>/dev/null
+git -C "$FAKE_REPO-local" config user.email dev@personal.example
+( cd "$FAKE_REPO-local" && expect 0 "repo-local correct identity allowed" "$PROJ" "git commit -m x" )
 
 echo "== G1 agent-dir hand-copy (global) =="
 expect 2 "cp into extensions blocked (skills cwd)" "$SKILL" "cp dist/extension.js ~/.pi/agent/extensions/my-ext/"

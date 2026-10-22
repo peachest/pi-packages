@@ -41,8 +41,8 @@ const CASES: Array<[string, Record<string, unknown>, string]> = [
 	["G1", { kind: "dest" }, "pi install npm:<name>"],
 	["P2", {}, "git add <file1> <file2>"],
 	["P3", { spec: "2h", seconds: 7200 }, "subscribe"],
-	["P6", { kind: "inline", inline: "stranger@x.y", platform: "github", expected: "1938913473@qq.com" }, "Commit with the matching identity"],
-	["P6", { kind: "email", email: "stranger@x.y", platform: "github", expected: "1938913473@qq.com", suggest: "1938913473@qq.com" }, "git config user.email 1938913473@qq.com"],
+	["P6", { kind: "inline", inline: "stranger@x.y", platform: "github", expected: "dev@personal.example" }, "Commit with the matching identity"],
+	["P6", { kind: "email", email: "stranger@x.y", platform: "github", expected: "dev@personal.example", suggest: "dev@personal.example" }, "git config user.email dev@personal.example"],
 ];
 
 const PYENV = { ...process.env, PYTHONDONTWRITEBYTECODE: "1" }; // no __pycache__ in scripts/

@@ -6,7 +6,7 @@
     "packages/*"
   ],
   "scripts": {
-    "check": "npm run lint:boundaries && tsc --noEmit",
+    "check": "npm run lint:boundaries && tsc --noEmit && bash scripts/check-pi-settings.sh",
     "test": "vitest run",
     "postinstall": "node scripts/link-pi-tui.mjs",
     "lint:boundaries": "depcruise packages"
