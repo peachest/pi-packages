@@ -127,6 +127,21 @@ describe("bash-guards fixture suite C (worktree lifecycle R1-R4)", () => {
 	});
 });
 
+describe("bash-guards fixture suite D (subagent SA1-SA4)", () => {
+	let sandbox: string;
+	beforeAll(() => {
+		sandbox = mkdtempSync(join(tmpdir(), "pi-bash-guards-d-"));
+	});
+	afterAll(() => rmSync(sandbox, { recursive: true, force: true }));
+
+	it("19 cases, zero failures", () => {
+		const r = runSuite("test-subagent-guards.sh", { HOME: sandbox });
+		console.log(r.output.split("\n").filter((l) => l.startsWith("FAIL")).join("\n"));
+		expect(r.fail, `suite D failures:\n${r.output.split("\n").filter((l) => l.includes("FAIL")).join("\n")}`).toBe(0);
+		expect(r.pass).toBeGreaterThanOrEqual(19);
+	});
+});
+
 describe("packaged guard sanity (direct payload probes)", () => {
 	it("blocks docker in command position (global guard, any cwd)", () => {
 		let blocked = false;

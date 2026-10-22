@@ -43,6 +43,7 @@
 # protocol (Claude Code hook convention): exit 2 + stderr blocks the call
 # with that reason; exit 0 allows; unreadable payload → exit 0 (fail-open).
 
+import io
 import json, os, re, shlex, subprocess, sys
 
 # ═══ PARSER ═══
@@ -634,6 +635,19 @@ RULES = [
 MESSAGES = {
     "override": "guard-override: explicit marker found — guards bypassed for this "
                 "command (audit trail).",
+    # SA1-SA4: pi-subagents parameter-shape guards (2026-10-22 four-axis mining).
+    "SA1": "subagent: options must be an object, not a JSON string — got: {preview}. "
+           "All string-options calls errored (mining 4/4); the object form is the contract. "
+           "Re-run with the parsed object, e.g. options: {{\"index\": 0}}.",
+    "SA2": "subagent: workflowScriptPath was removed from the contract — got: {val}. "
+           "Re-run with the path as workflow: \"<path>\" (relative ./x resolves against "
+           "cwd; ~ does not expand — use the absolute path).",
+    "SA3": "subagent: workflow path \"{val}\" starts with ~, which the harness does not "
+           "expand — it becomes <cwd>/~/... and fails with ENOENT. "
+           "Re-run with the absolute path (/mnt/disk1/hyx/...).",
+    "SA4": "subagent: unknown agent \"{agent}\" — general/general-purpose do not exist "
+           "and oracle is disabled. Re-run subagent({{action: \"list\"}}) first and pick "
+           "from the roster; guessing the name burns a round-trip every time.",
     "bare-cd": "bare `cd <dir>` is a no-op: the bash tool runs each command in a "
                "fresh shell, so the working directory does not persist. "
                "Re-run as: (cd <dir> && <command>) — e.g. "
@@ -753,10 +767,88 @@ def _match(matcher, ctx):
             return {}
     return None
 
+# ═══ SUBAGENT RULES (SA) ═══
+# pi-subagents tool calls carry an args dict without a `command` key. The
+# hook registry (kendex/hooks.json) routes matcher "subagent" to this same
+# engine; four parameter-shape failures mined 2026-10-22 (~/tmp/subagent-diag/
+# four-axis reports, 228 unique calls / 23 errors) are deterministic from the
+# args alone and each costs a wasted round-trip when not told inline.
+
+SUBAGENT_AGENT_BLACKLIST = {"general", "general-purpose", "oracle"}
+
+
+def _subagent_shaped(args):
+    # Extension-tool gate: only judge payloads that carry subagent-ish keys.
+    # Other no-command tools (edit/write/codemode/ask_user) fail open here.
+    return isinstance(args, dict) and any(
+        k in args for k in ("agent", "task", "workflow", "action", "options", "workflowScriptPath")
+    )
+
+
+def _sa_options_string(args):
+    v = args.get("options")
+    if isinstance(v, str):
+        return {"preview": v[:120]}
+    return None
+
+
+def _sa_legacy_script_path(args):
+    if "workflowScriptPath" in args:
+        return {"val": str(args["workflowScriptPath"])[:120]}
+    return None
+
+
+def _sa_tilde_path(args):
+    v = args.get("workflow")
+    if isinstance(v, str) and v.startswith("~"):
+        return {"val": v[:120]}
+    return None
+
+
+def _sa_blacklisted_agent(args):
+    a = args.get("agent")
+    if isinstance(a, str) and a.lower() in SUBAGENT_AGENT_BLACKLIST:
+        return {"agent": a}
+    return None
+
+
+SUBAGENT_RULES = [
+    # SA1. options passed as a JSON string (mining: 4/4 string calls failed,
+    #      14/14 object calls ok; 3rd retry finally fixed it twice)
+    {"id": "SA1", "scope": "global", "matcher": _sa_options_string, "message": "SA1"},
+    # SA2. removed parameter still in circulation (teaching error in place)
+    {"id": "SA2", "scope": "global", "matcher": _sa_legacy_script_path, "message": "SA2"},
+    # SA3. ~ workflow path: harness prepends cwd -> <cwd>/~/... ENOENT
+    {"id": "SA3", "scope": "global", "matcher": _sa_tilde_path, "message": "SA3"},
+    # SA4. agent names not in the registry (mining: general x2, oracle disabled)
+    {"id": "SA4", "scope": "global", "matcher": _sa_blacklisted_agent, "message": "SA4"},
+]
+
+
+def subagent_main(args):
+    for rule in SUBAGENT_RULES:
+        params = rule["matcher"](args)
+        if params is None:
+            continue
+        block(render_message(MESSAGES[rule["message"]], params))
+    return 0
+
+
 def main():
-    parsed = parse_payload(sys.stdin)
-    if parsed is None:
+    raw = sys.stdin.read()
+    try:
+        tool_input = json.loads(raw).get("tool_input") or {}
+    except Exception:
         return 0  # unreadable payload: never block on our own parsing bug
+    if not isinstance(tool_input, dict):
+        return 0
+    # Extension-tool branch first: subagent calls carry args without a
+    # command key, and parse_payload maps their absence to "", not None.
+    if "command" not in tool_input and _subagent_shaped(tool_input):
+        return subagent_main(tool_input)
+    parsed = parse_payload(io.StringIO(raw))
+    if parsed is None:
+        return 0
     cmd, code, in_projects = parsed
     ctx = {"cmd": cmd, "code": code, "in_projects": in_projects, "cwd": os.getcwd()}
     for rule in RULES:
