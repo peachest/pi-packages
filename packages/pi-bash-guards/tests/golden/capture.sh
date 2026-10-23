@@ -97,7 +97,7 @@ git -C "$SUITE_A_REPO" config user.email dev@personal.example
 ( cd "$SUITE_A_REPO" && bash "$FIXTURES/test-p6-multiremote.sh" >/dev/null )
 ( cd "$SUITE_A_REPO" && bash "$FIXTURES/test-wt-lifecycle.sh" >/dev/null )
 
-# ---- 4. bypass-boundary payloads (r1/r2/r3/debt/override edges) -------------
+# ---- 4. bypass-boundary payloads (r1/r2/r3/debt edges) ----------------------
 # Capture-only: the old engine is the oracle here, the golden diff is the
 # assertion. cwd contexts use real git fixtures built fresh below.
 BP="$HOME_SBOX/tmp/golden-bp"
@@ -178,7 +178,8 @@ git merge x
 EOF"
 bp "$HOME_SBOX" "if true; then git merge x; fi"
 bp "$HOME_SBOX" "git merge x && git merge y"
-# override marker position semantics
+# guard-override marker is inert since #153 (channel removed): the dangerous
+# commands below must now block on their own rule; the marker is just text.
 bp "$HOME_SBOX" "git merge origin/x # guard-override: rescue"
 bp "$HOME_SBOX" "echo '# guard-override: fake'"
 bp "$HOME_SBOX" "git merge origin/x && echo '# guard-override: x'"

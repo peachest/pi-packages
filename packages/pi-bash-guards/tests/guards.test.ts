@@ -137,11 +137,11 @@ describe("bash-guards fixture suite C (worktree lifecycle R1-R4)", () => {
 	});
 	afterAll(() => rmSync(sandbox, { recursive: true, force: true }));
 
-	it("104 cases, zero failures", () => {
+	it("95 cases, zero failures", () => {
 		const r = runSuite("test-wt-lifecycle.sh", { HOME: sandbox });
 		console.log(r.output.split("\n").filter((l) => l.startsWith("FAIL")).join("\n"));
 		expect(r.fail, `suite C failures:\n${r.output.split("\n").filter((l) => l.includes("FAIL")).join("\n")}`).toBe(0);
-		expect(r.pass).toBeGreaterThanOrEqual(104);
+		expect(r.pass).toBeGreaterThanOrEqual(95);
 	});
 });
 

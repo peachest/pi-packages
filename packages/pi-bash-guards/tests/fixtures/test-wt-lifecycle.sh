@@ -16,8 +16,6 @@
 #       restores, -b/-c creation, full-sha materialization and non-wt-layout
 #       trees allowed (#153)
 #   R4  `wt merge -y/--yes` -> block (merge approval is the user's decision)
-#   override channel: `# guard-override:` marker comment -> allow + stderr
-#   audit warning
 #   rtk prefix penetration for every rule
 #   heredoc-body literal regression: document text quoting the guarded
 #   command literals must NOT block (spec #137 was false-blocked twice by
@@ -71,20 +69,6 @@ expect_msg() {
     PASS=$((PASS+1)); echo "PASS  $label"
   else
     FAIL=$((FAIL+1)); echo "FAIL  $label (rc=$rc pattern='$pattern')"; echo "      out: ${out:0:160}"
-  fi
-}
-
-# expect_out <label> <exit> <output-pattern> <transcript_path> <command> [cwd]
-# arbitrary exit code with a required marker in combined output (stderr trail).
-expect_out() {
-  local label="$1" want="$2" pattern="$3" tp="$4" cmd="$5" dir="${6:-.}"
-  local out rc
-  out=$(json_for "$cmd" "$tp" | (cd "$dir" && bash "$GUARD") 2>&1)
-  rc=$?
-  if [ "$rc" = "$want" ] && printf '%s' "$out" | grep -q -- "$pattern"; then
-    PASS=$((PASS+1)); echo "PASS  $label"
-  else
-    FAIL=$((FAIL+1)); echo "FAIL  $label (want=$want got=$rc pattern='$pattern')"; echo "      out: ${out:0:160}"
   fi
 }
 
@@ -198,13 +182,6 @@ expect 0 "wt merge plain allowed"               "$PROJ" "wt merge"
 expect 0 "wt merge --no-remove allowed"         "$PROJ" "wt merge --no-remove"
 expect_msg "r4 msg names the approval rule"     "approval" "$PROJ" "wt merge -y"
 
-echo "== override channel (# guard-override: marker) =="
-expect 0 "override marker allows worktree remove" "$PROJ" "git worktree remove ../x # guard-override: rescue"
-expect 0 "override marker allows wt merge -y"   "$PROJ" "wt merge -y # guard-override: user pre-approved"
-expect 0 "override marker on own line allows"   "$PROJ" "# guard-override: deliberate cleanup
-git worktree prune"
-expect_out "override leaves stderr audit trail" 0 "guard-override" "$PROJ" "git worktree prune # guard-override: x"
-
 echo "== heredoc body literals must not trip R1/R2 (spec #137 creation incident) =="
 DOC=$(cat <<'FEOF'
 gh issue create --title wt-guard-spec --body "$(cat <<'EOF'
@@ -260,17 +237,6 @@ expect 0 "quoted ; literal is not a container cmd"    "$PROJ" "printf '%s\\n' 'e
 expect 0 "quoted && literal is not a container cmd"   "$PROJ" "printf '%s\\n' 'a && ${D} ps'"
 expect 0 "quoted remote cmd with ; still allowed"     "$PROJ" "ssh host 'true; ${D} ps'"
 expect 2 "genuine chained merge still blocked"        "$PROJ" "echo start; git merge origin/main"
-
-echo "== override marker only where a real bash comment starts (rolling-r2 L68) =="
-expect 2 "marker inside quoted string is not authorization" "$PROJ" "printf '%s\\n' '# guard-override: example'; git worktree prune"
-expect 2 "marker inside double quotes is not authorization" "$PROJ" "echo \"see # guard-override: docs\"; git worktree prune"
-expect 2 "marker inside heredoc body is not authorization"  "$PROJ" "cat <<'EOF'
-# guard-override: docs claim this bypasses
-EOF
-git worktree prune"
-expect 0 "trailing real comment still bypasses"       "$PROJ" "git worktree prune # guard-override: rescue"
-expect 0 "own-line comment marker still bypasses"     "$PROJ" "# guard-override: deliberate cleanup
-git worktree prune"
 
 echo "== bypass flag belongs to its own git invocation (rolling-r2 L291) =="
 ( cd "$SUITE_REPO" && expect 0 "push dry-run -n does not condemn the commit" "$PROJ" "git commit -m x && git push -n origin HEAD" )
