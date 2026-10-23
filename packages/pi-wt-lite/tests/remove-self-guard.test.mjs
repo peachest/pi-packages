@@ -5,9 +5,8 @@ import { homedir } from "node:os";
 import assert from "node:assert/strict";
 
 register("./stub-loader.mjs", import.meta.url);
-const { removeTargetsSelf, removeSelfGuardDecision, parseWtInvocation } = await import(
-  "../upstream/worktrunk.ts"
-);
+const { removeTargetsSelf, removeSelfGuardDecision, parseWtInvocation, targetRepoArg, removeNoRepoDecision } =
+  await import("../upstream/worktrunk.ts");
 
 const cwd = "/home/u/projects/repo-main";
 const items = [
@@ -61,6 +60,24 @@ assert.equal(
   undefined,
   "known-empty list keeps historical fail-open for unknown branches (wt errors itself)",
 );
+
+// #152: session cwd outside any git repo and no -C — explicit-target and bare remove both
+// return the dedicated -C guidance instead of the generic discovery-failure text.
+const noRepoExplicit = removeNoRepoDecision(["remove", "somebranch"], false);
+assert.equal(typeof noRepoExplicit, "string", "non-git cwd + explicit target: guided, not silent");
+assert.match(noRepoExplicit, /worktrunk -C/, "guidance names the -C cross-repo form");
+assert.match(noRepoExplicit, /--no-cd/, "guidance documents the --no-cd escape hatch");
+assert.doesNotMatch(noRepoExplicit, /wt list/, "not the old fail-closed wording");
+assert.equal(removeNoRepoDecision(["remove"], false), noRepoExplicit, "bare remove takes the same branch");
+// -C names its own repo (either position): exempt — discovery runs against that repo.
+assert.equal(removeNoRepoDecision(["-C", "/repo", "remove", "x"], false), undefined, "pre-verb -C exempt");
+assert.equal(removeNoRepoDecision(["remove", "-C/repo", "x"], false), undefined, "glued -C exempt");
+assert.equal(removeNoRepoDecision(["remove", "x"], true), undefined, "git cwd keeps the existing path");
+// The full-args -C scan feeds both the pre-flight and the discovery cwd.
+assert.equal(targetRepoArg(["-C", "/repo", "remove", "x"]), "/repo", "pre-verb -C found");
+assert.equal(targetRepoArg(["remove", "-C", "/repo", "x"]), "/repo", "post-verb -C found");
+assert.equal(targetRepoArg(["remove", "-C/repo", "x"]), "/repo", "glued -C found");
+assert.equal(targetRepoArg(["remove", "x"]), undefined, "no -C: absent");
 
 // Other worktrees / unknown branches -> not blocked (wt handles those itself).
 assert.equal(blocked(["feat-x"]), false, "removing another worktree is allowed");
