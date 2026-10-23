@@ -170,9 +170,10 @@ const CONTINUATION_ARG_PREFIX = "__pi_worktrunk_continuation=";
 const WORKTRUNK_ALIAS_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
 const REMOVE_SELF_GUARD_MESSAGE = "目标 worktree 是当前 session 所在目录。先 wt switch <主检出分支> 迁出（用 wt list 看 * 号行确认本仓主检出在哪条分支），再 remove。";
 const REMOVE_SELF_LIST_FAILURE_MESSAGE = "无法核实 remove 目标：当前目录可能不是 git 仓。跨仓操作加 -C <目标仓路径>（如 wt -C ~/projects/<repo> remove <branch>）；或先跑 wt list 核实目标。";
+const REMOVE_SELF_NO_REPO_MESSAGE = "session 不在任何 git 仓内，无法核实 worktree 目标。跨仓操作请在命令中显式指定仓库：`worktrunk -C <repo路径> remove <branch>`；若 -C switch 会迁移本 session，不想迁移时加 --no-cd。";
 const HEADLESS_MIGRATION_NOTICE = "本 session 为 headless 模式，session 自动迁移不可用；如需收尾请用 merge --no-remove 并向父 session 报告";
 const COMPACT_REFERENCE = `Worktrunk command reference (subset; run \`wt <cmd> --help\` via bash for full detail)
-- switch [BRANCH] [-c] [-b BASE] [-C REPO] — switch to or create a worktree; checkouts live at ~/projects/<repo>-<branch>. -c creates the branch (-b sets its base, default main). -C targets another repo checkout (bare repos) — also required for ANY command when the session cwd is outside a git repo.
+- switch [BRANCH] [-c] [-b BASE] [-C REPO] — switch to or create a worktree; checkouts live at ~/projects/<repo>-<branch>. -c creates the branch (-b sets its base, default main). -C targets another repo checkout; REQUIRED when the session cwd is not inside a git repo (research dirs etc.). Note: with switch, -C still emits a directory directive (session migrates); add --no-cd to suppress.
 - remove [BRANCH...] [-D] [-f] [--no-delete-branch] — remove worktrees; branches deleted if merged. If the session sits in the target tree, wt refuses: switch out first (any branch, e.g. the main checkout's).
 - list [--branches] [--full] [--removes] — show worktrees and status
 - merge [TARGET] [--no-squash] [--no-rebase] [--no-remove] — squash-merge current branch into TARGET (default main); pre-merge hooks run as quality gate
@@ -733,6 +734,25 @@ export function removeSelfGuardDecision(
   return removeTargetsSelf(list ?? [], commandArgs, cwd) ? REMOVE_SELF_GUARD_MESSAGE : undefined;
 }
 
+/** The invocation's own -C target (split `-C <dir>` or glued `-C<dir>`); undefined when
+ * absent. Scans the full args list — -C is a global option and may precede the verb. */
+export function targetRepoArg(args: readonly string[]): string | undefined {
+  for (let index = 0; index < args.length; index++) {
+    const value = args[index];
+    if (value === "-C" && index + 1 < args.length) return args[index + 1];
+    if (value.startsWith("-C") && value.length > 2) return value.slice(2);
+  }
+  return undefined;
+}
+
+/** #152 no-repo pre-flight: an invocation with no -C of its own, issued from a session cwd
+ * outside any git repo, can never verify its remove target (worktree discovery is
+ * guaranteed to fail there) — return the -C guidance instead of entering the fail-closed
+ * path. Bare remove and explicit targets take the same branch. */
+export function removeNoRepoDecision(args: readonly string[], inGitRepo: boolean): string | undefined {
+  return targetRepoArg(args) !== undefined || inGitRepo ? undefined : REMOVE_SELF_NO_REPO_MESSAGE;
+}
+
 function relationText(relation?: Relation): string { return `ahead ${relation?.ahead ?? 0}, behind ${relation?.behind ?? 0}`; }
 function changeText(item: WorktreeItem): string {
   const changes = item.worktree?.changes ?? {};
@@ -952,16 +972,16 @@ export default function extension(
     // Strict list (not safeList): a failed discovery must not open the guard for explicit targets.
     // Discovery runs against the -C target repo when given — the invocation may target a
     // repo other than the session cwd (which can be a non-git directory entirely).
-    let discovery = cwd;
-    const ci = invocation.commandIndex ?? -1;
-    const all = [invocation.command, ...invocation.commandArgs];
-    for (let index = 0; index < all.length; index++) {
-      const value = all[index];
-      if (value === "-C" && index + 1 < all.length) { discovery = resolve(cwd, all[++index]); break; }
-      if (value.startsWith("-C") && value.length > 2) { discovery = resolve(cwd, value.slice(2)); break; }
+    const target = targetRepoArg(invocation.args);
+    // #152: with no -C of its own and a session cwd outside any git repo, discovery is
+    // guaranteed to fail — return the -C guidance instead of the fail-closed path.
+    // Gated on target === undefined so -C invocations skip the readCommonDir subprocesses.
+    if (target === undefined) {
+      const noRepo = removeNoRepoDecision(invocation.args, (await readCommonDir(cwd, signal)) !== undefined);
+      if (noRepo) return noRepo;
     }
     let items: WorktreeItem[] | undefined;
-    try { items = await client.list(discovery, signal); } catch { items = undefined; }
+    try { items = await client.list(target === undefined ? cwd : resolve(cwd, target), signal); } catch { items = undefined; }
     // -C <dir> is an option, not a removal target — strip the pair before target matching.
     const targetArgs = invocation.commandArgs.filter((arg, index, arr) =>
       arg !== "-C" && !(index > 0 && arr[index - 1] === "-C"));
