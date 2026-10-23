@@ -168,12 +168,12 @@ const CONTINUATION_MESSAGE_TYPE = "pi-worktrunk-continuation";
 const MAX_CONTINUATION_OUTPUT = 50_000;
 const CONTINUATION_ARG_PREFIX = "__pi_worktrunk_continuation=";
 const WORKTRUNK_ALIAS_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
-const REMOVE_SELF_GUARD_MESSAGE = "目标 worktree 是当前 session 所在目录。先 wt switch main 迁出，再 remove。（headless session 无 recover 网，此拦截是唯一防线）";
-const REMOVE_SELF_LIST_FAILURE_MESSAGE = "无法核实 remove 目标：worktree 列表获取失败。先跑 wt list 确认目标不含当前 session 目录，再重试。";
+const REMOVE_SELF_GUARD_MESSAGE = "目标 worktree 是当前 session 所在目录。先 wt switch <主检出分支> 迁出（用 wt list 看 * 号行确认本仓主检出在哪条分支），再 remove。";
+const REMOVE_SELF_LIST_FAILURE_MESSAGE = "无法核实 remove 目标：当前目录可能不是 git 仓。跨仓操作加 -C <目标仓路径>（如 wt -C ~/projects/<repo> remove <branch>）；或先跑 wt list 核实目标。";
 const HEADLESS_MIGRATION_NOTICE = "本 session 为 headless 模式，session 自动迁移不可用；如需收尾请用 merge --no-remove 并向父 session 报告";
 const COMPACT_REFERENCE = `Worktrunk command reference (subset; run \`wt <cmd> --help\` via bash for full detail)
-- switch [BRANCH] [-c] [-b BASE] [-C REPO] — switch to or create a worktree; checkouts live at ~/projects/<repo>-<branch>. -c creates the branch (-b sets its base, default main). -C targets another repo checkout (bare repos).
-- remove [BRANCH...] [-D] [-f] [--no-delete-branch] — remove worktrees; branches deleted if merged
+- switch [BRANCH] [-c] [-b BASE] [-C REPO] — switch to or create a worktree; checkouts live at ~/projects/<repo>-<branch>. -c creates the branch (-b sets its base, default main). -C targets another repo checkout (bare repos) — also required for ANY command when the session cwd is outside a git repo.
+- remove [BRANCH...] [-D] [-f] [--no-delete-branch] — remove worktrees; branches deleted if merged. If the session sits in the target tree, wt refuses: switch out first (any branch, e.g. the main checkout's).
 - list [--branches] [--full] [--removes] — show worktrees and status
 - merge [TARGET] [--no-squash] [--no-rebase] [--no-remove] — squash-merge current branch into TARGET (default main); pre-merge hooks run as quality gate
 - step rebase [TARGET] | step push [TARGET] | step commit | step diff | step squash — single operations on the current worktree
@@ -552,6 +552,14 @@ export function parseAliasArguments(input: string): string[] {
   return args;
 }
 const GLOBAL_OPTIONS_WITH_VALUES = new Set(["-C", "--config", "--config-set"]);
+
+export function normalizeDuplicatedVerb(command: string | undefined, rawArgs: string[]): string[] {
+  const KNOWN_VERBS = new Set(["switch", "remove", "list", "merge", "step", "hook", "config"]);
+  if (command !== undefined && rawArgs[0] === command && KNOWN_VERBS.has(command)) {
+    return rawArgs.slice(1);
+  }
+  return rawArgs;
+}
 
 export function parseWtInvocation(input: string): Invocation {
   const args = parseAliasArguments(input);
@@ -942,9 +950,22 @@ export default function extension(
   async function removeSelfGuard(invocation: Invocation, cwd: string, signal?: AbortSignal): Promise<string | undefined> {
     if (invocation.command !== "remove") return undefined;
     // Strict list (not safeList): a failed discovery must not open the guard for explicit targets.
+    // Discovery runs against the -C target repo when given — the invocation may target a
+    // repo other than the session cwd (which can be a non-git directory entirely).
+    let discovery = cwd;
+    const ci = invocation.commandIndex ?? -1;
+    const all = [invocation.command, ...invocation.commandArgs];
+    for (let index = 0; index < all.length; index++) {
+      const value = all[index];
+      if (value === "-C" && index + 1 < all.length) { discovery = resolve(cwd, all[++index]); break; }
+      if (value.startsWith("-C") && value.length > 2) { discovery = resolve(cwd, value.slice(2)); break; }
+    }
     let items: WorktreeItem[] | undefined;
-    try { items = await client.list(cwd, signal); } catch { items = undefined; }
-    return removeSelfGuardDecision(items, invocation.commandArgs, cwd);
+    try { items = await client.list(discovery, signal); } catch { items = undefined; }
+    // -C <dir> is an option, not a removal target — strip the pair before target matching.
+    const targetArgs = invocation.commandArgs.filter((arg, index, arr) =>
+      arg !== "-C" && !(index > 0 && arr[index - 1] === "-C"));
+    return removeSelfGuardDecision(items, targetArgs, cwd);
   }
   async function readWorktreeIdentity(cwd: string): Promise<RepositoryIdentity | undefined> {
     try {
@@ -1438,7 +1459,14 @@ export default function extension(
       outputSchema: WorktrunkOutput,
       executionMode: "sequential",
       async execute(_id, params, _signal, _update, ctx) {
-        const args = [params.command, ...(params.args ?? [])];
+        // Models composing the CLI string put the verb in both command and args[0]
+        // ("wt switch -c x" split as command:"switch", args:["switch","-c","x"]).
+        // Strip the duplicate here — the error class dies instead of failing the call.
+        const rawArgs = normalizeDuplicatedVerb(params.command, [...(params.args ?? [])]);
+        if (rawArgs.length !== (params.args ?? []).length) {
+          console.error(`[pi-wt-lite] normalized duplicated verb in args: ${params.command} ${(params.args ?? []).join(" ")}`);
+        }
+        const args = [params.command, ...rawArgs];
         const invocation = parseWtInvocation(args.map(quoteArgument).join(" "));
         if (isBareCommand(invocation, "switch")) {
           throw new WorktrunkError("The worktrunk tool requires an explicit target for `wt switch`.");
