@@ -11,8 +11,10 @@
 #   R2  raw `git merge` (non --ff-only) -> wt merge / git pull --ff-only;
 #       git pull family fully allowed
 #   R3  cross-branch `git checkout <branch>` / `git switch <branch>` inside a
-#       LINKED worktree (.git is a file) -> wt switch; main checkout (.git is
-#       a dir) never touched; file restores and -b/-c creation allowed
+#       wt-layout LINKED worktree (.git is a file, ~/projects/<repo>-<slug>)
+#       -> wt switch; main checkout (.git is a dir) never touched; file
+#       restores, -b/-c creation, full-sha materialization and non-wt-layout
+#       trees allowed (#153)
 #   R4  `wt merge -y/--yes` -> block (merge approval is the user's decision)
 #   override channel: `# guard-override:` marker comment -> allow + stderr
 #   audit warning
@@ -96,11 +98,28 @@ git -C "$MAIN" config user.name guardc
 echo readme > "$MAIN/README.md"
 git -C "$MAIN" add README.md
 git -C "$MAIN" commit -qm init
-git -C "$MAIN" worktree add -q "$FX/linked-wt" -b side
-echo wt > "$FX/linked-wt/WT.md"
-git -C "$FX/linked-wt" add WT.md
-git -C "$FX/linked-wt" commit -qm wt-init
-LINKED="$FX/linked-wt"
+# The GUARDED boundary worktree must sit in the wt layout (~/projects/<repo>-
+# <slug>, #153) — R3 only enforces that layout. $FX hosts the non-wt trees.
+WTP="$HOME/projects"
+mkdir -p "$WTP"; rm -rf "$WTP/main-repo-side"
+git -C "$MAIN" worktree add -q "$WTP/main-repo-side" -b side
+echo wt > "$WTP/main-repo-side/WT.md"
+git -C "$WTP/main-repo-side" add WT.md
+git -C "$WTP/main-repo-side" commit -qm wt-init
+LINKED="$WTP/main-repo-side"
+# child repo + submodule inside the linked wt (ascend libvgpu materialization
+# shape, e932): cwd inside the submodule, its own .git file
+git init -q "$FX/child-repo"
+git -C "$FX/child-repo" config user.email guardc@example.com
+git -C "$FX/child-repo" config user.name guardc
+echo child > "$FX/child-repo/CHILD.md"
+git -C "$FX/child-repo" add CHILD.md
+git -C "$FX/child-repo" commit -qm init
+git -C "$LINKED" -c protocol.file.allow=always submodule add -q "$FX/child-repo" child
+# non-wt-layout linked trees (exempt since #153): autoresearch-style sibling
+# under ~/tmp and pi-subagents-style embedded <repo>/worktrees/<name>
+git -C "$MAIN" worktree add -q "$FX/self-managed" -b side2
+git -C "$MAIN" worktree add -q "$MAIN/worktrees/embedded" -b side3
 
 # P6 fixture repos (rolling-r1): known-platform repo with matching identity,
 # plus an unknown-platform remote repo (platform not in the expected map).
@@ -144,6 +163,17 @@ expect 0 "checkout -b allowed"                "$PROJ" "git checkout -b nb2" "$LI
 expect 0 "switch -c allowed"                  "$PROJ" "git switch -c nb3" "$LINKED"
 expect 0 "checkout rev -- path allowed"       "$PROJ" "git checkout origin/main -- README.md" "$LINKED"
 expect_msg "r3 msg points to wt switch" "wt switch" "$PROJ" "git checkout main" "$LINKED"
+
+echo "== R3 exemptions: full-sha materialization + non-wt layout (#153) =="
+# A full 40-hex sha is pinned-commit materialization (submodule content sync),
+# not a branch move — allowed even inside an enforced wt-layout tree.
+expect 0 "checkout full sha allowed (wt-layout top)"    "$PROJ" "git checkout 0123456789abcdef0123456789abcdef01234567" "$LINKED"
+expect 0 "checkout full sha allowed (inside submodule)" "$PROJ" "git checkout 0123456789abcdef0123456789abcdef01234567" "$LINKED/child"
+# Trees outside the wt layout are self-managed (autoresearch, pi-subagents
+# worktrees/) — wt switch would adopt them into wt management; allow.
+expect 0 "non-wt-layout linked tree checkout allowed"   "$PROJ" "git checkout main" "$FX/self-managed"
+expect 0 "embedded worktrees/ tree switch allowed"      "$PROJ" "git switch main" "$MAIN/worktrees/embedded"
+expect 2 "wt-layout tree still blocks branch checkout"  "$PROJ" "git checkout main" "$LINKED"
 
 echo "== R3 boundary: main checkout (.git is a dir) never blocked =="
 expect 0 "main checkout branch allowed"       "$PROJ" "git checkout main" "$MAIN"

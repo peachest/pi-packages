@@ -321,6 +321,14 @@ def _match_r3(ctx):
             _p = _parent
         if _linked is None:
             continue
+        # Layout exemption (#153, W4 ascend e932/e958/e960): R3 enforces only
+        # wt-managed trees, which wt places at ~/projects/<repo>-<slug>.
+        # Self-managed trees (autoresearch, pi-subagents <repo>/worktrees/<name>)
+        # sit outside that template — wt switch would adopt them into wt
+        # management and migrate their sessions; their own flow is the path.
+        if os.path.dirname(_linked) != os.path.join(os.path.expanduser("~"), "projects") \
+                or "-" not in os.path.basename(_linked):
+            continue
         try:
             _args = shlex.split(_seg[_m.end():])
         except ValueError:
@@ -342,6 +350,11 @@ def _match_r3(ctx):
             _branch = _a
             break
         if _branch is None or ("--" in _args and _m.group(2) == "checkout"):
+            continue
+        # Full 40-hex sha: pinned-commit materialization (submodule content
+        # sync), not a branch move (#153). New-branch flags (-b/-B/-c/-C/
+        # --orphan) break the arg walk above, so a sha here is never creation.
+        if re.fullmatch(r"[0-9a-fA-F]{40}", _branch):
             continue
         if _m.group(2) == "checkout" and os.path.exists(os.path.join(_root, _branch)):
             continue  # bare <path> restore — the path exists in this tree
