@@ -35,10 +35,10 @@ diff --git a/upstream/worktrunk.ts b/upstream/worktrunk.ts
 -const MAX_REFERENCE_BYTES = 30_000;
 -const MAX_EXAMPLES_PER_COMMAND = 3;
 +const REMOVE_SELF_GUARD_MESSAGE = "目标 worktree 是当前 session 所在目录。先 wt switch <主检出分支> 迁出（用 wt list 看 * 号行确认本仓主检出在哪条分支），再 remove。";
-+const REMOVE_SELF_LIST_FAILURE_MESSAGE = "无法核实 remove 目标：worktree 列表获取失败。先跑 wt list 确认目标不含当前 session 目录，再重试。";
++const REMOVE_SELF_LIST_FAILURE_MESSAGE = "无法核实 remove 目标：当前目录可能不是 git 仓。跨仓操作加 -C <目标仓路径>（如 wt -C ~/projects/<repo> remove <branch>）；或先跑 wt list 核实目标。";
 +const HEADLESS_MIGRATION_NOTICE = "本 session 为 headless 模式，session 自动迁移不可用；如需收尾请用 merge --no-remove 并向父 session 报告";
 +const COMPACT_REFERENCE = `Worktrunk command reference (subset; run \`wt <cmd> --help\` via bash for full detail)
-+- switch [BRANCH] [-c] [-b BASE] [-C REPO] — switch to or create a worktree; checkouts live at ~/projects/<repo>-<branch>. -c creates the branch (-b sets its base, default main). -C targets another repo checkout (bare repos).
++- switch [BRANCH] [-c] [-b BASE] [-C REPO] — switch to or create a worktree; checkouts live at ~/projects/<repo>-<branch>. -c creates the branch (-b sets its base, default main). -C targets another repo checkout (bare repos) — also required for ANY command when the session cwd is outside a git repo.
 +- remove [BRANCH...] [-D] [-f] [--no-delete-branch] — remove worktrees; branches deleted if merged. If the session sits in the target tree, wt refuses: switch out first (any branch, e.g. the main checkout's).
 +- list [--branches] [--full] [--removes] — show worktrees and status
 +- merge [TARGET] [--no-squash] [--no-rebase] [--no-remove] — squash-merge current branch into TARGET (default main); pre-merge hooks run as quality gate
@@ -294,21 +294,34 @@ diff --git a/upstream/worktrunk.ts b/upstream/worktrunk.ts
  function relationText(relation?: Relation): string { return `ahead ${relation?.ahead ?? 0}, behind ${relation?.behind ?? 0}`; }
  function changeText(item: WorktreeItem): string {
    const changes = item.worktree?.changes ?? {};
-@@ -1064,6 +947,13 @@
+@@ -1064,6 +947,26 @@
    async function safeList(cwd: string, signal?: AbortSignal): Promise<WorktreeItem[]> {
      try { return await client.list(cwd, signal); } catch { return []; }
    }
 +  async function removeSelfGuard(invocation: Invocation, cwd: string, signal?: AbortSignal): Promise<string | undefined> {
 +    if (invocation.command !== "remove") return undefined;
 +    // Strict list (not safeList): a failed discovery must not open the guard for explicit targets.
++    // Discovery runs against the -C target repo when given — the invocation may target a
++    // repo other than the session cwd (which can be a non-git directory entirely).
++    let discovery = cwd;
++    const ci = invocation.commandIndex ?? -1;
++    const all = [invocation.command, ...invocation.commandArgs];
++    for (let index = 0; index < all.length; index++) {
++      const value = all[index];
++      if (value === "-C" && index + 1 < all.length) { discovery = resolve(cwd, all[++index]); break; }
++      if (value.startsWith("-C") && value.length > 2) { discovery = resolve(cwd, value.slice(2)); break; }
++    }
 +    let items: WorktreeItem[] | undefined;
-+    try { items = await client.list(cwd, signal); } catch { items = undefined; }
-+    return removeSelfGuardDecision(items, invocation.commandArgs, cwd);
++    try { items = await client.list(discovery, signal); } catch { items = undefined; }
++    // -C <dir> is an option, not a removal target — strip the pair before target matching.
++    const targetArgs = invocation.commandArgs.filter((arg, index, arr) =>
++      arg !== "-C" && !(index > 0 && arr[index - 1] === "-C"));
++    return removeSelfGuardDecision(items, targetArgs, cwd);
 +  }
    async function readWorktreeIdentity(cwd: string): Promise<RepositoryIdentity | undefined> {
      try {
        const result = await pi.exec("git", ["rev-parse", "--absolute-git-dir"], { cwd, timeout: 5000 });
-@@ -1135,27 +1025,17 @@
+@@ -1135,27 +1038,17 @@
      installedCommands = parseWorktrunkCommands(rootOutput);
      for (const { name } of installedCommands) commandNames.add(name);
  
@@ -339,7 +352,7 @@ diff --git a/upstream/worktrunk.ts b/upstream/worktrunk.ts
      if (settings !== undefined) aliases = parseWorktrunkAliases(settings);
      for (const { name } of aliases) aliasNames.add(name);
    }
-@@ -1356,6 +1236,12 @@
+@@ -1356,6 +1249,12 @@
        }
        args = ["switch", selected.worktree.path];
      }
@@ -352,7 +365,7 @@ diff --git a/upstream/worktrunk.ts b/upstream/worktrunk.ts
  
      const scope = approvalScope(invocation, ctx.cwd);
      const canPrompt = interactive && ctx.hasUI;
-@@ -1409,6 +1295,10 @@
+@@ -1409,6 +1308,10 @@
        output = [output, await describeApprovalFailure(output, scope, ctx.cwd, ctx.signal)].filter(Boolean).join("\n");
      }
      output = [...notes, output].filter(Boolean).join("\n\n");
@@ -363,7 +376,7 @@ diff --git a/upstream/worktrunk.ts b/upstream/worktrunk.ts
      progress.hide();
      displayCommand(ctx, args, output, result.code !== 0 || Boolean(result.killed), modelOrigin);
      const base: Execution = { result, output, moved: false, canContinue: false };
-@@ -1539,12 +1429,12 @@
+@@ -1539,12 +1442,12 @@
      pi.registerTool({
        name: "worktrunk",
        label: "Worktrunk",
@@ -380,7 +393,7 @@ diff --git a/upstream/worktrunk.ts b/upstream/worktrunk.ts
          "Never pass -y/--yes to worktrunk; approving project commands is the user's decision, and Pi asks the user when Worktrunk needs approval.",
        ],
        parameters: Type.Object({
-@@ -1556,7 +1446,14 @@
+@@ -1556,7 +1459,14 @@
        outputSchema: WorktrunkOutput,
        executionMode: "sequential",
        async execute(_id, params, _signal, _update, ctx) {
@@ -396,7 +409,7 @@ diff --git a/upstream/worktrunk.ts b/upstream/worktrunk.ts
          const invocation = parseWtInvocation(args.map(quoteArgument).join(" "));
          if (isBareCommand(invocation, "switch")) {
            throw new WorktrunkError("The worktrunk tool requires an explicit target for `wt switch`.");
-@@ -1591,6 +1488,8 @@
+@@ -1591,6 +1501,8 @@
                `Command not run: Pi's working directory is no longer usable. Restart Pi in ${target?.path ?? "a surviving worktree"}.`);
            }
            if (ctx.mode === "print" || ctx.mode === "json" || (usable && canRunInline(invocation, aliasNames.has(params.command)))) {
@@ -405,7 +418,7 @@ diff --git a/upstream/worktrunk.ts b/upstream/worktrunk.ts
              let result: WtResult;
              try { result = await invoke(args, { cwd: ctx.cwd, signal }); }
              catch (error) {
-@@ -1601,6 +1500,10 @@
+@@ -1601,6 +1513,10 @@
                ? await pendingApprovals(approvalScope(invocation, ctx.cwd), ctx.cwd, signal)
                : undefined;
              const approval = approvalFailureDetails(output, pending);
@@ -416,7 +429,7 @@ diff --git a/upstream/worktrunk.ts b/upstream/worktrunk.ts
              let stopReason: string | undefined;
              try {
                const destination = await directedDestination(result.directive, identity);
-@@ -1624,14 +1527,14 @@
+@@ -1624,14 +1540,14 @@
              }
              if (stopReason) {
                ctx.abort();
