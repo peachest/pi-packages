@@ -5,7 +5,7 @@ import type { QuestionData, QuestionnaireResult, QuestionParams } from "../tool/
 import type { WrappingSelectItem } from "../view/components/wrapping-select.ts";
 import { COLLAPSED_HINT_TEMPLATE, HINT_PART_CANCEL, KEY_PLACEHOLDER } from "../view/dialog-builder.ts";
 import type { QuestionnairePropsAdapter } from "../view/props-adapter.ts";
-import { buildQuestionnaire, type QuestionnaireBuilt } from "./build-questionnaire.ts";
+import { buildQuestionnaire, type QuestionnaireBuilt } from "../view/build-questionnaire.ts";
 import { t } from "./i18n-bridge.ts";
 import { type QuestionnaireAction, routeKey } from "./key-router.ts";
 import type { QuestionnaireRuntime, QuestionnaireState } from "./state.ts";

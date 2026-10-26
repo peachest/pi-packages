@@ -71,6 +71,25 @@ function selectedLabels(state: QuestionnaireState, question: QuestionData): stri
 	return selected;
 }
 
+/**
+ * Answer fields shared by every hand-built QuestionAnswer: identity (tab,
+ * question text) plus the conditional `notes` tail (absent when empty, so
+ * note-free results stay byte-identical). Callers spread this then add their
+ * kind-specific fields.
+ */
+function answerBase(
+	state: QuestionnaireState,
+	tab: number,
+	question: QuestionData,
+): { questionIndex: number; question: string } {
+	const pendingNotes = state.notesByTab.get(tab);
+	return {
+		questionIndex: tab,
+		question: question.question,
+		...(pendingNotes && pendingNotes.length > 0 ? { notes: pendingNotes } : {}),
+	};
+}
+
 function persistMultiSelectAnswer(state: QuestionnaireState, ctx: ApplyContext): ReadonlyMap<number, QuestionAnswer> {
 	const q = ctx.questions[state.currentTab];
 	if (!q?.multiSelect) return state.answers;
@@ -82,14 +101,11 @@ function persistMultiSelectAnswer(state: QuestionnaireState, ctx: ApplyContext):
 		out.delete(state.currentTab);
 		return out;
 	}
-	const pendingNotes = state.notesByTab.get(state.currentTab);
 	out.set(state.currentTab, {
-		questionIndex: state.currentTab,
-		question: q.question,
+		...answerBase(state, state.currentTab, q),
 		kind: "multi",
 		answer: hasCustom ? custom : null,
 		selected,
-		...(pendingNotes && pendingNotes.length > 0 ? { notes: pendingNotes } : {}),
 	});
 	return out;
 }
@@ -252,15 +268,12 @@ const toggleHandler: Handler<"toggle"> = (state, action, ctx) => {
 const multiConfirmHandler: Handler<"multi_confirm"> = (state, action, ctx) => {
 	const q = ctx.questions[state.currentTab];
 	if (!q) return { state, effects: [] };
-	const pendingNotes = state.notesByTab.get(state.currentTab);
 	const answers = new Map(state.answers);
 	answers.set(state.currentTab, {
-		questionIndex: state.currentTab,
-		question: q.question,
+		...answerBase(state, state.currentTab, q),
 		kind: "multi",
 		answer: action.answer,
 		selected: action.selected,
-		...(pendingNotes && pendingNotes.length > 0 ? { notes: pendingNotes } : {}),
 	});
 	const synced: QuestionnaireState = {
 		...state,
@@ -364,18 +377,15 @@ const rephraseRequestHandler: Handler<"rephrase_request"> = (state, action, ctx)
 		return doneFor({ ...state, answers, rephraseCountByTab }, ctx, true, "rephrase_cap");
 	}
 	const reason = action.reason?.trim();
-	const pendingNotes = state.notesByTab.get(tab);
 	const answers = new Map(state.answers);
 	answers.set(tab, {
-		questionIndex: tab,
-		question: q.question,
+		...answerBase(state, tab, q),
 		kind: "rephrase",
 		answer: null,
 		...(reason && reason.length > 0 ? { reason } : {}),
 		rephraseCount: count,
-		// Pending note rides the rephrase answer like it rides a confirm (confirmHandler),
-		// so a note authored before the rephrase still reaches the agent.
-		...(pendingNotes && pendingNotes.length > 0 ? { notes: pendingNotes } : {}),
+		// Pending note rides the rephrase answer (answerBase notes tail), so a
+		// note authored before the rephrase still reaches the agent.
 	});
 	const reasonByTab = new Map(state.reasonByTab);
 	if (reason && reason.length > 0) reasonByTab.set(tab, reason);

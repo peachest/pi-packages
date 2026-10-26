@@ -6,22 +6,22 @@ import {
 	type BoundPerTabBinding,
 	globalBinding,
 	perTabBinding,
-} from "../view/component-binding.ts";
-import { MultiSelectView } from "../view/components/multi-select-view.ts";
-import { OptionListView } from "../view/components/option-list-view.ts";
-import { PreviewBlockRenderer } from "../view/components/preview/preview-block-renderer.ts";
-import { crossTabLeftWidthWithDonation } from "../view/components/preview/preview-layout-decider.ts";
-import type { PreviewPaneProps } from "../view/components/preview/preview-pane.ts";
-import { PreviewPane } from "../view/components/preview/preview-pane.ts";
-import { SubmitPicker } from "../view/components/submit-picker.ts";
-import { TabBar } from "../view/components/tab-bar.ts";
-import type { WrappingSelectItem, WrappingSelectTheme } from "../view/components/wrapping-select.ts";
-import { buildHeaderPanelLines, DialogView } from "../view/dialog-builder.ts";
-import { QuestionnairePropsAdapter } from "../view/props-adapter.ts";
+} from "./component-binding.ts";
+import { MultiSelectView } from "./components/multi-select-view.ts";
+import { OptionListView } from "./components/option-list-view.ts";
+import { PreviewBlockRenderer } from "./components/preview/preview-block-renderer.ts";
+import { crossTabLeftWidthWithDonation } from "./components/preview/preview-layout-decider.ts";
+import type { PreviewPaneProps } from "./components/preview/preview-pane.ts";
+import { PreviewPane } from "./components/preview/preview-pane.ts";
+import { SubmitPicker } from "./components/submit-picker.ts";
+import { TabBar } from "./components/tab-bar.ts";
+import type { WrappingSelectItem, WrappingSelectTheme } from "./components/wrapping-select.ts";
+import { buildHeaderPanelLines, DialogView } from "./dialog-builder.ts";
+import { QuestionnairePropsAdapter } from "./props-adapter.ts";
 import type { StatefulView } from "../view/stateful-view.ts";
 import type { TabBodyHeights, TabComponents } from "../view/tab-components.ts";
-import type { PerTabSelector } from "./selectors/contract.ts";
-import { selectActivePreviewPaneIndex } from "./selectors/derivations.ts";
+import type { PerTabSelector } from "../state/selectors/contract.ts";
+import { selectActivePreviewPaneIndex } from "../state/selectors/derivations.ts";
 import {
 	selectDialogProps,
 	selectMultiSelectProps,
@@ -29,8 +29,8 @@ import {
 	selectPreviewPaneProps,
 	selectSubmitPickerProps,
 	selectTabBarProps,
-} from "./selectors/projections.ts";
-import type { QuestionnaireState } from "./state.ts";
+} from "../state/selectors/projections.ts";
+import type { QuestionnaireState } from "../state/state.ts";
 
 export interface QuestionnaireBuildConfig {
 	tui: TUI;
