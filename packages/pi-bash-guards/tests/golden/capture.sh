@@ -35,6 +35,10 @@ mkdir -p "$HOME_SBOX/tmp" \
 	"$HOME_SBOX/.pi/agent/sessions/--mnt-disk1-hyx-projects--" \
 	"$HOME_SBOX/.pi/agent/sessions/--mnt-disk1-hyx-projects-pi-mypackage--" \
 	"$HOME_SBOX/.pi/agent/sessions/--mnt-disk1-hyx-skills--"
+# Suite C's boundary worktree must live at ~/projects/<repo>-<slug> relative
+# to the HOME the ENGINE sees (#153 layout exemption) — sandbox it so fixture
+# trees never touch the real node (the header contract promised this already).
+export HOME="$HOME_SBOX"
 
 # Hermetic git: no env leakage from the invoking shell — and no writes to the
 # node's real global config (a capture once overwrote it; git config --global
@@ -93,7 +97,7 @@ git -C "$SUITE_A_REPO" config user.email dev@personal.example
 ( cd "$SUITE_A_REPO" && bash "$FIXTURES/test-p6-multiremote.sh" >/dev/null )
 ( cd "$SUITE_A_REPO" && bash "$FIXTURES/test-wt-lifecycle.sh" >/dev/null )
 
-# ---- 4. bypass-boundary payloads (r1/r2/r3/debt/override edges) -------------
+# ---- 4. bypass-boundary payloads (r1/r2/r3/debt edges) ----------------------
 # Capture-only: the old engine is the oracle here, the golden diff is the
 # assertion. cwd contexts use real git fixtures built fresh below.
 BP="$HOME_SBOX/tmp/golden-bp"
@@ -105,9 +109,12 @@ git -C "$MAIN" config user.name guardc
 echo readme > "$MAIN/README.md"
 git -C "$MAIN" add README.md
 git -C "$MAIN" commit -qm init
-git -C "$MAIN" worktree add -q "$BP/linked-wt" -b side
-mkdir -p "$BP/linked-wt/sub"
-LINKED="$BP/linked-wt"
+mkdir -p "$HOME_SBOX/projects"
+# R3 enforces only wt-layout trees (~/projects/<repo>-<slug>, #153): the
+# boundary worktree must sit in that layout for the blocked payloads below.
+git -C "$MAIN" worktree add -q "$HOME_SBOX/projects/golden-main-side" -b side
+mkdir -p "$HOME_SBOX/projects/golden-main-side/sub"
+LINKED="$HOME_SBOX/projects/golden-main-side"
 P6B="$BP/p6-noremote"   # no remotes -> default identity is the only match
 git init -q "$P6B"
 git -C "$P6B" config user.email stranger@example.com
@@ -171,7 +178,8 @@ git merge x
 EOF"
 bp "$HOME_SBOX" "if true; then git merge x; fi"
 bp "$HOME_SBOX" "git merge x && git merge y"
-# override marker position semantics
+# guard-override marker is inert since #153 (channel removed): the dangerous
+# commands below must now block on their own rule; the marker is just text.
 bp "$HOME_SBOX" "git merge origin/x # guard-override: rescue"
 bp "$HOME_SBOX" "echo '# guard-override: fake'"
 bp "$HOME_SBOX" "git merge origin/x && echo '# guard-override: x'"

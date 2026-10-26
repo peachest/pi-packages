@@ -2,9 +2,9 @@
  * pi-bash-guards — three-element message assertions (spec #142 step 4).
  *
  * Every block message must carry the three elements (reason + correct
- * replacement command + example/exit) — "the model must not have to guess"
- * upgraded from convention to CI invariant. Each of the 16 verdict messages
- * (13 table entries; no-verify/G1/P6 hold two templates each) is rendered
+ * replacement command + example) — "the model must not have to guess"
+ * upgraded from convention to CI invariant. Each of the 15 verdict messages
+ * (12 table entries; no-verify/G1/P6 hold two templates each) is rendered
  * through the engine's own render_message and asserted to contain its
  * recommended-command token.
  */
@@ -26,8 +26,6 @@ print(json.dumps(out, ensure_ascii=False))
 
 // [message key, params, required recommended-command token]
 const CASES: Array<[string, Record<string, unknown>, string]> = [
-	// allow channel: the audit line names the marker (no block三要素 applies)
-	["override", {}, "guard-override"],
 	["bare-cd", {}, "(cd <dir> && <command>)"],
 	["docker", { args: "ps" }, "sudo nerdctl ps"],
 	["worktree-add", {}, "wt switch -c <branch>"],
@@ -48,7 +46,7 @@ const CASES: Array<[string, Record<string, unknown>, string]> = [
 const PYENV = { ...process.env, PYTHONDONTWRITEBYTECODE: "1" }; // no __pycache__ in scripts/
 
 describe("bash-guards message three-element contract (spec #142)", () => {
-	it("renders all 16 verdict messages with their recommended-command token", () => {
+	it("renders all 15 verdict messages with their recommended-command token", () => {
 		const out = execFileSync(
 			"python3",
 			["-c", RENDERER, GUARD, JSON.stringify(CASES.map(([msg, params]) => ({ msg, params })))],
@@ -72,7 +70,7 @@ print(json.dumps([{ "id": r["id"], "scope": r["scope"], "hasMatcher": callable(r
 			{ encoding: "utf8", env: PYENV },
 		);
 		const rules: Array<{ id: string; scope: string; hasMatcher: boolean; msg: boolean }> = JSON.parse(out);
-		expect(rules).toHaveLength(13);
+		expect(rules).toHaveLength(12);
 		for (const r of rules) {
 			expect(r.scope === "global" || r.scope === "projects", `${r.id} scope`).toBe(true);
 			expect(r.hasMatcher, `${r.id} matcher`).toBe(true);

@@ -17,10 +17,11 @@
  *
  * Suite C (test-wt-lifecycle.sh): worktree lifecycle guards R1-R4 (#138,
  * spec #137) — raw `git worktree remove/prune` -> wt remove, raw `git merge`
- * -> wt merge / pull --ff-only, cross-branch checkout/switch in a linked
- * worktree (.git is a file) -> wt switch, `wt merge -y` approval flag,
- * `# guard-override:` bypass with stderr audit trail, rtk prefix, main vs
- * linked worktree boundary, heredoc-body literal false-positive regression.
+ * -> wt merge / pull --ff-only, cross-branch checkout/switch in a wt-layout
+ * linked worktree (.git is a file, ~/projects/<repo>-<slug>) -> wt switch,
+ * full-sha materialization and non-wt-layout trees exempt (#153),
+ * `wt merge -y` approval flag, rtk prefix, main vs linked worktree boundary,
+ * heredoc-body literal false-positive regression.
  *
  * GUARD env override points the fixtures at any guard script; default is the
  * packaged source (scripts/bash-guards.py), NOT the live synced copy — the
@@ -136,11 +137,11 @@ describe("bash-guards fixture suite C (worktree lifecycle R1-R4)", () => {
 	});
 	afterAll(() => rmSync(sandbox, { recursive: true, force: true }));
 
-	it("39 cases, zero failures", () => {
+	it("95 cases, zero failures", () => {
 		const r = runSuite("test-wt-lifecycle.sh", { HOME: sandbox });
 		console.log(r.output.split("\n").filter((l) => l.startsWith("FAIL")).join("\n"));
 		expect(r.fail, `suite C failures:\n${r.output.split("\n").filter((l) => l.includes("FAIL")).join("\n")}`).toBe(0);
-		expect(r.pass).toBeGreaterThanOrEqual(39);
+		expect(r.pass).toBeGreaterThanOrEqual(95);
 	});
 });
 

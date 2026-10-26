@@ -21,7 +21,7 @@
 #                   rules needing state beyond the seam (cwd tracking, argv
 #                   dest, git probes, full-text debt rules).
 #   ═══ MESSAGES ═══ every verdict text as a template; dynamic messages are
-#                   callables over the matcher's params. 13 entries carry 16
+#                   callables over the matcher's params. 12 entries carry 15
 #                   verdicts: no-verify/G1/P6 each hold two messages whose
 #                   selection is order-sensitive within one scan pass —
 #                   splitting them into per-message rules would reorder which
@@ -188,21 +188,6 @@ def _cwd_walk(prs, start):
             continue
         yield seg, cur
 
-def _comment_start(line):
-    # Index where a real bash comment begins on this line, or None: '#'
-    # outside single/double quotes, preceded by line start or whitespace (a
-    # '#' glued to a word is part of that word in bash).
-    q = None
-    for i, ch in enumerate(line):
-        if q:
-            if ch == q:
-                q = None
-        elif ch in ("'", '"'):
-            q = ch
-        elif ch == "#" and (i == 0 or line[i - 1] in " \t"):
-            return i
-    return None
-
 # ═══ RULES ═══
 # Matching discipline (spec #137 lesson): first-token-sequence anchored at
 # command positions only — never full-text substring. The worktree-add, P2
@@ -212,22 +197,6 @@ def _comment_start(line):
 
 # docker probes (which/grep/systemctl/…) are allowed; only running docker blocks.
 PROBE = r"^(which|type|command\s+-v|whereis|grep|egrep|rg|ls|cat|tail|head|less|systemctl|journalctl|apt|apt-get|dpkg|nix|snap|find|stat)\b"
-
-def _match_override(ctx):
-    # Override escape hatch (#138): an explicit marker comment in the command
-    # text bypasses ALL guards for this one invocation, with a stderr warning
-    # as the audit trail. Guards must never permanently block legitimate
-    # rescue work; misuse of the marker still leaves this line behind.
-    # rolling-r2 L68: the marker is honored only where bash itself would start
-    # a comment — '#' outside quotes, at line start or after whitespace, on a
-    # line that is not a heredoc body (_wt_lines drops bodies). A marker
-    # quoted inside an argument or pasted into documentation is text, not
-    # authorization.
-    for line in _wt_lines(ctx["cmd"]):
-        ci = _comment_start(line)
-        if ci is not None and re.match(r"#\s*guard-override\b", line[ci:]):
-            return {}
-    return None
 
 def _match_bare_cd(ctx):
     # Whole command is a bare cd — a no-op, bash tool uses a fresh shell.
@@ -321,6 +290,14 @@ def _match_r3(ctx):
             _p = _parent
         if _linked is None:
             continue
+        # Layout exemption (#153, W4 ascend e932/e958/e960): R3 enforces only
+        # wt-managed trees, which wt places at ~/projects/<repo>-<slug>.
+        # Self-managed trees (autoresearch, pi-subagents <repo>/worktrees/<name>)
+        # sit outside that template — wt switch would adopt them into wt
+        # management and migrate their sessions; their own flow is the path.
+        if os.path.dirname(_linked) != os.path.join(os.path.expanduser("~"), "projects") \
+                or "-" not in os.path.basename(_linked):
+            continue
         try:
             _args = shlex.split(_seg[_m.end():])
         except ValueError:
@@ -342,6 +319,11 @@ def _match_r3(ctx):
             _branch = _a
             break
         if _branch is None or ("--" in _args and _m.group(2) == "checkout"):
+            continue
+        # Full 40-hex sha: pinned-commit materialization (submodule content
+        # sync), not a branch move (#153). New-branch flags (-b/-B/-c/-C/
+        # --orphan) break the arg walk above, so a sha here is never creation.
+        if re.fullmatch(r"[0-9a-fA-F]{40}", _branch):
             continue
         if _m.group(2) == "checkout" and os.path.exists(os.path.join(_root, _branch)):
             continue  # bare <path> restore — the path exists in this tree
@@ -432,7 +414,7 @@ def _match_g1(ctx):
         # the common forms here and re-check, so the destination can't hide behind
         # them. Vars the hook env can't resolve ($PI_EXTENSIONS-style indirection)
         # can't be judged: reject rather than wave an unknown destination at the
-        # managed dirs (reviewer-sanctioned branch; guard-override is the escape).
+        # managed dirs (unjudgeable destination → fail-closed, #153).
         _dest = os.path.expanduser(os.path.expandvars(dest))
         if "$" in _dest:
             return {"kind": "var", "dest": dest}
@@ -614,8 +596,6 @@ def _match_p6(ctx):
 
 # Order IS behavior: entries run in this sequence, first hit wins.
 RULES = [
-    # allow-channel: audit + pass (verdict: allow), not a block.
-    {"id": "override", "scope": "global", "matcher": _match_override, "message": "override", "verdict": "allow"},
     # 1. whole command is a bare cd (mining: 49 calls/38 sessions)
     {"id": "bare-cd", "scope": "global", "matcher": _match_bare_cd, "message": "bare-cd"},
     # 2. docker in command position (mining: 353 calls/77 sessions)
@@ -644,14 +624,13 @@ RULES = [
 ]
 
 # ═══ MESSAGES ═══
-# Every verdict text: reason + correct replacement command + example/exit
-# (three要素, asserted by tests/messages.test.ts). Static entries are format
+# Every verdict text: reason + correct replacement command + example
+# (three elements, asserted by tests/messages.test.ts; the exit IS the
+# replacement command — no bypass channel, #153). Static entries are format
 # templates ({placeholder}); dynamic ones are callables over the matcher's
 # params. Texts are verbatim from the pre-migration engine (golden-locked).
 
 MESSAGES = {
-    "override": "guard-override: explicit marker found — guards bypassed for this "
-                "command (audit trail).",
     # SA1-SA4: pi-subagents parameter-shape guards (2026-10-22 four-axis mining).
     "SA1": "subagent: options must be an object, not a JSON string — got: {preview}. "
            "All string-options calls errored (mining 4/4); the object form is the contract. "
@@ -686,14 +665,13 @@ MESSAGES = {
           "`wt remove feat/x` (it refuses the worktree you are sitting "
           "in). If this is documentation quoting the command, rephrase "
           "the wording or base64 it — the guard reads command position "
-          "only. Genuine rescue need: append `# guard-override: <reason>`.",
+          "only.",
     "R2": "raw `git merge` bypasses the merge discipline (pre-merge verify "
           "gate; sessions have died mid-merge leaving conflict state "
           "behind). Personal repos: merge with the worktrunk tool — "
           "`wt merge` (verify + merge + session migration). If the remote "
           "already contains the branch, sync instead: `git pull --ff-only` "
-          "— e.g. `git pull --ff-only origin main`. Genuine rescue need: "
-          "append `# guard-override: <reason>`.",
+          "— e.g. `git pull --ff-only origin main`.",
     "R3": "`git checkout <branch>`/`git switch <branch>` inside a linked "
           "worktree moves this tree off its branch and strands the "
           "session (processes anchored to the old branch break — same "
@@ -701,15 +679,13 @@ MESSAGES = {
           "Re-run with wt: `wt switch <branch>` — e.g. `wt switch main` "
           "— which migrates the session with the checkout. File restores "
           "(`git checkout -- <path>`) and new branch creation "
-          "(`git checkout -b <name>`) stay allowed. Genuine rescue need: "
-          "append `# guard-override: <reason>`.",
+          "(`git checkout -b <name>`) stay allowed.",
     "R4": "`wt merge -y/--yes` auto-approves the merge — merge approval is "
           "the user's decision (AGENTS.md), not the agent's. Re-run "
           "without -y/--yes and answer the prompt (`wt merge`), or stop "
           "and report the pending merge to the parent/user session for "
           "approval (headless convention: `wt merge --no-remove` + "
-          "report, never -y). Genuine rescue need: append "
-          "`# guard-override: <reason>`.",
+          "report, never -y).",
     "no-verify-commit": "git commit --no-verify skips repo hooks (AGENTS.md never-do). "
                         "Drop the --no-verify/-n flag. If a hook fails, run it manually "
                         "to see the error (e.g. bash .git/hooks/pre-commit) and fix the "
@@ -721,8 +697,7 @@ MESSAGES = {
                       "— fix any finding, then push normally.",
     "G1-var": "copy destination {dest} holds a variable this guard cannot "
               "resolve — rerun with a literal path so the agent-dir hand-copy "
-              "guard can judge it, or append `# guard-override: <reason>` if "
-              "this copy is legitimate.",
+              "guard can judge it.",
     "G1-dest": "placing files into ~/.pi/agent/extensions or ~/.agents/skills by "
                "hand is forbidden (AGENTS.md) — installs drift and shadow the "
                "managed copies. Channels: skills -> edit the ~/skills source repo "
@@ -874,11 +849,7 @@ def main():
         params = _match(rule["matcher"], ctx)
         if params is None:
             continue
-        text = render_message(MESSAGES[rule["message"]], params)
-        if rule.get("verdict") == "allow":  # override channel: audit trail + pass
-            print(text, file=sys.stderr)
-            return 0
-        block(text)
+        block(render_message(MESSAGES[rule["message"]], params))
     return 0
 
 if __name__ == "__main__":
