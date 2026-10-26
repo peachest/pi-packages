@@ -478,6 +478,7 @@ export default function secretStore(pi: ExtensionAPI) {
 					return current;
 				},
 				getBackend(), // r4 #3：与读路径同源缓存，conf 运行期翻转不产生双正典交叉写
+				(msg) => ctx.ui.notify(msg, "warning"), // review-high #5：persist 分支 keygen chmod 失败告警直达 UI
 			);
 			redactor.add(value, params.name);
 			return say(`凭证 ${params.name} 已保存（指纹 ${fingerprintOf(value)}）。此后 bash 中直接引用 $${params.name}；明文不可见、不可读。`);
@@ -506,6 +507,7 @@ export default function secretStore(pi: ExtensionAPI) {
 							return next;
 						},
 						getBackend(), // r4 #3：与读路径同源缓存，conf 运行期翻转不产生双正典交叉写
+						(msg) => ctx.ui.notify(msg, "warning"), // review-high #5：persist 分支 keygen chmod 失败告警直达 UI
 					);
 					ctx.ui.notify(deleted ? `已删除 ${name}` : `凭证 ${name} 不存在`, deleted ? "info" : "warning");
 					return;

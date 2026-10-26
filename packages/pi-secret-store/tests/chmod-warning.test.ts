@@ -7,7 +7,8 @@ import { chmod, readFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanupEnv, hasRealAge, setupHarness, toolCtx, type Harness } from "./helpers.ts";
+import { createBackend } from "../lib/backend.ts";
+import { assertAgeBackend, cleanupEnv, hasRealAge, setupHarness, toolCtx, type Harness } from "./helpers.ts";
 
 vi.mock("node:fs/promises", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("node:fs/promises")>();
@@ -50,5 +51,22 @@ describe.skipIf(!hasRealAge)("身份密钥 chmod 收紧失败告警（r9 #3，ag
 		const h = await setupHarness(SEED, undefined, "age");
 		await h.handlers.session_start[0]({ reason: "new" }, toolCtx(h));
 		expect(h.notifyLog.join("\n")).not.toContain("0600");
+	}, 15_000);
+
+	// review-high #5：r9 #3 的告警语义在 persist 分支断了（ensureIdentity(keyPath) 漏传 onWarning）——
+	// 直接驱动 persist（persist 触发 keygen 的现实场景：密文不存在 + conf 后写），断言告警可达。
+	it("persist 路径 keygen chmod 失败 → onWarning 可达（review-high #5），persist 链路照常完成", async () => {
+		failNextChmod("EACCES");
+		const h = await setupHarness(undefined, undefined, "age");
+		await assertAgeBackend(h);
+		const warnings: string[] = [];
+		const backend = await createBackend(h.agentDir);
+		await backend.persist(SEED, (msg) => warnings.push(msg));
+		expect(warnings.join("\n")).toContain("0600");
+		expect(warnings.join("\n")).toContain("chmod 600");
+		expect(warnings.join("\n")).toContain("secret-store.key");
+		// 告警不中断 persist：密钥与密文均落盘
+		expect((await stat(keyFile(h))).isFile()).toBe(true);
+		expect(await readFile(ageFile(h), "utf8")).toContain("age-encryption.org/v1");
 	}, 15_000);
 });

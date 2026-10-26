@@ -19,8 +19,8 @@ import { loadStore, parseStoreText, stageTmp, storePaths, validateStore, withSto
 export interface StoreBackend {
 	/** 读整店：仅 ENOENT/首次使用视为空；其余错误上抛（fail closed，调用方不得重写任何文件） */
 	load(onWarning?: (msg: string) => void): Promise<Store>;
-	/** 整店原子持久化（调用方持锁） */
-	persist(store: Store): Promise<void>;
+	/** 整店原子持久化（调用方持锁）；onWarning：persist 分支 keygen/加密链路的非致命告警通道（review-high #5） */
+	persist(store: Store, onWarning?: (msg: string) => void): Promise<void>;
 	/** 锁文件基准路径（跨进程互斥粒度 = 存储正典文件） */
 	readonly lockPath: string;
 }
@@ -283,7 +283,7 @@ const ageBackend = (plainPath: string, cipherPath: string, keyPath: string): Sto
 			}
 			return migrateLegacy(legacyRaw, plainPath, cipherPath, keyPath, onWarning);
 		},
-		async persist(store) {
+		async persist(store, onWarning) {
 			// 防覆盖（r4 #1）：密文已存在但解不开（身份密钥丢失/被换）→ 显式拒绝写入——否则 ensureIdentity 会
 			// 生成新钥覆盖出与旧密文无关的新密文，旧凭证不可恢复丢失且无感知。报错文案与 load 恢复指引一致。
 			// r8 #1：复用判定 = 密文内容指纹——无缓存或指纹不一致（含同精度窗口同 size 重写）→ 重跑 age -d
@@ -293,7 +293,9 @@ const ageBackend = (plainPath: string, cipherPath: string, keyPath: string): Sto
 				await decryptStoreText(cipherPath, keyPath);
 				lastVerifiedFingerprint = currentFingerprint;
 			}
-			await ensureIdentity(keyPath);
+			// review-high #5：r9 #3 的 0600 收紧失败告警语义在 persist 分支不再断——首次由 persist 触发
+			// keygen（密文不存在 + conf 后写场景）时 chmod 失败同样可达告警面。
+			await ensureIdentity(keyPath, onWarning);
 			await encryptToFile(serialize(store), cipherPath, keyPath);
 			lastVerifiedFingerprint = await cipherFingerprint();
 		},
@@ -356,6 +358,7 @@ export async function updateStore(
 	agentDir: string,
 	mutate: (store: Store) => Store | undefined,
 	backend?: Promise<StoreBackend>, // r4 #3：调用方传入 factory 缓存的实例——缺省每次新建会重读 conf，运行期 age↔plain 翻转会让同一存储被两套正典交叉写
+	onWarning?: (msg: string) => void, // review-high #5：透传 persist 分支 keygen chmod 告警
 ): Promise<Store> {
 	await mkdir(agentDir, { recursive: true });
 	const b = await (backend ?? createBackend(agentDir));
@@ -367,7 +370,7 @@ export async function updateStore(
 		// 已知缝（review-high #2 登记，本票不修）：load 时被宽松跳过的条目（parseStoreText 非严格路径的 onWarning
 		// 分支）不在内存 store 中，本次 persist 的 serialize 亦不含——磁盘上的非法条目会在下次成功写回时静默
 		// 消失（无 shred，但属无提示丢失）。现网宽松语义维持；收口需 load 返回被跳过清单并在 serialize 前显式裁决。
-		await b.persist(next);
+		await b.persist(next, onWarning);
 		return next;
 	});
 }
