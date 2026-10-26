@@ -164,7 +164,7 @@ async function shredFile(path: string, onWarning?: (msg: string) => void): Promi
 		if (r.code === 0) return;
 		const detail = r.stderr.trim();
 		onWarning?.(
-			`secret-store: shred 执行失败（exit ${r.code}${detail ? `：${detail}` : ""}），原文件 ${path} 以单次随机覆写+删除兜底销毁（弱于 shred 多遍覆写），如需确保销毁强度请手动处理`,
+			`secret-store: shred 执行失败（exit ${r.code}${detail ? `：${detail}` : ""}），原文件 ${path} 以单次随机覆写+删除兜底销毁（弱于 shred 多遍覆写；日志式/CoW 文件系统上覆写不保证销毁旧块，r7 #8），如需确保销毁强度请手动处理`,
 		);
 	} catch {
 		// shred 不在 PATH（command not found）：静默走覆写兜底
@@ -184,51 +184,77 @@ async function shredFile(path: string, onWarning?: (msg: string) => void): Promi
 	await unlink(path);
 }
 
-const ageBackend = (plainPath: string, cipherPath: string, keyPath: string): StoreBackend => ({
-	lockPath: `${cipherPath}.lock`,
-	async load(onWarning) {
-		let hasCipher: boolean;
+const ageBackend = (plainPath: string, cipherPath: string, keyPath: string): StoreBackend => {
+	// r7 #6：防覆盖校验缓存——load 解密成功 / 自身 persist 加密成功时记录密文 mtime+size；persist 校验时
+	// 一致即跳过重解密（省一次 age -d spawn，锁内调用方刚完成 load 时不再重复验证），不一致才重跑。
+	let lastVerifiedCipher: { mtimeMs: number | bigint; size: number | bigint } | undefined; // 字段类型随 stat（bigint 变体）
+	const noteVerifiedCipher = async (): Promise<void> => {
 		try {
-			await stat(cipherPath);
-			hasCipher = true;
-		} catch (err) {
-			if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-			hasCipher = false;
+			const st = await stat(cipherPath);
+			lastVerifiedCipher = { mtimeMs: st.mtimeMs, size: st.size };
+		} catch {
+			lastVerifiedCipher = undefined;
 		}
-		if (hasCipher) {
-			// 密文与遗留明文并存（迁移时 shred 失败的残留）→ 密文为准，提示手动清理
-			await stat(plainPath)
-				.then(() => onWarning?.(`secret-store: 检测到密文与遗留明文并存（${plainPath}），以密文为准，请手动删除明文文件`))
-				.catch(() => {});
-			return parseStoreText(await decryptStoreText(cipherPath, keyPath), cipherPath, onWarning);
-		}
-		let legacyRaw: string | undefined;
-		try {
-			legacyRaw = await readFile(plainPath, "utf8");
-		} catch (err) {
-			if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-		}
-		if (legacyRaw === undefined) {
-			await ensureIdentity(keyPath); // 首次使用：零交互生成身份密钥（0600）
-			return Object.create(null) as Store;
-		}
-		return migrateLegacy(legacyRaw, plainPath, cipherPath, keyPath, onWarning);
-	},
-	async persist(store) {
-		// 防覆盖（r4 #1）：密文已存在但解不开（身份密钥丢失/被换）→ 显式拒绝写入——否则 ensureIdentity 会
-		// 生成新钥覆盖出与旧密文无关的新密文，旧凭证不可恢复丢失且无感知。报错文案与 load 恢复指引一致。
-		let hasCipher = false;
-		try {
-			await stat(cipherPath);
-			hasCipher = true;
-		} catch (err) {
-			if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-		}
-		if (hasCipher) await decryptStoreText(cipherPath, keyPath);
-		await ensureIdentity(keyPath);
-		await encryptToFile(serialize(store), cipherPath, keyPath);
-	},
-});
+	};
+	return {
+		// r7 #1：基准 = cipherPath（withStoreLock 统一加 .lock 后缀）——旧值 ${cipherPath}.lock 会让 updateStore
+		// 实际锁在 .lock.lock，与 load 侧首次使用/迁移分支的 .lock 锁互不互斥，persist 与 keygen 无法串行。
+		lockPath: cipherPath,
+		async load(onWarning) {
+			let hasCipher: boolean;
+			try {
+				await stat(cipherPath);
+				hasCipher = true;
+			} catch (err) {
+				if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+				hasCipher = false;
+			}
+			if (hasCipher) {
+				// 密文与遗留明文并存（迁移时 shred 失败的残留）→ 密文为准，提示手动清理
+				await stat(plainPath)
+					.then(() => onWarning?.(`secret-store: 检测到密文与遗留明文并存（${plainPath}），以密文为准，请手动删除明文文件`))
+					.catch(() => {});
+				const text = await decryptStoreText(cipherPath, keyPath);
+				await noteVerifiedCipher();
+				return parseStoreText(text, cipherPath, onWarning);
+			}
+			let legacyRaw: string | undefined;
+			try {
+				legacyRaw = await readFile(plainPath, "utf8");
+			} catch (err) {
+				if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+			}
+			if (legacyRaw === undefined) {
+				// r7 #1：首次使用同样持锁（与 migrateLegacy 一致）——锁外 keygen 的 rename 与并发 persist 的
+				// ensureIdentity→encryptToFile 交错时覆盖密钥，已落盘密文永久不可解；updateStore 锁内 reload
+				// 到此分支由 withStoreLock 同链重入直通，不二次取锁。
+				await withStoreLock(cipherPath, () => ensureIdentity(keyPath));
+				return Object.create(null) as Store;
+			}
+			return migrateLegacy(legacyRaw, plainPath, cipherPath, keyPath, onWarning);
+		},
+		async persist(store) {
+			// 防覆盖（r4 #1）：密文已存在但解不开（身份密钥丢失/被换）→ 显式拒绝写入——否则 ensureIdentity 会
+			// 生成新钥覆盖出与旧密文无关的新密文，旧凭证不可恢复丢失且无感知。报错文案与 load 恢复指引一致。
+			let cipherStat: Awaited<ReturnType<typeof stat>> | undefined;
+			try {
+				cipherStat = await stat(cipherPath);
+			} catch (err) {
+				if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+			}
+			if (cipherStat) {
+				const cached = lastVerifiedCipher;
+				if (!cached || cached.mtimeMs !== cipherStat.mtimeMs || cached.size !== cipherStat.size) {
+					await decryptStoreText(cipherPath, keyPath);
+					lastVerifiedCipher = { mtimeMs: cipherStat.mtimeMs, size: cipherStat.size };
+				}
+			}
+			await ensureIdentity(keyPath);
+			await encryptToFile(serialize(store), cipherPath, keyPath);
+			await noteVerifiedCipher();
+		},
+	};
+};
 
 /** 遗留明文迁移（D7=a）：内存解析校验（损坏即中止，原文件不动）→ 存储锁内加密落盘 → shred 原文件。
  *  明文只在扩展进程内存与 age 的 stdin 管道中经过，不进上下文/日志/agent 可见面。 */

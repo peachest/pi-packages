@@ -3,7 +3,7 @@
  */
 import { stat } from "node:fs/promises";
 import { afterEach, describe, expect, it } from "vitest";
-import { cleanupEnv, setupHarness } from "./helpers.ts";
+import { assertAgeBackend, cleanupEnv, setupHarness } from "./helpers.ts";
 
 afterEach(cleanupEnv);
 
@@ -22,5 +22,16 @@ describe("harness 清理（#126）", () => {
 		await cleanupEnv();
 		expect(process.env.PI_CODING_AGENT_DIR).toBeUndefined();
 		await expect(stat(h.agentDir)).rejects.toThrow(/ENOENT/);
+	});
+});
+
+describe("assertAgeBackend 防呆（r7 #7）", () => {
+	it("age 沙箱通过；plain 沙箱（含缺省）抛错——遗漏显式声明的 age 测试立即红", async () => {
+		const ageH = await setupHarness(undefined, undefined, "age");
+		expect(ageH.backend).toBe("age");
+		await expect(assertAgeBackend(ageH)).resolves.toBeUndefined();
+		const plainH = await setupHarness();
+		expect(plainH.backend).toBe("plain");
+		await expect(assertAgeBackend(plainH)).rejects.toThrow(/非 age/);
 	});
 });

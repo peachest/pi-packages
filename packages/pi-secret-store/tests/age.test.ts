@@ -5,13 +5,14 @@
  * plain 显式配置回归 + conf 非法值 fail closed。
  */
 import { execFile } from "node:child_process";
-import { chmod, copyFile, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, copyFile, mkdtemp, readFile, readdir, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import { createBackend } from "../lib/backend.ts";
-import { cleanupEnv, runExact, runToolCall, setupHarness, toolCtx, toolResultEvent, type Harness } from "./helpers.ts";
+import { withStoreLock } from "../lib/store.ts";
+import { assertAgeBackend, cleanupEnv, runExact, runToolCall, setupHarness, toolCtx, toolResultEvent, type Harness } from "./helpers.ts";
 
 const run = promisify(execFile);
 
@@ -32,6 +33,7 @@ const start = async (h: Harness) => h.handlers.session_start[0]({ reason: "new" 
 describe("age 后端：遗留明文自动迁移（D7=a）", () => {
 	it("首次运行：明文 store 加密转为 .age、shred 删除原文件、身份密钥自动生成 0600，明文不进上下文", async () => {
 		const h = await setupHarness(SEED, undefined, "age");
+		await assertAgeBackend(h); // r7 #7 防呆：确保跑在声明的 age 后端下
 		await start(h);
 		// 密文落盘（age 二进制格式头，磁盘无明文 json）
 		const cipher = await readFile(ageFile(h), "utf8");
@@ -172,6 +174,7 @@ describe("age 后端：错误路径显式报错（不静默降级）", () => {
 describe("age 后端：配置选择（conf 文件）", () => {
 	it("空存储首次使用 → 身份密钥零交互生成（0600），不创建密文", async () => {
 		const h = await setupHarness(undefined, undefined, "age");
+		await assertAgeBackend(h); // r7 #7 防呆
 		await start(h);
 		expect((await stat(keyFile(h))).mode & 0o777).toBe(0o600);
 		await expect(stat(ageFile(h))).rejects.toThrow(/ENOENT/);
@@ -238,6 +241,80 @@ describe("age 后端：r4 findings 收口", () => {
 		const q = await runExact(h, "secret_query", { name: "B_TOKEN" });
 		expect(q.content[0].text).toContain("不存在"); // 写入须落在同一正典：密文里 B 已删
 		await expect(stat(h.storePath)).rejects.toThrow(/ENOENT/); // 明文正典不被创建
+	});
+});
+
+describe("age 后端：首次使用路径持锁（r7 #1 跨 session 密钥竞态）", () => {
+	const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+	it("并发 session 持锁期间，首次使用 load 阻塞等待：不锁外生成密钥（与 persist 临界区串行）", async () => {
+		const h = await setupHarness(undefined, undefined, "age");
+		const backend = await createBackend(h.agentDir);
+		let release!: () => void;
+		const gate = new Promise<void>((r) => (release = r));
+		const holder = withStoreLock(ageFile(h), () => gate); // 模拟 session A 在 persist 临界区（ensureIdentity→encrypt 窗口）持锁
+		const bLoad = backend.load(); // session B 首次使用：无密文/明文/密钥
+		await sleep(300);
+		await expect(stat(keyFile(h))).rejects.toThrow(/ENOENT/); // 旧实现：锁外 keygen 已落盘（红）
+		release();
+		await bLoad;
+		await expect(stat(keyFile(h))).resolves.toBeDefined(); // 锁释放后才生成
+		await holder;
+	});
+
+	it("持锁期间已落盘的密钥不被并发首次使用 load 覆盖（覆盖即已加密文永久不可解）", async () => {
+		const h = await setupHarness(undefined, undefined, "age");
+		const backend = await createBackend(h.agentDir);
+		let release!: () => void;
+		const gate = new Promise<void>((r) => (release = r));
+		const holder = withStoreLock(ageFile(h), () => gate);
+		const KEY_A = "# public key: age1fake0000000000000000000000000000000000000000000000000000000000\n";
+		await writeFile(keyFile(h), KEY_A, { mode: 0o600 }); // 模拟 A 的 ensureIdentity 已完成
+		const bLoad = backend.load();
+		// 旧实现：锁外 stat 命中即返回（红）；新实现：首次使用纳锁，持锁期间阻塞
+		await expect(Promise.race([bLoad.then(() => "resolved"), sleep(300).then(() => "pending")])).resolves.toBe("pending");
+		release();
+		await bLoad;
+		await expect(readFile(keyFile(h), "utf8")).resolves.toBe(KEY_A); // K_A 未被覆盖
+		await holder;
+	});
+
+	it("updateStore 锁内 reload 走首次使用分支 → 同链锁重入直通，不自旋到锁超时（r7 #1 配套回归）", async () => {
+		const h = await setupHarness(undefined, undefined, "age");
+		await h.commands.get("secret-store").handler("forget NOPE", toolCtx(h));
+		expect(h.notifyLog.join("\n")).toContain("不存在"); // 无 ALS 重入时此处会是“等待存储锁超时”
+		expect((await stat(keyFile(h))).mode & 0o777).toBe(0o600); // 首次使用密钥生成照常在锁内完成
+	});
+});
+
+describe("age 后端：persist 防覆盖校验复用 load 解密结果（r7 #6）", () => {
+	it("密文 mtime+size 未变时 persist 不重跑 age -d；密文变化（mtime）后恢复重验", async () => {
+		const realBin = join(process.env.HOME ?? "/nonexistent", ".local", "bin");
+		const fakeBin = await mkdtemp(join(tmpdir(), "age-log-"));
+		const logFile = join(fakeBin, "age-calls.log");
+		await writeFile(join(fakeBin, "age"), `#!/bin/sh\nprintf '%s\\n' "$*" >> ${logFile}\nexec ${realBin}/age "$@"\n`, {
+			mode: 0o755,
+		});
+		await copyFile(join(realBin, "age-keygen"), join(fakeBin, "age-keygen"));
+		process.env.PI_SECRET_STORE_AGE_BIN = join(fakeBin, "age");
+		const dCount = async () => (await readFile(logFile, "utf8")).split("\n").filter((l) => l.startsWith("-d ")).length;
+		try {
+			const h = await setupHarness(SEED, undefined, "age");
+			await assertAgeBackend(h);
+			const backend = await createBackend(h.agentDir);
+			await backend.load(); // 迁移：明文 → 密文（仅加密，无 -d）
+			await backend.load(); // 解密装载：-d ×1，记录密文 mtime+size
+			expect(await dCount()).toBe(1);
+			await backend.persist(SEED_TWO); // 锁内刚 load 过 → 复用校验不再 -d（旧实现再 -d 一次，红）
+			expect(await dCount()).toBe(1);
+			await utimes(ageFile(h), new Date(Date.now() + 5000), new Date(Date.now() + 5000)); // 外部改写信号：mtime 变化
+			await backend.persist(SEED_TWO); // 恢复重验：-d ×2，通过后照常加密
+			expect(await dCount()).toBe(2);
+			await expect(backend.load()).resolves.toMatchObject({ HARBOR_PASSWORD: expect.anything(), B_TOKEN: expect.anything() }); // round-trip
+		} finally {
+			delete process.env.PI_SECRET_STORE_AGE_BIN;
+			await rm(fakeBin, { recursive: true, force: true });
+		}
 	});
 });
 

@@ -72,26 +72,42 @@ let legacyEnvStale = false;
  *  无 -c 的脚本路径场景（bash deploy.sh）比对词就是 shell 名，保持 r2 行为。 */
 const SHELL_WRAPPERS = new Set(["sh", "bash", "zsh", "dash", "ksh"]);
 // r4 #4：wrapper 已知选项 token 不是命令词——此前 `sudo -E nerdctl` 的比对词是 "-E"，allowedPrefix 合法命令被 fail-closed 误 block。
-// 带独立参数的选项（-u/-g/-k/-s）连同参数一起跳过。shortcut：仅覆盖常见形态，`sudo -u1000` 等紧贴拼写仍误判，出现时再扩表。
+// r7 #3：选项表按 wrapper 区分（GNU/sudo 手册语义）——sudo 的 -s（shell）/ -k（invalidate ticket）无参，既非命令词也不吞参
+// （旧全局带参表把它们当带参 i++，吞掉真命令词 sudo -s nerdctl … 命令词错位误 block）；带参者：sudo -u/-g、env -u、timeout -k/-s。
+// shortcut：仅覆盖常见形态，`sudo -u1000` 等紧贴拼写仍误判，出现时再扩表。
 const WRAPPER_OPTIONS = new Set(["-E", "--preserve-env", "-i", "--ignore-environment", "--preserve-status"]);
-const WRAPPER_OPTIONS_WITH_ARG = new Set(["-u", "-g", "-k", "-s"]);
+const WRAPPER_FLAG_OPTIONS: Record<string, ReadonlySet<string>> = {
+	sudo: new Set(["-s", "-k"]), // 无参选项
+};
+const WRAPPER_OPTIONS_WITH_ARG: Record<string, ReadonlySet<string>> = {
+	sudo: new Set(["-u", "-g"]),
+	env: new Set(["-u"]),
+	timeout: new Set(["-k", "-s"]),
+};
 const isWrapperDuration = (t: string): boolean => /^\d+(?:\.\d+)?[smhd]?$/.test(t); // timeout 的时长参数（10 / 10s / 1.5m）
 const commandWord = (cmd: string): string => {
 	const toks = cmd.split(/[\s'"|&;()]+/);
 	let afterTimeout = false; // r5 #4：裸数字时长仅在 timeout 之后紧邻位置剥离——任意位置的纯数字 token 过宽（数字开头命令首词被误跳）
+	let wrapper: string | undefined; // r7 #3：最近的 wrapper（sudo/env/timeout），查各自的带参选项表
 	for (let i = 0; i < toks.length; i++) {
 		const tok = toks[i];
-		if (!tok || tok === "sudo" || tok === "env" || tok === "nohup" || /^[A-Za-z_][A-Za-z0-9_]*=/.test(tok)) continue;
+		if (!tok || tok === "nohup" || /^[A-Za-z_][A-Za-z0-9_]*=/.test(tok)) continue;
+		if (tok === "sudo" || tok === "env") {
+			wrapper = tok;
+			continue;
+		}
 		if (tok === "timeout") {
+			wrapper = "timeout";
 			afterTimeout = true;
 			continue;
 		}
 		if (WRAPPER_OPTIONS.has(tok) || tok.startsWith("--preserve-env=") || tok.startsWith("--kill-after=")) continue;
+		if (wrapper && WRAPPER_FLAG_OPTIONS[wrapper]?.has(tok)) continue; // r7 #3：sudo -s/-k 无参，不吞真命令词
 		if (afterTimeout && isWrapperDuration(tok)) {
 			afterTimeout = false; // timeout 只接受一个时长参数，剥掉即复位
 			continue;
 		}
-		if (WRAPPER_OPTIONS_WITH_ARG.has(tok)) {
+		if (wrapper && WRAPPER_OPTIONS_WITH_ARG[wrapper]?.has(tok)) {
 			i++; // 选项的独立参数（sudo -u alice / env -u NAME / timeout -k 5）同样不是命令词
 			continue;
 		}
@@ -158,10 +174,16 @@ export default function secretStore(pi: ExtensionAPI) {
 	};
 
 	/** 命令串 → 路径 token（空白/引号/shell 结构符切分，--opt= 前缀剥离）逐个解析比对；含空格/引号/$变量拼写的路径
-	 *  token 化会切碎、逐 token resolve 不中——受保护路径全量字面子串兜底（r5 #1；storePathAge 恒含 storePath 子串，
-	 *  随之覆盖；confPath 与 storePath 无包含关系，须单列——r6 #1）。 */
+	 *  token 化会切碎、逐 token resolve 不中——受保护路径全量字面子串兜底（r5 #1；r7 #4：storePathAge 显式单列，
+	 *  不依赖恒含 storePath 子串的隐式包含；confPath 与 storePath 无包含关系，须单列——r6 #1）。 */
 	const touchesStore = (s: string, cwd: string): boolean => {
-		if (s.includes(storePath) || s.includes(keyPath) || s.includes(confPath) || (legacyEnvStale && s.includes(legacyEnvFile)))
+		if (
+			s.includes(storePath) ||
+			s.includes(storePathAge) || // r7 #4：显式单列，不依赖 storePathAge 恒含 storePath 子串的隐式包含
+			s.includes(keyPath) ||
+			s.includes(confPath) ||
+			(legacyEnvStale && s.includes(legacyEnvFile))
+		)
 			return true;
 		return s
 			.split(/[\s'"|&;()]+/)
@@ -224,7 +246,7 @@ export default function secretStore(pi: ExtensionAPI) {
 		if (filled.dataHits.length > 0)
 			return {
 				block: true,
-				reason: `secret-store: 已存凭证明文出现在引号字符串或 heredoc 数据位置（凭证：${filled.dataHits.join("、")}）。该位置属数据语义（JSON/heredoc 等），自动回填会篡改命令数据，已拦截不改写。请改用 ${filled.dataHits.map((n) => `$${n}`).join("、")} 形式引用（bash 展开为值），或调用 secret_env 核对凭证名后调整命令结构。`,
+				reason: `secret-store: 已存凭证明文出现在引号字符串、heredoc 或命令替换数据位置（r7 #2；凭证：${filled.dataHits.join("、")}）。该位置属数据语义（JSON/heredoc/命令替换等），自动回填会篡改命令数据，已拦截不改写。请改用 ${filled.dataHits.map((n) => `$${n}`).join("、")} 形式引用（bash 展开为值），或调用 secret_env 核对凭证名后调整命令结构。`,
 			};
 		if (filled.text !== cmd) event.input.command = cmd = filled.text;
 		// #170 选择性注入：先解析引用集，为空则零 I/O 直通（命令与无凭证库时逐字节一致，agent 无感）

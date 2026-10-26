@@ -217,6 +217,28 @@ describe("tool_call：allowedPrefix 凭证限定（#171）", () => {
 		}
 	});
 
+	it("sudo 无参选项 -s/-k 不吞真命令词（r7 #3）：带参选项表按 wrapper 区分，带参者保持跳参", async () => {
+		const h = await setupHarness(PREFIXED);
+		// 旧实现：-s/-k 被当带参选项 i++ 吞掉 nerdctl → 命令词错位 fail-closed 误 block（红）
+		for (const cmd of ["sudo -s nerdctl login $HARBOR_PASSWORD", "sudo -k nerdctl login $HARBOR_PASSWORD"]) {
+			const { event, result } = await runToolCall(h, cmd);
+			expect(result).toBeUndefined();
+			expect(event.input.command).toContain("export HARBOR_PASSWORD='harbor-secret-value'");
+		}
+		// 确知带参的组合保持（GNU/sudo 手册语义）：sudo -u/-g、env -u、timeout -k/-s
+		for (const cmd of [
+			"sudo -u alice nerdctl login $HARBOR_PASSWORD",
+			"sudo -g wheel nerdctl login $HARBOR_PASSWORD",
+			"timeout -k 5 nerdctl login $HARBOR_PASSWORD",
+			"timeout -s KILL 10 nerdctl login $HARBOR_PASSWORD",
+			"env -u FOO nerdctl login $HARBOR_PASSWORD",
+		]) {
+			const { event, result } = await runToolCall(h, cmd);
+			expect(result).toBeUndefined();
+			expect(event.input.command).toContain("export HARBOR_PASSWORD='harbor-secret-value'");
+		}
+	});
+
 	it("裸数字时长仅在 timeout 之后剥离（r5 #4）：非 timeout 位置的数字开头/裸数字首词按命令词比对", async () => {
 		const h = await setupHarness({
 			A_TOKEN: { value: "a-token-value-1", updatedAt: "t", fingerprint: "fp0000aa11", allowedPrefix: ["7z"] },
@@ -422,6 +444,20 @@ describe("tool_call：回填边界与数据形态（rolling-review-r3 #1）", ()
 		expect(result?.block).toBe(true);
 		expect(result?.reason).toContain("A_TOKEN");
 		expect(event.input.command).toBe(cmd);
+	});
+
+	it("命令替换体内命中 → block（r7 #2）：$( ) 与反引号体是数据位，不机械改写", async () => {
+		const h = await setupHarness(SEED_A);
+		await h.handlers.session_start[0]({ reason: "new" }, { hasUI: false });
+		const sub = "curl $(echo a-token-value-1)";
+		const subRes = await runToolCall(h, sub);
+		expect(subRes.result?.block).toBe(true); // 旧实现：$() 体当裸 token 机械替换，语义静默改变（红）
+		expect(subRes.result?.reason).toContain("A_TOKEN");
+		expect(subRes.event.input.command).toBe(sub); // 阻断不改写
+		const bt = "echo `echo a-token-value-1`";
+		const btRes = await runToolCall(h, bt);
+		expect(btRes.result?.block).toBe(true);
+		expect(btRes.event.input.command).toBe(bt);
 	});
 
 	it("heredoc 结束后的命令位命中 → 正常裸 token 回填（heredoc 不吞后续命令）", async () => {

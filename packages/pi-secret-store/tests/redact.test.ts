@@ -181,4 +181,18 @@ describe("redactor：转义变体回填边界（r4 #5）", () => {
 		expect(result?.reason).toContain("MULTI");
 		expect(event.input.command).toBe(cmd); // 阻断不改写
 	});
+
+	it("转义变体跳过不吞重叠短值命中（r7 #5）：lastIndex 回退，短值照常回填", async () => {
+		const h = await setupHarness({
+			MULTI: { value: "ab\ncdef", updatedAt: "x", fingerprint: "cccc3333" },
+			PART: { value: "ncdef", updatedAt: "x", fingerprint: "dddd4444" },
+		});
+		await h.handlers.session_start[0]({ reason: "new" }, { hasUI: false });
+		const cmd = String.raw`echo ab\ncdef`; // 字面 \n：MULTI 转义变体裸位命中（不回填，r4 #5），重叠其内的 PART 裸值照常回填
+		const { event, result } = await runToolCall(h, cmd);
+		expect(result).toBeUndefined();
+		// 旧实现：g 正则消费转义变体后 continue，PART 在重叠起点的命中被吞（红）
+		expect(event.input.command).toContain("$PART");
+		expect(event.input.command).toContain("export PART=");
+	});
 });

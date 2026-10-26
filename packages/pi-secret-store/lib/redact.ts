@@ -9,13 +9,16 @@ export const MIN_REDACT_LENGTH = 4;
 const MIN_LINE_LENGTH = 16;
 
 /** 命令文本逐字符上下文位（r3 #1 回填数据位判定）：1 = 引号字符串内（含定界符），2 = heredoc 体，
- *  4 = 单引号字符串内（r6 #5：单引号不展开，$NAME 引用拦截判定用，与回填的“任意引号=数据位”区分）。 */
+ *  4 = 单引号字符串内（r6 #5：单引号不展开，$NAME 引用拦截判定用，与回填的“任意引号=数据位”区分），
+ *  8 = 命令替换体内（r7 #2：反引号与 $()，替换结果参与内层命令展开/再求值，属数据语义）。 */
 const IN_QUOTE = 1;
 const IN_HEREDOC = 2;
+const IN_SUBST = 8;
 export const IN_SINGLE = 4;
 
-/** bash 命令文本的引号/heredoc 上下文扫描（r3 #1）：单引号无转义、双引号支持 \ 转义；
- *  `<<`/`<<-`（定界符可带引号）开启 heredoc 体至独占终止行，`<<<`（here-string）不视为 heredoc。
+/** bash 命令文本的引号/heredoc/命令替换上下文扫描（r3 #1；r7 #2 增命令替换位）：单引号无转义、双引号支持 \ 转义；
+ *  `<<`/`<<-`（定界符可带引号）开启 heredoc 体至独占终止行，`<<<`（here-string）不视为 heredoc；
+ *  反引号与 $() 命令替换体标记 IN_SUBST（单引号内不展开属字面量，不跟踪）。
  *  守卫级近似：够判定"明文是否处在数据位"，不追求完整 shell 解析。 */
 export function commandContext(cmd: string): Uint8Array {
 	const flags = new Uint8Array(cmd.length);
@@ -23,6 +26,8 @@ export function commandContext(cmd: string): Uint8Array {
 	let inDouble = false;
 	let heredocDelim: string | null = null;
 	let heredocTabs = false;
+	let substDepth = 0; // $( 计深度（r7 #2）
+	let backtickDepth = 0; // 反引号成对开合（r7 #2）
 	let i = 0;
 	while (i < cmd.length) {
 		const ch = cmd[i];
@@ -95,7 +100,11 @@ export function commandContext(cmd: string): Uint8Array {
 			i += 2;
 			continue;
 		}
+		if (!inSingle && ch === "$" && cmd[i + 1] === "(") substDepth++;
+		else if (!inSingle && ch === ")" && substDepth > 0) substDepth--;
+		else if (!inSingle && ch === "`") backtickDepth = backtickDepth === 0 ? 1 : backtickDepth - 1;
 		if (inSingle || inDouble) flags[i] |= inSingle ? IN_QUOTE | IN_SINGLE : IN_QUOTE;
+		if (substDepth > 0 || backtickDepth > 0) flags[i] |= IN_SUBST;
 		i++;
 	}
 	return flags;
@@ -159,9 +168,10 @@ export class Redactor {
 		return this.names.get(value);
 	}
 
-	/** #172 回填（r3 #1 收紧）：已注册值明文仅在其为「裸 token」（前后均为非词字符、不在引号字符串/heredoc 体等
-	 *  数据位）时机械替换为 `$凭证名`；数据位命中不改写，经 dataHits 交调用方 block（静默改写会篡改 JSON
-	 *  payload/heredoc 等数据语义）。无名值命中原样保留；JSON 转义变体命中仅数据位走阻断，裸位原样保留（r4 #5）。 */
+	/** #172 回填（r3 #1 收紧）：已注册值明文仅在其为「裸 token」（前后均为非词字符、不在引号字符串/heredoc/命令替换体
+	 *  等数据位）时机械替换为 `$凭证名`；数据位命中不改写，经 dataHits 交调用方 block（静默改写会篡改 JSON
+	 *  payload/heredoc/命令替换等数据语义，r7 #2）。无名值命中原样保留；JSON 转义变体命中仅数据位走阻断，裸位原样
+	 *  保留（r4 #5），且跳过时回退 lastIndex 继续扫（r7 #5：更短已注册值在重叠起点的命中不被吞）。 */
 	backfill(text: string): { text: string; dataHits: string[] } {
 		const dataHits: string[] = [];
 		if (this.names.size === 0) return { text, dataHits };
@@ -171,10 +181,13 @@ export class Redactor {
 		let last = 0;
 		for (let m = re.exec(text); m !== null; m = re.exec(text)) {
 			const name = this.nameOf(m[0]);
-			if (name === undefined) continue; // 无名值：不替换不拦截
+			if (name === undefined) {
+				re.lastIndex = m.index + 1; // r7 #5：回退一格——更短已注册值在重叠起点的命中不被 g 正则消费吞掉
+				continue; // 无名值：不替换不拦截
+			}
 			const start = m.index;
 			const end = start + m[0].length;
-			const inData = (ctx[start] & (IN_QUOTE | IN_HEREDOC)) !== 0;
+			const inData = (ctx[start] & (IN_QUOTE | IN_HEREDOC | IN_SUBST)) !== 0;
 			const bare =
 				!inData &&
 				!/[A-Za-z0-9_]/.test(start > 0 ? text[start - 1] : "") &&
@@ -183,7 +196,10 @@ export class Redactor {
 				if (inData && !dataHits.includes(name)) dataHits.push(name);
 				continue; // 非裸 token：原样保留在尾部切片
 			}
-			if (this.escapedVariants.has(m[0])) continue; // r4 #5：转义变体裸位命中（如字面 \n）非原值形态，回填会篡改字面数据
+			if (this.escapedVariants.has(m[0])) {
+				re.lastIndex = m.index + 1; // r7 #5：同上，重叠起点的短值命中不吞
+				continue; // r4 #5：转义变体裸位命中（如字面 \n）非原值形态，回填会篡改字面数据
+			}
 			out += text.slice(last, start) + `$${name}`;
 			last = end;
 		}

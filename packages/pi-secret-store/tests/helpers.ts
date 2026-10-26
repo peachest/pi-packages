@@ -2,7 +2,7 @@
  * 测试 harness：fake pi（捕获 registerTool/registerCommand/事件 handler）+
  * PI_CODING_AGENT_DIR 指向 tmp 沙箱（store 路径在工厂调用时读取 env，见 index.ts）。
  */
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type Store } from "../index.ts";
@@ -12,6 +12,8 @@ export type AnyHandler = (event: any, ctx: any) => any;
 export interface Harness {
 	agentDir: string;
 	storePath: string;
+	/** setupHarness 的 backend 实参（r7 #7）：便于用例直接断言声明的后端 */
+	backend: "plain" | "age";
 	handlers: Record<string, AnyHandler[]>;
 	tools: Map<string, any>;
 	commands: Map<string, any>;
@@ -60,11 +62,20 @@ export async function setupHarness(store?: Store, agentDirOverride?: string, bac
 	return {
 		agentDir,
 		storePath: join(agentDir, "secret-store.json"),
+		backend,
 		handlers,
 		tools,
 		commands,
 		notifyLog,
 	};
+}
+
+/** r7 #7 防呆：age 行为测试的前置断言——沙箱 conf 确实定向 age 后端。setupHarness 缺省 plain（有意偏离
+ *  生产缺省，见上），新增后端相关测试若遗漏显式传参会静默走 plain 使 age 覆盖失真；用例开头调用本辅助立即红。 */
+export async function assertAgeBackend(h: Harness): Promise<void> {
+	const conf = await readFile(join(h.agentDir, "secret-store.conf"), "utf8");
+	if (!/^backend = age(\n|$)/.test(conf))
+		throw new Error(`assertAgeBackend: 沙箱 backend 非 age（conf=${JSON.stringify(conf)}）——测试须 setupHarness(..., "age") 显式声明`);
 }
 
 /** 直接调用已注册工具的 execute（id/signal/onUpdate 测试不需要）。 */

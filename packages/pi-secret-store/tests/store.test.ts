@@ -227,3 +227,12 @@ describe("保留名黑名单与空存储形态（#126）", () => {
 		expect(warned).not.toContain("OK_ONE");
 	});
 });
+
+describe("storePaths 命名不变式（r7 #4）", () => {
+	it("storePath 是 storePathAge 的前缀：锁定命名约定——touchesStore 曾依赖此隐式包含，漂移即红", () => {
+		for (const dir of ["/home/u/.pi/agent", "/tmp/wd 1", "/tmp/w$e"]) {
+			const p = storePaths(dir);
+			expect(p.storePathAge.startsWith(p.storePath)).toBe(true);
+		}
+	});
+});

@@ -4,6 +4,7 @@
  * 移植自 ~/tmp/secret-store-proto/index.ts 的 loadStore。
  */
 import { randomBytes } from "node:crypto";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { open, readFile, stat, unlink, writeFile, type FileHandle } from "node:fs/promises";
 import { join } from "node:path";
 import { MIN_REDACT_LENGTH } from "./redact.ts";
@@ -130,17 +131,25 @@ async function acquireLock(lockPath: string, deadline: number): Promise<FileHand
 	}
 }
 
+/** 同一异步链内的锁重入跟踪（r7 #1）：updateStore 持锁后调 backend.load，其首次使用/迁移分支会再进
+ *  withStoreLock——同一锁文件自取会自旋到超时。ALS 只沿 await 链传播：并发 session 的兄弟调用各自
+ *  取锁，互斥语义不变。 */
+const heldLock = new AsyncLocalStorage<string>();
+
 /** [5] 跨进程互斥锁原语：updateStore 读-改-写共用。 */
 export async function withStoreLock<T>(storePath: string, fn: () => Promise<T>): Promise<T> {
 	const lockPath = `${storePath}.lock`;
-	const fd = await acquireLock(lockPath, Date.now() + LOCK_TIMEOUT_MS);
-	try {
-		await fd.writeFile(String(process.pid)); // 记录持锁者，便于诊断遗留锁
-		return await fn();
-	} finally {
-		await fd.close();
-		await unlink(lockPath).catch(() => {});
-	}
+	if (heldLock.getStore() === lockPath) return fn(); // 同链重入直通（r7 #1）
+	return heldLock.run(lockPath, async () => {
+		const fd = await acquireLock(lockPath, Date.now() + LOCK_TIMEOUT_MS);
+		try {
+			await fd.writeFile(String(process.pid)); // 记录持锁者，便于诊断遗留锁
+			return await fn();
+		} finally {
+			await fd.close();
+			await unlink(lockPath).catch(() => {});
+		}
+	});
 }
 
 /** [8] 唯一 tmp（pid+随机）+ wx 独占创建，0600；写失败清理 tmp，rename 由调用方负责。 */
