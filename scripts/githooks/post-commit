@@ -45,4 +45,13 @@ done
 
 # 顺带 prune 死链（worktree 删除类 drift，代价为一次目录遍历）
 "$linker" --prune >&2 2>/dev/null || true
+
+# kendex hook 自动 sync：本次 commit 改了 bash-guards 的脚本 → install.sh 立即同步部署副本。
+# 与 relink 同逻辑：commit 本身就是生效意图的信号；copy 失败只 WARN（drift 探针在 check 兕底）。
+if printf '%s\n' "$changed" | grep -q '^packages/pi-bash-guards/scripts/'; then
+    syncer="$repo/packages/pi-bash-guards/scripts/install.sh"
+    [ -x "$syncer" ] || chmod +x "$syncer"
+    echo "post-commit: syncing kendex hook deploy (bash-guards scripts changed)..." >&2
+    bash "$syncer" >&2 2>/dev/null || echo "post-commit: WARN kendex sync failed — deploy copy may be stale. Run: bash $syncer" >&2
+fi
 exit 0
