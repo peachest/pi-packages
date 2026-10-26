@@ -34,6 +34,10 @@ _Avoid_: 静默放行（无留痕的 fail-open 是 bug 不是策略）
 表驱动回归测试：一个 .sh 文件含自报数的用例序列（给定命令 payload → 断言 exit code 与 stderr 要点），由 vitest spawn 执行并断言零失败。三套件：A（全局规则）、B（P6 身份矩阵）、C（worktree 生命周期 + R3 边界回归）。新守卫规则必须先在 fixture 里红。
 _Avoid_: unit test（fixtures 是行为级黑盒，非函数级）
 
+**KB gate（knowledge-base-first gate）**:
+会话级门闩型规则：session 内首次触发窄面命令（kubectl/crictl/journalctl/dmesg/nvidia-smi）且该 session 从未接触诊断库（~/ops、llmops-wiki）时拦截一次，拦截消息即 vault 检索的路线图；任何 touching 库的命令（读索引/跑 diag-search/写诊断）把整个 session 的门打开。状态由 flag 文件承载（transcript 路径 sha1 为键），月度 readlog jsonl 留痕供后续 doc-consumption audit 消费。与拦截型规则的区别：目标不是禁止行为而是**强制先读**——第一次撞门拿到的是路线不是拒绝。证据来源：doc-consumption audit 2026-10-16（诊断 session 惯性重推导库内已有根因）。
+_Avoid_: 全量命令拦截（trigger 面窄：helm/nerdctl 明确不 gate）, session 永久禁止（touch 即开门）
+
 **Session 挖掘**:
-规则的证据来源流程：从 pi session 日志统计某反模式的真实调用频次（calls/sessions 数），作为规则存在的依据写入注释与 README。没有挖掘证据的规则不许进表。
+规则的证据来源流程：从 pi session 日志统计某反模式的真实调用频次（calls/sessions 数），作为规则存在的依据写入注释与 README。没有挖掘证据的规则不许进表。readlog（KB gate 的月度 jsonl）是反向通道：不是挖掘存量 session 立规则，而是规则自己产生供未来审计的运行时证据。
 _Avoid_: 拍脑袋规则, best practice 引用（无本机数据支撑的）

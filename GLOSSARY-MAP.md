@@ -33,4 +33,10 @@ This is a monorepo with 22 packages under `packages/*`. Each package has its own
 - pi-html-preview
 - pitrace
 
+## System-level vocabulary（跨包）
+
+- **local-path package / 本地路径包** — settings.packages 里以 `../../projects/pi-mypackage/packages/<name>` 相对路径安装的包。pi 不装其依赖（作者责任），jiti 从扩展文件位置向上解析。安装正典见 docs/adr/0002。
+- **pi npm 区** — `~/.pi/agent/npm/node_modules/`。npm:/git: 源包的物理安装地；本地包经 `scripts/link-pi-packages.sh` 软链至此获得平级依赖解析与生态可见性。
+- **包链接（node link）** — npm 区内指向 repo 包目录的软链接。链接名 = package.json 的 name（npm 正典，scoped 包进 @org/ 子目录）。由 post-commit hook 自动维护；与 settings 相对路径条目**单点注册**，禁止双写。
+
 `GLOSSARY.md` for each package is created lazily by `/domain-modeling` when terms or decisions actually need recording.（2026-10-19 由 CONTEXT.md 统一迁移更名）
