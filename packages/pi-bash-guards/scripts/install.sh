@@ -50,7 +50,7 @@ sys.exit(0 if has_bash else 1)
   echo "hooks.json: registry entry present ✓"
 else
   echo "WARN: $REG missing, invalid, or has no active Bash-matcher hook referencing bash-guards.py." >&2
-  echo "      If guards never fire, register a tool_call listener (matcher \"Bash\", command \"python3 $DST\", timeout 10) in pi-hooks." >&2
+  echo "      If guards never fire, register a tool_call listener (matcher \"Bash\", command \"/usr/bin/python3 $DST\", timeout 10) in pi-hooks." >&2
 fi
 
 # SA-route check: subagent matcher entry (WARN only — see comment above).
@@ -72,7 +72,7 @@ sys.exit(1)
   echo "hooks.json: subagent (SA1-SA4) route present ✓"
 else
   echo "WARN: $REG has no active subagent-matcher hook referencing bash-guards.py — SA1-SA4 guards are silently off." >&2
-  echo "      Register a second tool_call listener (matcher \"subagent\", command \"python3 $DST\", timeout 10) in pi-hooks." >&2
+  echo "      Register a second tool_call listener (matcher \"subagent\", command \"/usr/bin/python3 $DST\", timeout 10) in pi-hooks." >&2
 fi
 
 # Byte-identical verification
