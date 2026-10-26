@@ -659,21 +659,44 @@ def _match_p6(ctx):
 # instead of mining session JSONL.
 KB_TRIGGER = re.compile(r"^(kubectl|crictl|journalctl|dmesg|nvidia-smi)\b")
 KB_TOUCH = re.compile(r"(~/ops|\$HOME/ops|/mnt/disk1/hyx/ops)\b|llmops-wiki")
+# Doc granularity for the satisfy read log: pull the concrete doc path out of
+# the command — ops filename, wiki topic dir (first two path segments). Path
+# chars stop at shell separators; globs like *.md are kept as-is (weak signal
+# is fine — the log is for doc-consumption audits, not gating).
+_KB_OPS_DOC = re.compile(r"(?:~/ops|\$HOME/ops|/mnt/disk1/hyx/ops)/([^\s;|&<>)\"'`]+)")
+_KB_WIKI_DOC = re.compile(r"llmops-wiki/([^\s;|&<>)\"'`]+)")
+
+
+def _kb_docs(cmd):
+    docs = []
+    for m in _KB_OPS_DOC.finditer(cmd):
+        name = os.path.basename(m.group(1).rstrip("/"))
+        if name and name not in docs:
+            docs.append(name)
+    for m in _KB_WIKI_DOC.finditer(cmd):
+        parts = [p for p in m.group(1).split("/") if p]
+        if parts:
+            doc = "/".join(parts[:2])
+            if doc not in docs:
+                docs.append(doc)
+    return docs[0] if len(docs) == 1 else (docs or None)
 
 def _kb_session_key(transcript):
     # Per-session identity from the transcript path; no transcript -> None
     # (fail open — cannot track, never block).
     return hashlib.sha1(transcript.encode()).hexdigest()[:16] if transcript else None
 
-def _kb_log(session, kind, cmd):
+def _kb_log(session, kind, cmd, doc=None):
     # Monthly read log; a logging failure must never block (fail open).
     try:
         d = os.path.expanduser("~/.pi/agent/kendex/state/kb")
         os.makedirs(d, exist_ok=True)
+        rec = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
+               "session": session, "kind": kind, "cmd": cmd[:200]}
+        if kind == "satisfy":
+            rec["doc"] = doc
         with open(os.path.join(d, time.strftime("readlog-%Y%m.jsonl")), "a") as f:
-            f.write(json.dumps({"ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
-                                "session": session, "kind": kind,
-                                "cmd": cmd[:200]}, ensure_ascii=False) + "\n")
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
     except OSError:
         pass
 
@@ -689,7 +712,7 @@ def _match_kb(ctx):
             open(flag, "w").close()
         except OSError:
             pass
-        _kb_log(session, "satisfy", ctx["cmd"])
+        _kb_log(session, "satisfy", ctx["cmd"], _kb_docs(ctx["cmd"]))
         return None
     for seg in segments(ctx["cmd"]):
         s = _cmd_strip(seg.strip())
