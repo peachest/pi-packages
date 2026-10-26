@@ -1,7 +1,7 @@
 /**
- * 持久化存储：~/.pi/agent/secret-store.json（0600、唯一 tmp+rename 原子写、跨进程更新锁）+
- * secret-store.env（bash source 用，单引号字面量序列化）。
- * 移植自 ~/tmp/secret-store-proto/index.ts loadStore/saveStore/writeEnvFile。
+ * 持久化存储：~/.pi/agent/secret-store.json（0600、唯一 tmp+rename 原子写、跨进程更新锁）。
+ * env 文件侧已随 #170 选择性注入移除（注入改走内存 store 快照）。
+ * 移植自 ~/tmp/secret-store-proto/index.ts loadStore/saveStore。
  */
 import { randomBytes } from "node:crypto";
 import { chmod, mkdir, open, readFile, rename, stat, unlink, writeFile, type FileHandle } from "node:fs/promises";
@@ -17,7 +17,6 @@ export type Store = Record<string, StoreEntry>;
 
 export const storePaths = (agentDir: string) => ({
 	storePath: join(agentDir, "secret-store.json"),
-	envFile: join(agentDir, "secret-store.env"),
 });
 
 /** 合法凭证名 = bash 变量名（[5]）：env 行的赋值目标，放宽即命令注入/语法错误。 */
@@ -108,7 +107,7 @@ async function acquireLock(lockPath: string, deadline: number): Promise<FileHand
 	}
 }
 
-/** [5] 跨进程互斥锁原语：updateStore 与 session_start 的 load+env 生成共用。 */
+/** [5] 跨进程互斥锁原语：updateStore 读-改-写共用。 */
 export async function withStoreLock<T>(storePath: string, fn: () => Promise<T>): Promise<T> {
 	const lockPath = `${storePath}.lock`;
 	const fd = await acquireLock(lockPath, Date.now() + LOCK_TIMEOUT_MS);
@@ -122,14 +121,14 @@ export async function withStoreLock<T>(storePath: string, fn: () => Promise<T>):
 }
 
 /**
- * [11]/[12] 跨进程互斥的读-改-写：锁内 reload → merge → 两阶段原子提交 json+env（[8]）。
+ * [11]/[12] 跨进程互斥的读-改-写：锁内 reload → merge → 唯一 tmp+rename 原子提交（[8]，
+ * 单文件 rename 原子：要么旧文要么新文，无半提交态）。
  * mutator 返回 undefined 表示无需变更（不重写文件）。lockfile 无 fencing：持锁进程若停顿
  * 超过 LOCK_TIMEOUT_MS 可能被按 stale 抢占——mutator 窗口为毫秒级，实际风险可忽略。
  */
 export async function updateStore(
 	agentDir: string,
 	storePath: string,
-	envFile: string,
 	mutate: (store: Store) => Store | undefined,
 ): Promise<Store> {
 	await mkdir(agentDir, { recursive: true });
@@ -138,40 +137,12 @@ export async function updateStore(
 		const next = mutate(store);
 		if (next === undefined) return store;
 		validateStore(next); // [9] 任一条目非法 → 整体拒绝，零文件落地
-		// [8] 两阶段提交：json+env 都 stage 成 tmp 后依序 rename（json 先 env 后）；
-		// env rename 失败 → 旧 json 原文 stage+rename 回滚（原本没有则删掉），杜绝半提交。
-		let oldJson: string | null = null;
-		try {
-			oldJson = await readFile(storePath, "utf8");
-		} catch (err) {
-			if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-		}
 		const jsonTmp = await stageTmp(storePath, `${JSON.stringify({ secrets: next }, null, 2)}\n`);
-		let envTmp: string;
-		try {
-			envTmp = await stageTmp(envFile, serializeEnv(next));
-		} catch (err) {
-			await unlink(jsonTmp).catch(() => {});
-			throw err;
-		}
 		try {
 			await rename(jsonTmp, storePath);
 			await chmod(storePath, 0o600).catch(() => {});
 		} catch (err) {
 			await unlink(jsonTmp).catch(() => {});
-			await unlink(envTmp).catch(() => {});
-			throw err;
-		}
-		try {
-			await rename(envTmp, envFile);
-			await chmod(envFile, 0o600).catch(() => {});
-		} catch (err) {
-			await unlink(envTmp).catch(() => {});
-			if (oldJson === null) await unlink(storePath).catch(() => {});
-			else {
-				const back = await stageTmp(storePath, oldJson);
-				await rename(back, storePath); // 回滚失败如实上抛（与 err 同因：存储层故障）
-			}
 			throw err;
 		}
 		return next;
@@ -207,22 +178,5 @@ export async function saveStore(agentDir: string, storePath: string, store: Stor
 	await atomicWrite(storePath, JSON.stringify({ secrets: store }, null, 2) + "\n");
 }
 
-/** bash 单引号字面量：'…' 内一切字符（含 $、反引号、真实换行）皆字面；' 自身以 '\'' 表达（[4]）。[11] 注入前缀同款导出。 */
+/** bash 单引号字面量：'…' 内一切字符（含 $、反引号、真实换行）皆字面；' 自身以 '\'' 表达（[4]）。[11] 注入前缀逐变量引用同款。 */
 export const shellQuote = (value: string): string => `'${value.replace(/'/g, `'\\''`)}'`;
-
-/** env 文件内容：NAME='<单引号字面量>'——JSON 转义不是 bash 字面量（$()/反引号/$HOME 会被执行/展开、换行被破坏）。非法名/NUL 即抛（发生在任何文件落地前）。 */
-function serializeEnv(store: Store): string {
-	return (
-		Object.entries(store)
-			.map(([name, e]) => {
-				if (!STORE_NAME_RE.test(name)) throw new Error(`secret-store: 非法变量名 ${name}，拒绝写入 env 文件`);
-				if (e.value.includes("\0")) throw new Error(`secret-store: 凭证 ${name} 的值含 NUL 字符，无法写入 env 文件`);
-				return `${name}=${shellQuote(e.value)}`;
-			})
-			.join("\n") + "\n"
-	);
-}
-
-export async function writeEnvFile(envFile: string, store: Store): Promise<void> {
-	await atomicWrite(envFile, serializeEnv(store));
-}

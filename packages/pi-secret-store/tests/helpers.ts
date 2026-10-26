@@ -11,7 +11,6 @@ export type AnyHandler = (event: any, ctx: any) => any;
 export interface Harness {
 	agentDir: string;
 	storePath: string;
-	envFile: string;
 	handlers: Record<string, AnyHandler[]>;
 	tools: Map<string, any>;
 	commands: Map<string, any>;
@@ -58,7 +57,6 @@ export async function setupHarness(
 	return {
 		agentDir,
 		storePath: join(agentDir, "secret-store.json"),
-		envFile: join(agentDir, "secret-store.env"),
 		handlers,
 		tools,
 		commands,

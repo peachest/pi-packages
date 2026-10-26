@@ -101,9 +101,9 @@ describe("P1：注入前缀互操作（检测先于注入，看到的是原始�
 		expect(result?.reason).toContain("GitLab PAT"); // P1 reason（先于 guard/注入）
 	});
 
-	it("transcript 回贴场景：命令字面 source 真 env 路径 → guard 拦（引号内明文路径即读存储文件）", async () => {
+	it("transcript 回贴场景：命令字面读真 store 路径 → guard 拦（引号内明文路径即读存储文件；#170 后 env 路径不再受保护）", async () => {
 		const h = await setupHarness();
-		const { result } = await runToolCall(h, `: __PI_SECRET_STORE__; if [ -f "${h.envFile}" ]; then set -a; . "${h.envFile}" 2>/dev/null; set +a; fi; curl -H "Authorization: Bearer $GITBLUE_TOKEN" https://x`);
+		const { result } = await runToolCall(h, `curl -H "Authorization: Bearer $GITBLUE_TOKEN" https://x; cat "${h.storePath}"`);
 		expect(result?.block).toBe(true);
 	});
 });

@@ -100,15 +100,13 @@ describe("/secret-store 命令", () => {
 		expect(joined).not.toContain("harbor-secret-value");
 	});
 
-	it("forget <name> → 删除并同步 env 文件", async () => {
+	it("forget <name> → 删除并同步存储（#170 后无 env 文件）", async () => {
 		const h = await setupHarness(SEED);
 		await h.handlers.session_start[0]({ reason: "new" }, toolCtx(h));
 		await h.commands.get("secret-store").handler("forget GITBLUE_TOKEN", toolCtx(h));
 		const store = JSON.parse(await readFile(h.storePath, "utf8"));
 		expect(store.secrets.GITBLUE_TOKEN).toBeUndefined();
 		expect(store.secrets.HARBOR_PASSWORD).toBeDefined();
-		const env = await readFile(h.envFile, "utf8");
-		expect(env).not.toContain("GITBLUE_TOKEN");
 	});
 
 	it("空存储 list → 存储为空提示", async () => {
