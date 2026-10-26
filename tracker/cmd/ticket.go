@@ -1,38 +1,14 @@
 package cmd
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/peachest/pi-packages/tracker/tracker"
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
 )
-
-// Execute runs the root command.
-func Execute(ctx context.Context) error {
-	return NewRootCmd().ExecuteContext(ctx)
-}
-
-// NewRootCmd creates the root command tree.
-func NewRootCmd() *cobra.Command {
-	root := &cobra.Command{
-		Use:           "tracker",
-		Short:         "Local markdown issue tracker CLI",
-		SilenceUsage:  true,
-		SilenceErrors: true,
-	}
-
-	root.AddCommand(newTicketCmd())
-	root.AddCommand(newQueryCmd())
-	root.AddCommand(newMapCmd())
-	root.AddCommand(newMilestoneCmd())
-
-	return root
-}
 
 func newTicketCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -41,10 +17,13 @@ func newTicketCmd() *cobra.Command {
 	}
 	cmd.AddCommand(newTicketCreateCmd())
 	cmd.AddCommand(newTicketListCmd())
+	cmd.AddCommand(newTicketViewCmd())
+	cmd.AddCommand(newTicketCommentCmd())
 	cmd.AddCommand(newTicketReviewCmd())
 	cmd.AddCommand(newTicketStatusCmd())
 	cmd.AddCommand(newTicketTriageCmd())
 	cmd.AddCommand(newTicketBlockingCmd())
+	cmd.AddCommand(newTicketCloseVerifyCmd())
 	return cmd
 }
 
@@ -62,8 +41,7 @@ func newTicketCreateCmd() *cobra.Command {
 		Short: "Create a new ticket",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			root, err := openScratchRoot()
-			defer root.Close()
+			backend, err := resolveBackend(cmd)
 			if err != nil {
 				return err
 			}
@@ -83,7 +61,7 @@ func newTicketCreateCmd() *cobra.Command {
 				opts.Triage = &t
 			}
 
-			ticket, err := tracker.CreateTicket(root, opts, time.Now().UTC())
+			ticket, err := backend.CreateTicket(opts)
 			if err != nil {
 				return err
 			}
@@ -119,8 +97,7 @@ func newTicketListCmd() *cobra.Command {
 		Short: "List tickets in a map",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			root, err := openScratchRoot()
-			defer root.Close()
+			backend, err := resolveBackend(cmd)
 			if err != nil {
 				return err
 			}
@@ -134,7 +111,7 @@ func newTicketListCmd() *cobra.Command {
 				filter.Triage = triage
 			}
 
-			tickets, err := tracker.ListTickets(root, mapSlug, filter)
+			tickets, err := backend.ListTickets(mapSlug, filter)
 			if err != nil {
 				return err
 			}
@@ -154,6 +131,78 @@ func newTicketListCmd() *cobra.Command {
 	return cmd
 }
 
+func newTicketViewCmd() *cobra.Command {
+	var (
+		mapSlug  string
+		ticketID string
+	)
+
+	cmd := &cobra.Command{
+		Use:   "view",
+		Short: "View a ticket (body + comments)",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			backend, err := resolveBackend(cmd)
+			if err != nil {
+				return err
+			}
+
+			detail, err := backend.GetTicket(mapSlug, ticketID)
+			if err != nil {
+				return err
+			}
+
+			return outputJSON(cmd, detail)
+		},
+	}
+
+	cmd.Flags().StringVar(&mapSlug, "map", "", "map slug")
+	cmd.Flags().StringVar(&ticketID, "id", "", "ticket ID")
+	cmd.MarkFlagRequired("map")
+	cmd.MarkFlagRequired("id")
+
+	return cmd
+}
+
+func newTicketCommentCmd() *cobra.Command {
+	var (
+		mapSlug  string
+		ticketID string
+		body     string
+	)
+
+	cmd := &cobra.Command{
+		Use:   "comment",
+		Short: "Add a comment to a ticket",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			backend, err := resolveBackend(cmd)
+			if err != nil {
+				return err
+			}
+
+			if err := backend.AddComment(mapSlug, ticketID, body); err != nil {
+				return err
+			}
+
+			return outputJSON(cmd, map[string]any{
+				"id":      ticketID,
+				"map":     mapSlug,
+				"comment": body,
+			})
+		},
+	}
+
+	cmd.Flags().StringVar(&mapSlug, "map", "", "map slug")
+	cmd.Flags().StringVar(&ticketID, "id", "", "ticket ID")
+	cmd.Flags().StringVar(&body, "body", "", "comment text")
+	cmd.MarkFlagRequired("map")
+	cmd.MarkFlagRequired("id")
+	cmd.MarkFlagRequired("body")
+
+	return cmd
+}
+
 func newTicketReviewCmd() *cobra.Command {
 	var (
 		mapSlug  string
@@ -165,13 +214,19 @@ func newTicketReviewCmd() *cobra.Command {
 		Short: "Mark a ticket as reviewed (review-spec passed)",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// review is the local reviewed_at gate before claiming; remote
+			// hosting platforms have no equivalent field.
+			if err := requireLocal(cmd); err != nil {
+				return err
+			}
+
 			root, err := openScratchRoot()
 			defer root.Close()
 			if err != nil {
 				return err
 			}
 
-			if err := tracker.ReviewTicket(root, mapSlug, ticketID, time.Now().UTC()); err != nil {
+			if err := tracker.ReviewTicket(root, mapSlug, ticketID, nowUTC()); err != nil {
 				return err
 			}
 
@@ -209,27 +264,28 @@ func newTicketStatusCmd() *cobra.Command {
 		Short: "Set ticket status (open|claimed|resolved)",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			root, err := openScratchRoot()
-			defer root.Close()
+			backend, err := resolveBackend(cmd)
 			if err != nil {
 				return err
 			}
 
-			if err := tracker.SetStatus(root, mapSlug, ticketID, status, time.Now().UTC()); err != nil {
+			if err := backend.SetStatus(mapSlug, ticketID, status); err != nil {
 				return err
 			}
 
-			_, fm, err := tracker.ReadTicketForDisplay(root, mapSlug, ticketID)
+			detail, err := backend.GetTicket(mapSlug, ticketID)
 			if err != nil {
 				return err
 			}
 
+			// claimed_at/resolved_at are part of the original CLI output
+			// contract (route.md); keep them for backward compatibility (ocr M5).
 			return outputJSON(cmd, map[string]any{
-				"id":          fm.ID,
+				"id":          detail.ID,
 				"map":         mapSlug,
-				"status":      fm.Status,
-				"claimed_at":  fm.ClaimedAt,
-				"resolved_at": fm.ResolvedAt,
+				"status":      detail.Status,
+				"claimed_at":  detail.ClaimedAt,
+				"resolved_at": detail.ResolvedAt,
 			})
 		},
 	}
@@ -256,25 +312,24 @@ func newTicketTriageCmd() *cobra.Command {
 		Short: "Set ticket triage role",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			root, err := openScratchRoot()
-			defer root.Close()
+			backend, err := resolveBackend(cmd)
 			if err != nil {
 				return err
 			}
 
-			if err := tracker.SetTriage(root, mapSlug, ticketID, triage); err != nil {
+			if err := backend.SetTriage(mapSlug, ticketID, triage); err != nil {
 				return err
 			}
 
-			_, fm, err := tracker.ReadTicketForDisplay(root, mapSlug, ticketID)
+			detail, err := backend.GetTicket(mapSlug, ticketID)
 			if err != nil {
 				return err
 			}
 
 			return outputJSON(cmd, map[string]any{
-				"id":     fm.ID,
+				"id":     detail.ID,
 				"map":    mapSlug,
-				"triage": fm.Triage,
+				"triage": detail.Triage,
 			})
 		},
 	}
@@ -301,8 +356,7 @@ func newTicketBlockingCmd() *cobra.Command {
 		Short: "Set ticket blocked_by (replace semantics)",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			root, err := openScratchRoot()
-			defer root.Close()
+			backend, err := resolveBackend(cmd)
 			if err != nil {
 				return err
 			}
@@ -312,19 +366,19 @@ func newTicketBlockingCmd() *cobra.Command {
 				ids = strings.Split(blockedBy, ",")
 			}
 
-			if err := tracker.SetBlocking(root, mapSlug, ticketID, ids); err != nil {
+			if err := backend.SetBlocking(mapSlug, ticketID, ids); err != nil {
 				return err
 			}
 
-			_, fm, err := tracker.ReadTicketForDisplay(root, mapSlug, ticketID)
+			detail, err := backend.GetTicket(mapSlug, ticketID)
 			if err != nil {
 				return err
 			}
 
 			return outputJSON(cmd, map[string]any{
-				"id":         fm.ID,
+				"id":         detail.ID,
 				"map":        mapSlug,
-				"blocked_by": fm.BlockedBy,
+				"blocked_by": detail.BlockedBy,
 			})
 		},
 	}
@@ -334,6 +388,43 @@ func newTicketBlockingCmd() *cobra.Command {
 	cmd.Flags().StringVar(&blockedBy, "by", "", "comma-separated blocker IDs (empty to clear)")
 	cmd.MarkFlagRequired("map")
 	cmd.MarkFlagRequired("id")
+
+	return cmd
+}
+
+// newTicketCloseVerifyCmd implements the close-verify increment: given an
+// MR/PR number or merge SHA, re-scan every closing pattern (description +
+// all commit messages), verify each referenced ticket's state, and report —
+// or with --apply, comment + close — the ones the platform failed to close
+// (non-default-branch merges, multi-ref merge commits, squash-dropped refs).
+func newTicketCloseVerifyCmd() *cobra.Command {
+	var (
+		ref   string
+		apply bool
+	)
+
+	cmd := &cobra.Command{
+		Use:   "close-verify",
+		Short: "Verify closing patterns from an MR/PR or merge SHA and (with --apply) close missed tickets",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			backend, err := resolveBackend(cmd)
+			if err != nil {
+				return err
+			}
+
+			report, err := backend.CloseVerify(tracker.CloseVerifyOpts{Ref: ref, Apply: apply})
+			if err != nil {
+				return err
+			}
+
+			return outputJSON(cmd, report)
+		},
+	}
+
+	cmd.Flags().StringVar(&ref, "ref", "", "PR/MR number or merge/commit SHA")
+	cmd.Flags().BoolVar(&apply, "apply", false, "comment + close the tickets the platform missed (default: dry-run)")
+	cmd.MarkFlagRequired("ref")
 
 	return cmd
 }
