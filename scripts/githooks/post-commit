@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# post-commit — relink any package whose files changed in HEAD, so the pi npm
+# area links (~/.pi/agent/npm/node_modules/<name>) never drift from the repo.
+# Modeled on ~/skills/scripts/githooks/post-commit (skills add analog).
+#
+# Why links instead of `pi install` copy: local-path packages load TS in place
+# (zero-copy), so source edits are live — the drift surface is the LINK itself
+# (new package committed but never linked) and dead links (worktree removal).
+# post-commit is advisory: never blocks the commit it ran after.
+#
+# Scope: a changed file maps to its enclosing package (packages/<name>/).
+# Non-package paths (docs/, scripts/, root files) are ignored.
+
+set -u
+
+changed=$(git diff-tree --no-commit-id --name-only -r HEAD 2>/dev/null) || exit 0
+[ -n "$changed" ] || exit 0
+
+# 本次 commit 触碰过的包名（packages/<name>/ 前缀，去重）
+pkgs=$(printf '%s\n' "$changed" | grep -o '^packages/[^/]*/' | sort -u | cut -d/ -f2)
+[ -n "$pkgs" ] || exit 0
+
+repo="$PWD"
+linker="$repo/scripts/link-pi-packages.sh"
+[ -x "$linker" ] || exit 0
+
+for pkg in $pkgs; do
+    full="$repo/packages/$pkg"
+    name=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['name'])" "$full/package.json" 2>/dev/null) || continue
+    target="$HOME/.pi/agent/npm/node_modules/$name"
+    if [ -L "$target" ] && [ "$(readlink "$target")" = "$full" ]; then
+        continue  # 链接已正确：源码零拷贝直载，无需任何动作
+    fi
+    echo "post-commit: relinking package '$name' (changed in HEAD)..." >&2
+    mkdir -p "$(dirname "$target")"
+    ln -sfn "$full" "$target" || echo "post-commit: WARN relink failed for '$name'" >&2
+done
+
+# 顺带 prune 死链（worktree 删除类 drift，代价为一次目录遍历）
+"$linker" --prune >&2 2>/dev/null || true
+exit 0
