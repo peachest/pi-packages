@@ -157,6 +157,27 @@ describe("storePaths 路径集中管理 + schema（#171）", () => {
 		expect(Object.keys(disk.secrets)).toEqual(["A_TOKEN"]); // 零文件落地
 	});
 
+	it("allowedPrefix 元素为空串/含首尾空白 → 读跳过告警，写拒绝（r2 #1：空前缀 startsWith 命中一切首词 = 取消限定）", async () => {
+		const h = await setupHarness();
+		await writeFile(
+			h.storePath,
+			JSON.stringify({
+				secrets: { A_TOKEN: { value: "a-value-1234", updatedAt: "t", fingerprint: "aaaa1111", allowedPrefix: [""] } },
+			}),
+			{ mode: 0o600 },
+		);
+		await h.handlers.session_start[0]({ reason: "new" }, toolCtx(h));
+		expect(h.notifyLog.join("\n")).toMatch(/allowedPrefix/); // 手改 JSON 绕过入口同样被读路径拦下
+		await expect(
+			updateStore(h.agentDir, h.storePath, (s) => ({
+				...s,
+				B_TOKEN: { value: "b-value-5678", updatedAt: "t", fingerprint: "bbbb2222", allowedPrefix: [" harbor"] },
+			})),
+		).rejects.toThrow(/allowedPrefix/);
+		const disk = JSON.parse(await readFile(h.storePath, "utf8"));
+		expect(Object.keys(disk.secrets)).toEqual(["A_TOKEN"]); // 零文件落地
+	});
+
 	it("saveStore 死代码已删除：入口面无 save 路径导出，唯一写路径是 updateStore（rolling-review-r1 #4）", async () => {
 		const mod = await import("../index.ts");
 		expect(Object.keys(mod).filter((k) => /save/i.test(k))).toEqual([]);

@@ -5,6 +5,7 @@
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { type Store } from "../index.ts";
 
 export type AnyHandler = (event: any, ctx: any) => any;
 
@@ -21,11 +22,9 @@ export interface Harness {
 const createdDirs: string[] = [];
 let savedAgentDir: string | undefined;
 
-/** 创建沙箱 agentDir，可选预置 secret-store.json（0600 语义由实现保证，fixture 只灌数据）；agentDir 可覆盖（[11] 特殊字符目录）。 */
-export async function setupHarness(
-	store?: Record<string, { value: string; updatedAt: string; fingerprint: string; allowedPrefix?: string[] }>,
-	agentDirOverride?: string,
-): Promise<Harness> {
+/** 创建沙箱 agentDir，可选预置 secret-store.json（0600 语义由实现保证，fixture 只灌数据；agentDir 可覆盖（[11] 特殊字符目录））。
+ *  fixture 类型 = lib/store.ts 导出的 Store（经入口 re-export，rolling-review-r2 #3 消除手写漂移面）。 */
+export async function setupHarness(store?: Store, agentDirOverride?: string): Promise<Harness> {
 	const agentDir = agentDirOverride ?? (await mkdtemp(join(tmpdir(), "pi-secret-store-test-")));
 	if (!agentDirOverride) createdDirs.push(agentDir);
 	savedAgentDir = process.env.PI_CODING_AGENT_DIR;

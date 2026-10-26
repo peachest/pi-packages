@@ -18,7 +18,7 @@ import { Redactor, MIN_REDACT_LENGTH } from "./lib/redact.ts";
 import { dialogOptions, SecretInput, type DialogResult } from "./lib/secret-input.ts";
 import { loadStore, nameProblem, shellQuote, storePaths, updateStore, type Store } from "./lib/store.ts";
 // 测试走入口边界（packages/README.md 四规则）：re-export lib/store 的被测符号
-export { loadStore, storePaths, updateStore };
+export { loadStore, storePaths, updateStore, type Store };
 
 const MARKER = "__PI_SECRET_STORE__";
 
@@ -45,6 +45,16 @@ const referencedNames = (cmd: string): Set<string> => {
 
 const fingerprintOf = (v: string) => createHash("sha256").update(v).digest("hex").slice(0, 10);
 
+/** 前缀比对用命令词（r2 #2）：剥掉 sudo/env、VAR=value 赋值 token（括号已在切分正则里作废）后取第一个真命令词——
+ *  `sudo nerdctl`/`env nerdctl`/`VAR=x nerdctl` 的首词不是命令本身，不剥离则限定凭证被误 block（fail closed 伤可用性）。 */
+const commandWord = (cmd: string): string => {
+	for (const tok of cmd.split(/[\s'"|&;()]+/)) {
+		if (!tok || tok === "sudo" || tok === "env" || /^[A-Za-z_][A-Za-z0-9_]*=/.test(tok)) continue;
+		return tok;
+	}
+	return "";
+};
+
 /** 凭证限定呈现（#171，存在性层面，永不含值）：`allowedPrefix: a,b`，无限定时空串。 */
 const prefixTag = (e: { allowedPrefix?: string[] }): string =>
 	e.allowedPrefix?.length ? ` · allowedPrefix: ${e.allowedPrefix.join(",")}` : "";
@@ -69,8 +79,9 @@ export default function secretStore(pi: ExtensionAPI) {
 
 	async function reload(onWarning?: (msg: string) => void): Promise<Store> {
 		const store = await loadStore(storePath, onWarning);
-		// [4] 累积不 clear：forget/他 session 轮换后，旧值仍躺在磁盘文件与旧输出里，本 session 生存期内持续脱敏
-		for (const e of Object.values(store)) redactor.add(e.value);
+		// [4] 累积不 clear：forget/他 session 轮换后，旧值仍躺在磁盘文件与旧输出里，本 session 生存期内持续脱敏；
+		// 名随值注册（#172 回填反查 nameOf 用）
+		for (const [n, e] of Object.entries(store)) redactor.add(e.value, n);
 		return store;
 	}
 
@@ -113,7 +124,8 @@ export default function secretStore(pi: ExtensionAPI) {
 		}
 	});
 
-	// bash 命令：①P1 检测（先，见原始命令）②存储 guard（[7] resolved 比对）③选择性注入（后，#170）。
+	// bash 命令：①P1 检测（先，见原始命令——已知格式 token 不因回填放行）②存储 guard（[7] resolved 比对）
+	// ③明文回填（#172）④选择性注入（#170）+ allowedPrefix（#171）。
 	// 非 bash 文件类工具（read/grep/ls/edit/write…）：input.path 指向存储文件同样拦截（[7]）。
 	// 修改参数必须原地 mutate event.input —— 返回 { input } 无效（pi ToolCallEventResult 文档明示）。
 	pi.on("tool_call", async (event, ctx) => {
@@ -127,11 +139,15 @@ export default function secretStore(pi: ExtensionAPI) {
 			}
 			return undefined;
 		}
-		const cmd = String(input.command ?? "");
+		let cmd = String(input.command ?? "");
 		const finding = detectTokens(cmd);
 		if (finding) return { block: true, reason: p1BlockReason(finding) };
 		if (touchesStore(cmd, cwd)) return { block: true, reason: GUARD_REASON };
 		if (cmd.includes(MARKER)) return undefined; // 已带前缀（嵌套/重放），不重复注入
+		// #172 明文回填（链路定型：P1 检测 → 回填 → prefix/注入）：已存值明文误写进命令 → 机械替换回 $NAME（无感修正非拦截）。
+		// 反查源 = redactor 累积值（[4]：forget 后旧值仍回填）；替换出的 $NAME 交由下方注入路径重新验证（未存名静默跳过）。
+		const filled = redactor.backfill(cmd);
+		if (filled !== cmd) event.input.command = cmd = filled;
 		// #170 选择性注入：先解析引用集，为空则零 I/O 直通（命令与无凭证库时逐字节一致，agent 无感）
 		const refs = referencedNames(cmd);
 		if (refs.size === 0) return undefined;
@@ -146,18 +162,18 @@ export default function secretStore(pi: ExtensionAPI) {
 		// 注入集 = 引用 ∩ store 已存名；只缩半径不防外显（echo $NAME 照常注入）；未存名静默跳过（P1 白名单语义）
 		const names = [...refs].filter((n) => Object.hasOwn(store, n));
 		if (names.length === 0) return undefined;
-		// #171 allowedPrefix：命令首词命中任一前缀才注入该凭证；不命中 → 不注入并 block 报错（fail closed：
-		// 否则命令带着空变量照常执行）。三要素：凭证名/限定前缀/secret_ensure 重设指引。无限定的凭证不受影响。
-		const firstWord = cmd.split(/[\s'"|&;()]+/).filter(Boolean)[0] ?? "";
+		// #171 allowedPrefix：命令词（r2 #2 剥 sudo/env/赋值 token）命中任一前缀才注入该凭证；不命中 → 不注入并 block 报错（fail closed：
+		// 否则命令带着空变量照常执行）。三要素：凭证名/限定前缀/secret_ensure 重设指引 + 实际参与比对的命令词。无限定的凭证不受影响。
+		const word = commandWord(cmd);
 		const mismatched = names.filter((n) => {
 			const prefixes = store[n].allowedPrefix ?? [];
-			return prefixes.length > 0 && !prefixes.some((p) => firstWord.startsWith(p));
+			return prefixes.length > 0 && !prefixes.some((p) => word.startsWith(p));
 		});
 		if (mismatched.length > 0) {
 			const detail = mismatched
 				.map(
 					(n) =>
-						`凭证 ${n} 限定仅用于首词命中 [${(store[n].allowedPrefix ?? []).join(",")}] 的命令，当前命令首词 "${firstWord}" 不命中，未注入（如需变更限定请调用 secret_ensure 重设该凭证）`,
+						`凭证 ${n} 限定仅用于命令词命中 [${(store[n].allowedPrefix ?? []).join(",")}] 的命令，当前命令词 "${word}" 不命中，未注入（如需变更限定请调用 secret_ensure 重设该凭证）`,
 				)
 				.join("；");
 			return { block: true, reason: `secret-store: ${detail}` };
@@ -287,7 +303,7 @@ export default function secretStore(pi: ExtensionAPI) {
 				current[params.name] = { value, updatedAt: new Date().toISOString(), fingerprint: fingerprintOf(value) };
 				return current;
 			});
-			redactor.add(value);
+			redactor.add(value, params.name);
 			return say(`凭证 ${params.name} 已保存（指纹 ${fingerprintOf(value)}）。此后 bash 中直接引用 $${params.name}；明文不可见、不可读。`);
 		},
 	});

@@ -36,7 +36,8 @@ export function nameProblem(name: string): string | undefined {
 }
 
 /** [5]/[7]/[13] 条目形状校验：名字合法、value 是字符串、不含 NUL、达到脱敏阈值（Redactor 短于 4 字符会静默忽略）、
- *  allowedPrefix（若给出）是字符串数组（#171）。 */
+ *  allowedPrefix（若给出）是字符串数组且元素非空串/无首尾空白（#171；r2 #1：空串元素 startsWith 恒真 = 完全取消限定）。
+ *  读（手改 JSON）与写共用本入口，两路都拦。 */
 function entryProblem(name: string, entry: unknown): string | undefined {
 	const nameErr = nameProblem(name);
 	if (nameErr) return nameErr;
@@ -44,8 +45,12 @@ function entryProblem(name: string, entry: unknown): string | undefined {
 	const { value, allowedPrefix } = entry as StoreEntry;
 	if (value.includes("\0")) return "value 含 NUL 字符";
 	if (value.length < MIN_REDACT_LENGTH) return `value 短于 ${MIN_REDACT_LENGTH} 字符，无法可靠脱敏`;
-	if (allowedPrefix !== undefined && (!Array.isArray(allowedPrefix) || allowedPrefix.some((p) => typeof p !== "string")))
-		return "allowedPrefix 必须是字符串数组";
+	if (allowedPrefix !== undefined) {
+		if (!Array.isArray(allowedPrefix) || allowedPrefix.some((p) => typeof p !== "string"))
+			return "allowedPrefix 必须是字符串数组";
+		if (allowedPrefix.some((p) => p.length === 0 || p.trim() !== p))
+			return "allowedPrefix 元素不能为空串或含首尾空白";
+	}
 	return undefined;
 }
 

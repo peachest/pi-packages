@@ -10,19 +10,30 @@ const MIN_LINE_LENGTH = 16;
 
 export class Redactor {
 	private values = new Set<string>();
+	/** 值变体 → 凭证名（#172 回填反查）：与 values 同套变体注册；同值多名取最长名（值唯一性由 store 保证，防御性处理）。 */
+	private names = new Map<string, string>();
 
-	add(secret: string): void {
+	add(secret: string, name?: string): void {
 		const normalized = secret.replace(/\r\n/g, "\n");
 		// JSON 转义变体覆盖原始值/normalized/trimmed 三形态：CRLF 值的 \r\n 转义序列只在原始值形态出现（#126）
 		for (const base of new Set([secret, normalized, normalized.trim()])) {
-			if (base.length >= MIN_REDACT_LENGTH) this.values.add(base);
+			if (base.length >= MIN_REDACT_LENGTH) {
+				this.values.add(base);
+				this.rememberName(base, name);
+			}
 			const jsonEscaped = JSON.stringify(base).slice(1, -1);
-			if (jsonEscaped !== base && jsonEscaped.length >= MIN_REDACT_LENGTH) this.values.add(jsonEscaped);
+			if (jsonEscaped !== base && jsonEscaped.length >= MIN_REDACT_LENGTH) {
+				this.values.add(jsonEscaped);
+				this.rememberName(jsonEscaped, name);
+			}
 		}
 		if (normalized.includes("\n")) {
 			for (const line of normalized.split("\n")) {
 				const trimmed = line.trim();
-				if (trimmed.length >= MIN_LINE_LENGTH) this.values.add(trimmed);
+				if (trimmed.length >= MIN_LINE_LENGTH) {
+					this.values.add(trimmed);
+					this.rememberName(trimmed, name);
+				}
 			}
 		}
 	}
@@ -33,16 +44,43 @@ export class Redactor {
 
 	clear(): void {
 		this.values.clear();
+		this.names.clear();
+	}
+
+	private rememberName(variant: string, name?: string): void {
+		if (name === undefined) return;
+		const prev = this.names.get(variant);
+		if (prev === undefined || name.length > prev.length) this.names.set(variant, name);
+	}
+
+	/** 值→名反查（#172 回填）：单值精确命中才返回名；同一明文对应多凭证名时取最长名（防御性，store 值唯一性理论保证）。 */
+	nameOf(value: string): string | undefined {
+		return this.names.get(value);
+	}
+
+	/** #172 回填：文本中已注册值明文 → `$凭证名`（无感修正非拦截）；未命中的文本原样，无名值不替换。 */
+	backfill(text: string): string {
+		if (this.names.size === 0) return text;
+		return text.replace(this.alternation(), (m) => {
+			const name = this.nameOf(m);
+			return name === undefined ? m : `$${name}`;
+		});
+	}
+
+	/** 已注册值的单遍交替正则（长短同序：整值优先于单行，#124）；redactText 与 backfill 共用。 */
+	private alternation(): RegExp {
+		return new RegExp(
+			[...this.values]
+				.sort((a, b) => b.length - a.length)
+				.map((v) => v.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+				.join("|"),
+			"g",
+		);
 	}
 
 	redactText(text: string): string {
 		if (this.values.size === 0) return text;
-		// 单遍交替正则（#124 实现建议）：一次扫描替代逐条 includes，长短同序保证整值优先于单行。
-		const alternation = [...this.values]
-			.sort((a, b) => b.length - a.length)
-			.map((v) => v.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
-			.join("|");
-		return text.replace(new RegExp(alternation, "g"), REDACTED);
+		return text.replace(this.alternation(), REDACTED);
 	}
 
 	/** Deep-copy `input`, redacting every string. Returns the same reference when nothing changed. */
