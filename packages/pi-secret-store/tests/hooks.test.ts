@@ -425,6 +425,54 @@ describe("tool_call：展开式引用命中已存名 block（r8 #3）", () => {
 	});
 });
 
+describe("tool_call：r10 #1 操作符锚定在 } 之内（rolling-review-r10）", () => {
+	const SEED = { HARBOR_PASSWORD: { value: "harbor-secret-value", updatedAt: "t", fingerprint: "fp0000hh11" } };
+
+	it("验收表·不 block：${NAME}+字面后缀（-suffix、/path、#x、?）逐形态不判展开式——走纯注入", async () => {
+		const h = await setupHarness(SEED);
+		const { event, result } = await runToolCall(
+			h,
+			'echo "${HARBOR_PASSWORD}-suffix" "${HARBOR_PASSWORD}/path" "${HARBOR_PASSWORD}#x" "${HARBOR_PASSWORD}?"',
+		);
+		expect(result).toBeUndefined();
+		expect(event.input.command).toContain("export HARBOR_PASSWORD='harbor-secret-value'");
+	});
+
+	it("验收表·不 block：未闭合花括号 ${NAME-suffix（bash bad substitution，命令本就不执行）不判展开式", async () => {
+		const h = await setupHarness(SEED);
+		const { result } = await runToolCall(h, 'echo "${HARBOR_PASSWORD-suffix');
+		expect(result).toBeUndefined();
+	});
+
+	it.each([
+		["${NAME:-def}", 'echo "${HARBOR_PASSWORD:-def}"'],
+		["${NAME:=x}", 'echo "${HARBOR_PASSWORD:=x}"'],
+		["${NAME:?m}", 'echo "${HARBOR_PASSWORD:?m}"'],
+		["${NAME:+a}", 'echo "${HARBOR_PASSWORD:+a}"'],
+		["${NAME:-}", 'echo "${HARBOR_PASSWORD:-}"'],
+		["${NAME-def}（裸操作符紧贴 NAME）", 'echo "${HARBOR_PASSWORD-def}"'],
+		["${NAME=x}（裸操作符紧贴 NAME）", 'echo "${HARBOR_PASSWORD=x}"'],
+		["${NAME+a}（裸操作符紧贴 NAME）", 'echo "${HARBOR_PASSWORD+a}"'],
+		["${NAME?m}（裸操作符紧贴 NAME）", 'echo "${HARBOR_PASSWORD?m}"'],
+		["${NAME#pat}（裸操作符紧贴 NAME）", 'echo "${HARBOR_PASSWORD#pat}"'],
+		["${NAME%pat}（裸操作符紧贴 NAME）", 'echo "${HARBOR_PASSWORD%pat}"'],
+		["${NAME/pat/rep}（裸操作符紧贴 NAME）", 'echo "${HARBOR_PASSWORD/pat/rep}"'],
+	])("验收表·block：展开式 %s 命中已存名仍 block", async (_label, cmd) => {
+		const h = await setupHarness(SEED);
+		const { result } = await runToolCall(h, cmd);
+		expect(result?.block).toBe(true);
+		expect(result?.reason).toContain("HARBOR_PASSWORD");
+	});
+
+	it("r9 语义回归锁：${NAME:0:3} 子串展开（冒号后接数字）仍放行——不判展开式不拦也不注入", async () => {
+		const h = await setupHarness(SEED);
+		const cmd = 'echo "${HARBOR_PASSWORD:0:3}"';
+		const { event, result } = await runToolCall(h, cmd);
+		expect(result).toBeUndefined();
+		expect(event.input.command).toBe(cmd);
+	});
+});
+
 describe("tool_call：明文回填（#172，链路定型 P1 检测 → 回填 → prefix/注入；r3 #1 起替换仅限裸 token）", () => {
 	it("命令含已存明文（裸 token）→ 替换为 $NAME 后走注入路径（端到端：命令体无明文）", async () => {
 		const h = await setupHarness({ A_TOKEN: { value: "a-token-value-1", updatedAt: "t", fingerprint: "fp0000aa11" } });

@@ -38,13 +38,17 @@ const isSubsequence = (needle: string, haystack: string): boolean => {
 	return i === needle.length;
 };
 
+/** $NAME/${NAME} 引用名正则（r10 #2：referencedNames 与 singleQuotedStoredName 共用——此前两处独立维护同款正则有漂移风险；
+ *  两处调用方均用 matchAll（内部克隆正则迭代），共享 /g 常量无 lastIndex 污染） */
+const VAR_REF_RE = /\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))/g;
+
 /** 命令文本中的 $NAME/${NAME} 引用名（仅裸名与纯 ${NAME} 花括号形态计入；${NAME:-def} 等展开式不计——
  *  命令不消费真实值时不注入真值，缩注入半径，rolling-review-r1 #1。文本级扫描：单引号内的 $NAME 同样
  *  计入——不展开，但已存名的单引号引用会被拦截（r5 #2，见 singleQuotedStoredName）。
  *  r8 #3：展开式形态由 expandedRefNames 单列——命中已存名时 block，未存名不拦。 */
 const referencedNames = (cmd: string): Set<string> => {
 	const names = new Set<string>();
-	for (const m of cmd.matchAll(/\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))/g)) names.add(m[1] ?? m[2]);
+	for (const m of cmd.matchAll(VAR_REF_RE)) names.add(m[1] ?? m[2]);
 	return names;
 };
 
@@ -54,7 +58,7 @@ const referencedNames = (cmd: string): Set<string> => {
  *  命令带空变量照常执行。命中返回第一个名。 */
 const singleQuotedStoredName = (cmd: string, stored: readonly string[]): string | undefined => {
 	const ctx = commandContext(cmd);
-	for (const m of cmd.matchAll(/\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))/g)) {
+	for (const m of cmd.matchAll(VAR_REF_RE)) {
 		const n = m[1] ?? m[2];
 		if (stored.includes(n) && (ctx[m.index] & IN_SINGLE) !== 0) return n;
 	}
@@ -67,10 +71,12 @@ const singleQuotedStoredName = (cmd: string, stored: readonly string[]): string 
  *  照常执行（sudo（无 -E）/env -i 等清环境内层同样取不到），与单引号 r5 #2 同类缺口 → fail closed block。
  *  r9 #1：旧正则 [^}] 会回溯截断名字（${TOKEN} → m[1]=TOKE 命中截断前缀存名 → 纯花括号误 block；
  *  ${TOKEN}/config 等纯展开+字面后缀同样被波及）——收紧后纯 ${NAME} 花括号与字面后缀均不匹配（正常注入路径）。
+ *  r10 #1：操作符锚定在 } 之内（[^}]*\} 收尾）——操作符后必须到达 } 才算展开式，未闭合花括号
+ *  （${NAME-suffix，bash bad substitution 本不执行）不再误判展开式误 block。
  *  未存名不拦（r1 #1 白名单语义）。shortcut：${NAME:0:3} 子串展开（冒号后接数字）不在此列，与字面后缀同视为放行。 */
 const expandedRefNames = (cmd: string): Set<string> => {
 	const names = new Set<string>();
-	for (const m of cmd.matchAll(/\$\{([A-Za-z_][A-Za-z0-9_]*)(?::?[-+=?#%/])/g)) names.add(m[1]);
+	for (const m of cmd.matchAll(/\$\{([A-Za-z_][A-Za-z0-9_]*)(?::?[-+=?#%/])[^}]*\}/g)) names.add(m[1]);
 	return names;
 };
 
