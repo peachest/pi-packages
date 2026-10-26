@@ -71,7 +71,7 @@ print(json.dumps([{ "id": r["id"], "scope": r["scope"], "hasMatcher": callable(r
 			{ encoding: "utf8", env: PYENV },
 		);
 		const rules: Array<{ id: string; scope: string; hasMatcher: boolean; msg: boolean }> = JSON.parse(out);
-		expect(rules).toHaveLength(13); // 12 + KB (#166)
+		expect(rules).toHaveLength(14); // 12 + KB (#166) + R5 branch naming (2026-10-26)
 		for (const r of rules) {
 			expect(r.scope === "global" || r.scope === "projects", `${r.id} scope`).toBe(true);
 			expect(r.hasMatcher, `${r.id} matcher`).toBe(true);

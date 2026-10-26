@@ -16,6 +16,8 @@
 #       restores, -b/-c creation, full-sha materialization and non-wt-layout
 #       trees allowed (#153)
 #   R4  `wt merge -y/--yes` -> block (merge approval is the user's decision)
+#   R5  `wt switch -c <branch>` naming: <type>/<name>, conventional types
+#       plus research; one-off probe/tmp -> test/ (2026-10-26 mining)
 #   rtk prefix penetration for every rule
 #   heredoc-body literal regression: document text quoting the guarded
 #   command literals must NOT block (spec #137 was false-blocked twice by
@@ -181,6 +183,27 @@ expect 2 "rtk wt merge -y blocked"              "$PROJ" "rtk wt merge -y"
 expect 0 "wt merge plain allowed"               "$PROJ" "wt merge"
 expect 0 "wt merge --no-remove allowed"         "$PROJ" "wt merge --no-remove"
 expect_msg "r4 msg names the approval rule"     "approval" "$PROJ" "wt merge -y"
+
+echo "== R5 new worktree branch naming (conventional types + research) =="
+expect 0 "wt switch -c feat/x allowed"          "$PROJ" "wt switch -c feat/x"
+expect 0 "wt switch -c research/y allowed"      "$PROJ" "wt switch -c research/hami-initcontainer"
+expect 0 "wt switch -c test/probe-1 allowed"    "$PROJ" "wt switch -c test/probe-1"
+expect 0 "wt switch existing branch allowed"    "$PROJ" "wt switch main"
+expect 0 "wt merge unaffected by R5"            "$PROJ" "wt merge"
+expect 0 "switch without -c allowed"            "$PROJ" "wt switch feat/x"
+expect 2 "tw/ type blocked"                     "$PROJ" "wt switch -c tw/afd"
+expect 2 "ticket/ type blocked"                 "$PROJ" "wt switch -c ticket/51-init-core"
+expect 2 "impl/ type blocked"                   "$PROJ" "wt switch -c impl/62"
+expect 2 "peer/ type blocked"                   "$PROJ" "wt switch -c peer/fix-loop-cap"
+expect 2 "tmp/ type blocked"                    "$PROJ" "wt switch -c tmp/image-repro"
+expect 2 "bare name (no slash) blocked"         "$PROJ" "wt switch -c dev-sync"
+expect 2 "-C global prefix still checked"       "$PROJ" "wt -C $MAIN switch -c pick/pick-2723"
+expect 2 "rtk prefix penetrated"                "$PROJ" "rtk wt switch -c autoresearch/speed"
+expect 0 "--no-cd flag after branch allowed"    "$PROJ" "wt switch -c ci/pipeline-fix --no-cd"
+expect 0 "base flag -b after branch allowed"    "$PROJ" "wt switch -c fix/r5-base -b main"
+expect 2 "compound segment still checked"       "$PROJ" "wt switch -c chore/ok && wt switch -c tmp/x"
+expect_msg "r5 msg names the type contract"     "conventional" "$PROJ" "wt switch -c tmp/image-repro"
+expect_msg "r5 msg suggests test/ for one-offs" "test/<name>" "$PROJ" "wt switch -c probe-f1"
 
 echo "== heredoc body literals must not trip R1/R2 (spec #137 creation incident) =="
 DOC=$(cat <<'FEOF'
