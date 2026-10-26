@@ -29,6 +29,9 @@ func newMilestoneStateCmd() *cobra.Command {
 		Short: "Set milestone state (active|closed)",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := requireLocal(cmd); err != nil {
+				return err
+			}
 			root, err := openScratchRoot()
 			defer root.Close()
 			if err != nil {
@@ -69,6 +72,9 @@ func newMilestoneProgressCmd() *cobra.Command {
 		Short: "Show milestone progress (aggregate of referencing maps)",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := requireLocal(cmd); err != nil {
+				return err
+			}
 			root, err := openScratchRoot()
 			defer root.Close()
 			if err != nil {
@@ -96,6 +102,9 @@ func newMilestoneListCmd() *cobra.Command {
 		Short: "List all milestones",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := requireLocal(cmd); err != nil {
+				return err
+			}
 			root, err := openScratchRoot()
 			defer root.Close()
 			if err != nil {

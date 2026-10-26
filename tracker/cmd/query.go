@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"github.com/peachest/pi-packages/tracker/tracker"
 	"github.com/spf13/cobra"
 )
 
@@ -22,13 +21,12 @@ func newQueryFrontierCmd() *cobra.Command {
 		Short: "List frontier tickets (open, unblocked, untriaged or ready-for-agent)",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			root, err := openScratchRoot()
-			defer root.Close()
+			backend, err := resolveBackend(cmd)
 			if err != nil {
 				return err
 			}
 
-			frontier, err := tracker.Frontier(root, mapSlug)
+			frontier, err := backend.Frontier(mapSlug)
 			if err != nil {
 				return err
 			}

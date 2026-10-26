@@ -12,23 +12,30 @@ import (
 // status=open + triage=null|ready-for-agent + all blocked_by tickets resolved.
 // Only resolved unblocks; wontfix does not unblock.
 func Frontier(root *os.Root, mapSlug string) ([]TicketSummary, error) {
-	tickets, err := ListTickets(root, mapSlug, ListFilter{Status: "open"})
+	allTickets, err := ListTickets(root, mapSlug, ListFilter{})
 	if err != nil {
 		return nil, errors.Wrapf(err, "listing tickets for frontier")
 	}
+	return ComputeFrontier(allTickets), nil
+}
 
+// ComputeFrontier filters a full ticket list down to the frontier set.
+// Pure and backend-independent: shared by LocalBackend, GitHubBackend and
+// GitLabBackend.
+func ComputeFrontier(all []TicketSummary) []TicketSummary {
 	// Build a map of id → status for blocker lookup
-	allTickets, err := ListTickets(root, mapSlug, ListFilter{})
-	if err != nil {
-		return nil, errors.Wrapf(err, "listing all tickets for frontier")
-	}
-	statusByID := make(map[string]string, len(allTickets))
-	for _, t := range allTickets {
+	statusByID := make(map[string]string, len(all))
+	for _, t := range all {
 		statusByID[t.ID] = t.Status
 	}
 
 	var frontier []TicketSummary
-	for _, t := range tickets {
+	for _, t := range all {
+		// Check status: open only
+		if t.Status != "open" {
+			continue
+		}
+
 		// Check triage: null or ready-for-agent
 		if t.Triage != nil && *t.Triage != "ready-for-agent" {
 			continue
@@ -55,7 +62,7 @@ func Frontier(root *os.Root, mapSlug string) ([]TicketSummary, error) {
 		return strings.Compare(a.ID, b.ID)
 	})
 
-	return frontier, nil
+	return frontier
 }
 
 // ComputeFrontierSize returns the number of tickets in the frontier.

@@ -1,8 +1,6 @@
 package cmd
 
 import (
-	"time"
-
 	"github.com/peachest/pi-packages/tracker/tracker"
 	"github.com/spf13/cobra"
 )
@@ -29,13 +27,16 @@ func newMapStateCmd() *cobra.Command {
 		Short: "Set map state (active|closed)",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := requireLocal(cmd); err != nil {
+				return err
+			}
 			root, err := openScratchRoot()
 			defer root.Close()
 			if err != nil {
 				return err
 			}
 
-			if err := tracker.SetMapState(root, slug, newState, time.Now().UTC()); err != nil {
+			if err := tracker.SetMapState(root, slug, newState, nowUTC()); err != nil {
 				return err
 			}
 
@@ -69,6 +70,9 @@ func newMapProgressCmd() *cobra.Command {
 		Short: "Show map progress (ticket counts + frontier_size)",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := requireLocal(cmd); err != nil {
+				return err
+			}
 			root, err := openScratchRoot()
 			defer root.Close()
 			if err != nil {
@@ -115,18 +119,22 @@ func newMapListCmd() *cobra.Command {
 		Short: "List all maps with progress",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			root, err := openScratchRoot()
-			defer root.Close()
+			backend, err := resolveBackend(cmd)
 			if err != nil {
 				return err
 			}
 
-			maps, err := tracker.ListMaps(root)
+			maps, err := backend.ListMaps()
 			if err != nil {
 				return err
 			}
 
+			// Milestone filtering is a local-markdown concept (remote maps have
+			// no milestone field).
 			if milestone != "" {
+				if err := requireLocal(cmd); err != nil {
+					return err
+				}
 				maps = tracker.FilterMapsByMilestone(maps, milestone)
 			}
 
