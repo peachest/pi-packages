@@ -74,7 +74,7 @@
     {
       "name": "mr",
       "entityType": "gitlab:mr",
-      "check": "st=$(glab api --hostname {host} \"projects/{project}/merge_requests/{mr_iid}\" 2>/dev/null | jq -r '.state'); case \"$st\" in opened) echo mr-opened; exit 1;; merged) echo mr-merged; exit 0;; closed) echo mr-closed; exit 2;; *) echo mr-${st:-none}; exit 1;; esac",
+      "check": "st=$(glab api --hostname {host} \"projects/$(jq -rn --arg p '{project}' '$p|@uri')/merge_requests/{mr_iid}\" 2>/dev/null | jq -r '.state'); case \"$st\" in opened) echo mr-opened; exit 1;; merged) echo mr-merged; exit 0;; closed) echo mr-closed; exit 2;; *) echo mr-${st:-none}; exit 1;; esac",
       "states": [
         "passed",
         "failed",
@@ -91,7 +91,7 @@
     {
       "name": "ci",
       "entityType": "gitlab:pipeline",
-      "check": "st=$(glab api --hostname {host} \"projects/{project}/pipelines/{pipeline_id}\" 2>/dev/null | jq -r '.status'); case \"$st\" in success) echo pipeline-success; exit 0;; failed|canceled) echo pipeline-$st; exit 2;; *) echo running-${st:-none}; exit 1;; esac",
+      "check": "st=$(glab api --hostname {host} \"projects/$(jq -rn --arg p '{project}' '$p|@uri')/pipelines/{pipeline_id}\" 2>/dev/null | jq -r '.status'); case \"$st\" in success) echo pipeline-success; exit 0;; failed|canceled) echo pipeline-$st; exit 2;; *) echo running-${st:-none}; exit 1;; esac",
       "states": [
         "passed",
         "failed",
@@ -103,7 +103,7 @@
       },
       "params": {
         "host": "GitLab 实例 host（双实例显式填）",
-        "project": "项目 id（数字或 URL 编码路径）",
+        "project": "项目 id（数字或 URL 编码路径；check 内已内联 @uri 编码，gitblue 对未编码路径 404）",
         "pipeline_id": "pipeline id"
       },
       "usage": "CI pipeline 判定：终态 success→passed / failed/canceled→failed，进行中→waiting；节奏比 mr 密（30s）",
@@ -112,7 +112,7 @@
     {
       "name": "ticket",
       "entityType": "gitlab:ticket",
-      "check": "st=$(glab api --hostname {host} \"projects/{project}/issues/{issue_iid}\" 2>/dev/null | jq -r '.state'); case \"$st\" in opened) echo ticket-opened; exit 1;; closed) echo ticket-closed; exit 0;; *) echo ticket-${st:-none}; exit 1;; esac",
+      "check": "st=$(glab api --hostname {host} \"projects/$(jq -rn --arg p '{project}' '$p|@uri')/issues/{issue_iid}\" 2>/dev/null | jq -r '.state'); case \"$st\" in opened) echo ticket-opened; exit 1;; closed) echo ticket-closed; exit 0;; *) echo ticket-${st:-none}; exit 1;; esac",
       "states": [
         "passed",
         "failed",
