@@ -576,11 +576,11 @@ export default function piExtension(pi) {
             // already tell the model what each tool does. This anchor gives the
             // deliberate choice (which tool for which scenario) without the full
             // block/redirect/memory/tool-selection hierarchy.
-            // pi-context-mode-lite: hierarchy 锚点同步收敛到保留的四个工具。
-            parts.push("context-mode active. Hierarchy: ctx_batch_execute > ctx_execute > ctx_search. " +
-                "Large/multi-command output → ctx_batch_execute. One heavy command → ctx_execute. " +
-                "Query indexed knowledge → ctx_search; index docs → ctx_index. " +
-                "Web pages and single-file processing: NOT covered — use bash/curl/read directly.");
+            // pi-context-mode-lite: hierarchy 锚点收敛到保留的四个工具（writing-for-agents
+            // 规范：砍 identity 复述与 Hierarchy 重复行、负向 NOT covered 改正向指路）。
+            parts.push("Large/multi-command output → ctx_batch_execute. One heavy command → ctx_execute. " +
+                "Knowledge recall → ctx_search; add docs to the index → ctx_index. " +
+                "Web pages and single files → bash/curl/read.");
             // Pi-3 + Pi-4: Always build active_memory (not just post-compact),
             // capped at 500 tokens via buildAutoInjection. Falls back to inline
             // budget loop if the helper is unavailable.

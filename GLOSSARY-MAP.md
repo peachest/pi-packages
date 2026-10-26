@@ -16,6 +16,7 @@ This is a monorepo with 22 packages under `packages/*`. Each package has its own
 | [pi-think-tool](packages/pi-think-tool/GLOSSARY.md) | Think/Env/Consequence | 推理记录、环境采集、后果评估三工具 |
 | [pi-wishlist](packages/pi-wishlist/GLOSSARY.md) | Wishlist | Pi Package 愿望单，后台更新检查和通知 |
 | [pi-skill-presets](packages/pi-skill-presets/GLOSSARY.md) | Presets | Skill 分组与动态加载：prefix-cache-aware 的 transient injection + persistent entry 状态跟踪 |
+| [pi-bash-guards](packages/pi-bash-guards/GLOSSARY.md) | Behavior guards | 全局 bash 守卫：命令位置解析引擎 + 声明式规则表，危险命令执行前拦截并给替代（ADR 0001） |
 | [pi-timekeeper](packages/pi-timekeeper/GLOSSARY.md) | Timekeeper | Codex 式时间感知：run 边界拉式注入时间锚，节流双条件 + 压缩重锚，绝不唤醒 idle |
 | [prototype-events-daemon](packages/prototype-events-daemon/GLOSSARY.md) | Events daemon (prototype) | 前身术语副本（历史参照）；正典见 pi-events-daemon |
 | [pi-events-daemon](packages/pi-events-daemon/GLOSSARY.md) | Events daemon | **正典**：实体状态机基底 + 实现期裁定（Transitioned/epoch/TxOps/envAllowlist）；ADR docs/adr/0001-0008 |

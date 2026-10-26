@@ -1,0 +1,8 @@
+{
+	// 根 typecheck 腿（票 #124）：全仓真实 typecheck（include 全扫）。
+	// 不用 references+files:[] 方案——实测该形态下 tsc --noEmit 零文件零报错（TS18003 消失但什么都不查），
+	// 与"真实全仓 typecheck"目标相悖；各包自己的 tsconfig 保留（包内 IDE/单独 check 用）。
+	"extends": "./tsconfig.base.json",
+	"include": ["packages"],
+	"exclude": ["node_modules", "packages/*/node_modules", "packages/*/upstream", "packages/*/dist", "packages/*/build"]
+}

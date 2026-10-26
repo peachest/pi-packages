@@ -6,7 +6,7 @@ vendored [pi-worktrunk](https://github.com/mavam/pi-worktrunk)（npm `0.12.2`，
 
 worktrunk 工具由本地 vendored 扩展提供（`wt` v0.77.0 配套），有两处手改：
 
-1. **`buildReference` 替换为 `COMPACT_REFERENCE` 常量**：上游每次调用会对已安装 wt 的每个子命令跑 `--help-md` 探测（`HELP_PROBE_CONCURRENCY=8`）生成全量命令目录，token 开销大且每次启动重打。改为手写的常用子集参考（switch/remove/list/merge/step，其余子命令指引走 bash `wt <cmd> --help`）。
+1. **`buildReference` 替换为 `COMPACT_REFERENCE` 常量**：上游每次调用会对已安装 wt 的每个子命令跑 `--help-md` 探测（`HELP_PROBE_CONCURRENCY=8`）生成全量命令目录，token 开销大且每次启动重打。改为手写的常用子集参考（switch/remove/list/merge/step，其余子命令指引走 bash `wt <cmd> --help`）。调用点删除后，整条死掉的 reference 生成管线（buildReference/renderReference/formatReference/truncateReference/mapConcurrent/attributeExamples/renderToolExample/firstSentence 及两个管线常量）在 patch 内一并删除，parseCommand/parseSectionEntries 等解析工具保留。
 2. **`registerTool` description/promptGuidelines 压缩**：与紧凑参考对齐，去掉生成目录相关表述，强调 args 不重复命令名、codemode queued 即停。
 
 ## 结构
@@ -25,15 +25,38 @@ npm pack pi-worktrunk@<ver> && tar xzf pi-worktrunk-<ver>.tgz
 ./sync.sh package        # 冲突即报错，人工裁决后重生成 patch
 ```
 
+重生成 patch 的基线必须是 npm pristine 副本（repo index 里是已打补丁的树，`git diff -- upstream/` 会以旧补丁为基线累积叠加），并保持 `upstream/` 相对路径：
+
+```bash
+diff -u --label a/upstream/worktrunk.ts --label b/upstream/worktrunk.ts <pristine-pkg>/worktrunk.ts upstream/worktrunk.ts > lite.patch
+diff -u --label a/upstream/package.json --label b/upstream/package.json <pristine-pkg>/package.json upstream/package.json >> lite.patch
+```
+
+重生成后必验：pristine + lite.patch 重新应用结果与 upstream/ 三文件逐字节 cmp 一致。
+
 上游若升级（pi-worktrunk 发布新版本或 vendored 自 wt 升级后需手动 diff 同步），需重审：①`--help-md` 探测的 token 开销是否已被上游优化（是则 COMPACT_REFERENCE 可退役）；②新增子命令是否值得进紧凑参考；③与 `~/.config/worktrunk/config.toml` 全局配置的措辞是否仍一致。
 
 ## 验证
 
-patched 产物与迁移源逐字节一致（零行为变化，2026-10-21 验证）：
+`verify.sh` 把「发布物与源一致」从手工纪律变成可执行不变量，四步链：npm pristine（`npm pack pi-worktrunk@<upstream/package.json 的 version>` 解包到干净临时目录）→ 应用 lite.patch → 产物与 `upstream/` 三文件逐字节 cmp → `node tests/remove-self-guard.test.mjs` 行为断言。
 
-```bash
-diff upstream/worktrunk.ts <(git -C <旧skills仓> show d972f3c:extensions/pi-wt-lite.ts)  # 应无输出
-node -e "import('./upstream/worktrunk.ts').then(()=>console.log('ok'))"  # 语法冒烟（需 node >=24 strip-types 环境）
-```
+**何时跑**：每次 `sync.sh` 之后、每次上游升级（重生成 lite.patch）之后、怀疑 vendor 漂移时。
+
+**失败含义**（任一步失败 exit 1 并指明步骤）：步骤 2 红 = lite.patch 与 pristine 版本不匹配，需按上文重新生成 patch；步骤 3 红 = `upstream/` 脱离「pristine+patch」可复现基线（手改了 upstream/ 没同步进 patch，或 patch 过期）；步骤 4 红 = patch 后行为断言失败，禁止安装。全过输出 `verified: pristine+patch==upstream, behavior green`。
+
+历史上首次迁移（旧 skills 仓 `d972f3c:extensions/pi-wt-lite.ts` → 本包）的零行为变化等价性已于 2026-10-21 验证，持续的等价性证明由 `verify.sh` 承担。
+
+**实盘合规轨迹（remove-self guard 首例正例）**：2026-10-22 peer session（HAMi 仓 ci/llm30-trivy-scan 收尾）在 session 仍处于待删 worktree 内时调 `wt remove`，guard 以 exit 1 + 引导文案（"先 wt switch main 迁出，再 remove"）拦截（trace：`custom_message` `pi-worktrunk-continuation`，06:32:19）；peer 6 秒内遵引导迁出主检出后重删成功，随后 squash 合并场景先 diff 内容再 `-D` 删分支，全程无残留。此前该 guard 的证据全是事故反例（cwd 失效 spawn ENOENT），这是首条拦截→遵从→干净收尾的正向闭环。
 
 安装方式见仓库根 AGENTS.md（`pi install` 规范）；settings.json 中原 `../../skills` 扩展目录条目保留（仍服务 pi-herdr-peer.ts），本包以 `../../projects/pi-mypackage/packages/pi-wt-lite` 相对路径条目接入。
+
+## 已知债（spec#137 review 裁定）
+
+- **上游双注册**：pristine worktrunk.ts 在模块顶层与 session_start 各调一次 registerTool()（L1563/L1585）——上游既有行为，pi 实测容忍；按 vendor 纪律不写注释进 pristine，记录于此。若 pi 未来严格化重复注册，需在 lite.patch 加幂等守卫。
+
+## Language
+
+- **upstream/**：npm pristine 的 pi-worktrunk 源（worktrunk.ts/package.json/LICENSE 三文件），只由 sync.sh 写入，禁手改。
+- **lite.patch**：upstream → 发布产物的全部增量的唯一真身（紧凑命令参考、工具描述压缩、自保逻辑、peer 版本收紧）。增量埋进产物而不进 patch = 漂移。
+- **sync.sh / verify.sh**：升级（pack→copy→apply）与证明（pristine+patch==upstream 逐字节 + 行为断言）分离；verify.sh 是发布门，sync 后必跑。
+- **发布产物（upstream/worktrunk.ts 加载形态）**：pi.extensions 指向 patched 产物；"pristine + patch == 产物"是本包的核心不变量，verify.sh 是它的可执行形态。

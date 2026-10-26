@@ -7,12 +7,15 @@
 #          ./sync.sh package
 #
 # What it does:
-#   1. Verifies upstream/ is currently clean (patch fully applied) — abort otherwise.
-#   2. Replaces worktrunk.ts + package.json + LICENSE from the extracted upstream dir
+#   1. Verifies upstream/ matches HEAD (staged drift included — abort otherwise; patch fully applied).
+#   2. Validates the extracted package (all three payload files readable) and stages it in a
+#      temp dir BEFORE touching upstream/, then replaces worktrunk.ts + package.json + LICENSE
 #      (README.md intentionally not copied — upstream README describes the unpatched tool).
-#   3. Replays lite.patch with plain git apply (worktree preimage is fresh pristine
-#      upstream; --3way would fail against the patched blob in the index). Conflict =>
-#      exit 1 loudly; resolve by hand, regenerate patch.
+#   3. Replays lite.patch with plain git apply (--3way would fail against the
+#      patched blob in the index). NOTE: inside a work tree git apply resolves
+#      patch paths against the REPO ROOT and silently skips missing targets, so
+#      the package-relative patch paths need --directory=<show-prefix> applied
+#      from the repo top. Conflict => exit 1 loudly; resolve by hand, regenerate patch.
 #
 # The installed npm copy also works as <src>: ~/.pi/agent/npm/node_modules/pi-worktrunk
 # (must be the pristine version you want to vendor, not a previously patched one).
@@ -20,26 +23,41 @@ set -euo pipefail
 
 SRC="${1:?usage: ./sync.sh <extracted-pi-worktrunk-package-dir>}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
+# SRC relative to the CALLER's cwd, not the package dir (works from any depth)
+[[ "$SRC" == /* ]] || SRC="$(pwd)/$SRC"
 UP="$HERE/upstream"
 PATCH="$HERE/lite.patch"
 
-# 1. upstream must currently match the patch (no local drift)
-git -C "$HERE" diff --quiet -- upstream/ || {
-  echo "ERROR: upstream/ has uncommitted local changes; commit or stash first." >&2
+# 1. upstream must match HEAD (diff against HEAD so staged changes count as drift too)
+git -C "$HERE" diff --quiet HEAD -- upstream/ || {
+  echo "ERROR: upstream/ has uncommitted local changes (staged or not); commit or stash first." >&2
   exit 1
 }
 
-# 2. refresh upstream payload
+# 2. stage + validate the replacement payload before touching upstream/
+STAGE="$(mktemp -d)"
+trap 'rm -rf "$STAGE"' EXIT
+for name in worktrunk.ts package.json LICENSE; do
+  [ -r "$SRC/$name" ] || { echo "ERROR: $SRC/$name missing/unreadable; incomplete extracted package." >&2; exit 1; }
+  cp -a "$SRC/$name" "$STAGE/$name"
+done
 rm -f "$UP/worktrunk.ts" "$UP/package.json" "$UP/LICENSE"
-cp -a "$SRC/worktrunk.ts" "$SRC/package.json" "$UP/"
-[ -f "$SRC/LICENSE" ] && cp -a "$SRC/LICENSE" "$UP/"
+cp -a "$STAGE/worktrunk.ts" "$STAGE/package.json" "$STAGE/LICENSE" "$UP/"
+trap 'echo "ERROR: patch replay failed; upstream/ left as unpatched pristine — restore with git checkout -- upstream/ before retrying." >&2' EXIT
 
 # 3. replay the patch; fail loudly on conflict
-if git -C "$HERE" apply "$PATCH"; then
+TOP="$(git -C "$HERE" rev-parse --show-toplevel)"
+PREFIX="$(git -C "$HERE" rev-parse --show-prefix)"
+if git -C "$TOP" apply --directory="${PREFIX%/}" "$PATCH"; then
+  trap - EXIT
   echo "OK: upstream refreshed, lite.patch applied cleanly."
   echo "Next: bump version in package.json, update README source-version note, commit."
+  echo "Then run ./verify.sh — it must be green before the package is installed."
 else
   echo "CONFLICT: lite.patch failed to apply. Upstream moved into patched regions." >&2
-  echo "Resolve by hand in upstream/, then regenerate: git diff -- upstream/ > lite.patch" >&2
+  echo "Resolve by hand in upstream/, then regenerate lite.patch against the pristine npm copy ($SRC)" >&2
+  echo "— never against the repo index (it holds the already-patched tree; that baseline accumulates patches):" >&2
+  echo "  diff -u --label a/upstream/worktrunk.ts --label b/upstream/worktrunk.ts \"$SRC/worktrunk.ts\" \"$UP/worktrunk.ts\"" >&2
+  echo "  diff -u --label a/upstream/package.json --label b/upstream/package.json \"$SRC/package.json\" \"$UP/package.json\"" >&2
   exit 1
 fi
