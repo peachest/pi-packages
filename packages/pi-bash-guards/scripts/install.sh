@@ -7,6 +7,8 @@ set -euo pipefail
 PKG_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SRC="$PKG_DIR/scripts/bash-guards.py"
 DST="${HOME}/.pi/agent/kendex/hooks/bash-guards.py"
+WH_SRC="$PKG_DIR/scripts/write-home-guard.py"
+WH_DST="${HOME}/.pi/agent/kendex/hooks/write-home-guard.py"
 REG="${HOME}/.pi/agent/kendex/hooks.json"
 
 [ -f "$SRC" ] || { echo "FAIL: source missing: $SRC" >&2; exit 1; }
@@ -20,6 +22,16 @@ cp "$SRC" "$TMP"
 chmod +x "$TMP"
 mv "$TMP" "$DST"
 trap - EXIT
+
+# Companion guard: Write/Edit target-path sanity (ticket R3, 2026-10-26).
+# Same atomic-copy pattern; hooks.json registration is manual (see README).
+WHTMP="$WH_DST.tmp.$$"
+trap 'rm -f "$WHTMP"' EXIT
+cp "$WH_SRC" "$WHTMP"
+chmod +x "$WHTMP"
+mv "$WHTMP" "$WH_DST"
+trap - EXIT
+echo "sync ✓ $WH_DST (byte-identical: $(cmp -s "$WH_SRC" "$WH_DST" && echo yes || echo NO))"
 
 # Registry check: hooks.json must reference the guard path (install does NOT
 # write hooks.json — it is created once by pi-hooks; we only verify it).
