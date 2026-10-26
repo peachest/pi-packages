@@ -40,11 +40,25 @@ const isSubsequence = (needle: string, haystack: string): boolean => {
 
 /** 命令文本中的 $NAME/${NAME} 引用名（仅裸名与纯 ${NAME} 花括号形态计入；${NAME:-def} 等展开式不计——
  *  命令不消费真实值时不注入真值，缩注入半径，rolling-review-r1 #1。文本级扫描：单引号内的 $NAME 同样
- *  计入——单引号不展开，多注入只是环境多一个未用变量，无行为影响）。 */
+ *  计入——不展开，但已存名的单引号引用会被拦截（r5 #2，见 singleQuotedStoredName）。 */
 const referencedNames = (cmd: string): Set<string> => {
 	const names = new Set<string>();
 	for (const m of cmd.matchAll(/\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))/g)) names.add(m[1] ?? m[2]);
 	return names;
+};
+
+/** 单引号内的已存名引用（r5 #2）：' 切分取奇数段 = 单引号内文本（bash 单引号无转义，'\'' 拼接下近似成立；
+ *  双引号内嵌字面 ' 的误伤方向是 fail closed）。单引号不展开，注入值只存在于 bash 工具进程环境——
+ *  sudo（无 -E）/env -i 等清环境 wrapper 的内层 shell 展开时取到空值，命令带空变量照常执行。命中返回第一个名。 */
+const singleQuotedStoredName = (cmd: string, stored: readonly string[]): string | undefined => {
+	const parts = cmd.split("'");
+	for (let i = 1; i < parts.length; i += 2) {
+		for (const m of parts[i].matchAll(/\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))/g)) {
+			const n = m[1] ?? m[2];
+			if (stored.includes(n)) return n;
+		}
+	}
+	return undefined;
 };
 
 const fingerprintOf = (v: string) => createHash("sha256").update(v).digest("hex").slice(0, 10);
@@ -65,10 +79,19 @@ const WRAPPER_OPTIONS_WITH_ARG = new Set(["-u", "-g", "-k", "-s"]);
 const isWrapperDuration = (t: string): boolean => /^\d+(?:\.\d+)?[smhd]?$/.test(t); // timeout 的时长参数（10 / 10s / 1.5m）
 const commandWord = (cmd: string): string => {
 	const toks = cmd.split(/[\s'"|&;()]+/);
+	let afterTimeout = false; // r5 #4：裸数字时长仅在 timeout 之后紧邻位置剥离——任意位置的纯数字 token 过宽（数字开头命令首词被误跳）
 	for (let i = 0; i < toks.length; i++) {
 		const tok = toks[i];
-		if (!tok || tok === "sudo" || tok === "env" || tok === "nohup" || tok === "timeout" || /^[A-Za-z_][A-Za-z0-9_]*=/.test(tok)) continue;
-		if (WRAPPER_OPTIONS.has(tok) || isWrapperDuration(tok) || tok.startsWith("--preserve-env=") || tok.startsWith("--kill-after=")) continue;
+		if (!tok || tok === "sudo" || tok === "env" || tok === "nohup" || /^[A-Za-z_][A-Za-z0-9_]*=/.test(tok)) continue;
+		if (tok === "timeout") {
+			afterTimeout = true;
+			continue;
+		}
+		if (WRAPPER_OPTIONS.has(tok) || tok.startsWith("--preserve-env=") || tok.startsWith("--kill-after=")) continue;
+		if (afterTimeout && isWrapperDuration(tok)) {
+			afterTimeout = false; // timeout 只接受一个时长参数，剥掉即复位
+			continue;
+		}
 		if (WRAPPER_OPTIONS_WITH_ARG.has(tok)) {
 			i++; // 选项的独立参数（sudo -u alice / env -u NAME / timeout -k 5）同样不是命令词
 			continue;
@@ -133,9 +156,10 @@ export default function secretStore(pi: ExtensionAPI) {
 		);
 	};
 
-	/** 命令串 → 路径 token（空白/引号/shell 结构符切分，--opt= 前缀剥离）逐个解析比对；含空格路径的规范拼写字面命中兜底。 */
+	/** 命令串 → 路径 token（空白/引号/shell 结构符切分，--opt= 前缀剥离）逐个解析比对；含空格/引号/$变量拼写的路径
+	 *  token 化会切碎、逐 token resolve 不中——受保护路径全量字面子串兜底（r5 #1；storePathAge 恒含 storePath 子串，随之覆盖）。 */
 	const touchesStore = (s: string, cwd: string): boolean => {
-		if (s.includes(storePath)) return true;
+		if (s.includes(storePath) || s.includes(keyPath) || (legacyEnvStale && s.includes(legacyEnvFile))) return true;
 		return s
 			.split(/[\s'"|&;()]+/)
 			.map((tok) => tok.replace(/^--[A-Za-z0-9][A-Za-z0-9-]*=/, ""))
@@ -214,6 +238,13 @@ export default function secretStore(pi: ExtensionAPI) {
 		// 注入集 = 引用 ∩ store 已存名；只缩半径不防外显（echo $NAME 照常注入）；未存名静默跳过（P1 白名单语义）
 		const names = [...refs].filter((n) => Object.hasOwn(store, n));
 		if (names.length === 0) return undefined;
+		// r5 #2：已注入名出现在单引号内 → 延迟展开遇清环境 wrapper（sudo 无 -E/env -i）取空值照常执行，fail closed
+		const quoted = singleQuotedStoredName(cmd, names);
+		if (quoted)
+			return {
+				block: true,
+				reason: `secret-store: 凭证 ${quoted} 以 $${quoted} 形式出现在命令的单引号内：单引号不展开，sudo（无 -E）/env -i 等清环境的内层 shell 会取到空值照常执行。请改写为双引号 "$${quoted}"（外层展开后传入），或调整命令结构后直接引用 $${quoted}。`,
+			};
 		// #171 allowedPrefix：命令词（r2 #2 剥 sudo/env/赋值 token）命中任一前缀才注入该凭证；不命中 → 不注入并 block 报错（fail closed：
 		// 否则命令带着空变量照常执行）。三要素：凭证名/限定前缀/secret_ensure 重设指引 + 实际参与比对的命令词。无限定的凭证不受影响。
 		const word = commandWord(cmd);

@@ -50,6 +50,24 @@ describe("age 后端：遗留明文自动迁移（D7=a）", () => {
 		expect(guardKey.result?.block).toBe(true);
 	});
 
+	it("r5 #3：shred 存在但执行失败 → 兕底覆写删除照常完成，onWarning 告知实际销毁强度", async () => {
+		const h = await setupHarness(SEED, undefined, "age");
+		// fake shred：PATH 最前放置 exit 1 同名脚本——shred 可执行但失败（非 command not found）
+		const fakeBin = await mkdtemp(join(tmpdir(), "fake-shred-"));
+		await writeFile(join(fakeBin, "shred"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+		const savedPath = process.env.PATH;
+		process.env.PATH = `${fakeBin}:${savedPath}`;
+		try {
+			await start(h); // 迁移：shred exit 1 → 单次覆写+删除兜底完成 + 销毁强度告警
+		} finally {
+			process.env.PATH = savedPath;
+			await rm(fakeBin, { recursive: true, force: true });
+		}
+		await expect(stat(h.storePath)).rejects.toThrow(/ENOENT/); // 兑底删除完成（迁移未中断）
+		expect(h.notifyLog.join("\n")).toMatch(/shred 执行失败/);
+		expect(h.notifyLog.join("\n")).not.toContain("harbor-secret-value"); // 明文不进通知面
+	});
+
 	it("损坏的遗留明文 → 显式报错，原文件不动、不产生密文（防覆盖语义与 [13] 一致）", async () => {
 		const h = await setupHarness(SEED, undefined, "age");
 		await writeFile(h.storePath, "{not json", { mode: 0o600 });

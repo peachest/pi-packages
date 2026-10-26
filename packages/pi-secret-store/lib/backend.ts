@@ -148,8 +148,10 @@ async function encryptToFile(plain: string, outPath: string, keyPath: string): P
 	}
 }
 
-/** shred -u 原文件（D7=a）；shred 缺失（非 GNU 环境）→ 覆写后删除兜底；目标已消失（并发迁移）视为成功。 */
-async function shredFile(path: string): Promise<void> {
+/** shred -u 原文件（D7=a）；shred 缺失（非 GNU 环境）→ 覆写后删除兜底；shred 存在但执行失败（r5 #3）→
+ *  兜底删除照常，但实际销毁强度降为单次覆写，经 onWarning 告知；覆写兜底自身失败仍上抛（r4 #2）；
+ *  目标已消失（并发迁移）视为成功。 */
+async function shredFile(path: string, onWarning?: (msg: string) => void): Promise<void> {
 	try {
 		await stat(path);
 	} catch (err) {
@@ -159,8 +161,12 @@ async function shredFile(path: string): Promise<void> {
 	try {
 		const r = await runCapture("shred", ["-u", path]);
 		if (r.code === 0) return;
+		const detail = r.stderr.trim();
+		onWarning?.(
+			`secret-store: shred 执行失败（exit ${r.code}${detail ? `：${detail}` : ""}），原文件 ${path} 以单次随机覆写+删除兜底销毁（弱于 shred 多遍覆写），如需确保销毁强度请手动处理`,
+		);
 	} catch {
-		// shred 不在 PATH：走覆写兜底
+		// shred 不在 PATH（command not found）：静默走覆写兜底
 	}
 	// 覆写失败上抛（r4 #2）：不允许"未覆写即删除"的静默降级——保留原文件交手动处理
 	await writeFile(path, randomBytes(Math.max(64, (await stat(path)).size)));
@@ -226,7 +232,7 @@ async function migrateLegacy(
 	await withStoreLock(cipherPath, async () => {
 		await ensureIdentity(keyPath);
 		await encryptToFile(serialize(store), cipherPath, keyPath);
-		await shredFile(plainPath);
+		await shredFile(plainPath, onWarning);
 	});
 	return store;
 }

@@ -127,7 +127,8 @@ describe("tool_call：allowedPrefix 凭证限定（#171）", () => {
 		const h = await setupHarness(PREFIXED);
 		for (const cmd of [
 			`sh -c "nerdctl login $HARBOR_PASSWORD"`,
-			`bash -lc 'harbor project list $HARBOR_PASSWORD'`,
+			// r5 #2：单引号载荷内的已存名引用改为 block（fail closed），本行用双引号形态锁同一命令词递归语义
+			`bash -lc "harbor project list $HARBOR_PASSWORD"`,
 			`sudo sh -c "nerdctl login $HARBOR_PASSWORD"`,
 			`nohup nerdctl login $HARBOR_PASSWORD`,
 		]) {
@@ -205,6 +206,21 @@ describe("tool_call：allowedPrefix 凭证限定（#171）", () => {
 		}
 	});
 
+	it("裸数字时长仅在 timeout 之后剥离（r5 #4）：非 timeout 位置的数字开头/裸数字首词按命令词比对", async () => {
+		const h = await setupHarness({
+			A_TOKEN: { value: "a-token-value-1", updatedAt: "t", fingerprint: "fp0000aa11", allowedPrefix: ["7z"] },
+			B_TOKEN: { value: "b-token-value-2", updatedAt: "t", fingerprint: "fp0000bb22", allowedPrefix: ["10"] },
+		});
+		// 数字开头命令（brief 点名 7z x 类）：regression lock，首词不被当 wrapper 时长跳过
+		const seven = await runToolCall(h, "7z x archive.7z $A_TOKEN");
+		expect(seven.result).toBeUndefined();
+		expect(seven.event.input.command).toContain("export A_TOKEN='a-token-value-1'");
+		// 裸数字首词：老实现对任意位置裸数字 token 生效 → 命令词误取 "serve" → 限定凭证 fail-closed 误 block
+		const bare = await runToolCall(h, "10 serve $B_TOKEN");
+		expect(bare.result).toBeUndefined();
+		expect(bare.event.input.command).toContain("export B_TOKEN='b-token-value-2'");
+	});
+
 	it("选项跳过不放松 fail closed：sudo -E 后真命令词不命中仍 block（r4 #4）", async () => {
 		const h = await setupHarness(PREFIXED);
 		const { result } = await runToolCall(h, "sudo -E git push $HARBOR_PASSWORD");
@@ -227,6 +243,38 @@ describe("tool_call：allowedPrefix 凭证限定（#171）", () => {
 		expect(result?.block).toBe(true);
 		expect(result?.reason).toContain("HARBOR_PASSWORD");
 		expect(event.input.command).toBe(cmd);
+	});
+});
+
+describe("tool_call：单引号内已注入名引用 block（r5 #2）", () => {
+	const SEED = { HARBOR_PASSWORD: { value: "harbor-secret-value", updatedAt: "t", fingerprint: "fp0000hh11" } };
+
+	it("sudo sh -c 'echo $NAME' → block：单引号延迟展开 + sudo 清环境取空值照常执行（fail closed），提示改双引号", async () => {
+		const h = await setupHarness(SEED);
+		const { result } = await runToolCall(h, "sudo sh -c 'echo $HARBOR_PASSWORD'");
+		expect(result?.block).toBe(true);
+		expect(result?.reason).toContain("HARBOR_PASSWORD");
+		expect(result?.reason).toContain("双引号");
+	});
+
+	it("env -i sh -c 'echo $NAME' → block（清环境同缺口）", async () => {
+		const h = await setupHarness(SEED);
+		const { result } = await runToolCall(h, "env -i sh -c 'echo $HARBOR_PASSWORD'");
+		expect(result?.block).toBe(true);
+	});
+
+	it("双引号形态照常注入（外层展开，注入值对内层可达）：bash -c \"echo $NAME\" 不拦", async () => {
+		const h = await setupHarness(SEED);
+		const { event, result } = await runToolCall(h, 'bash -c "echo $HARBOR_PASSWORD"');
+		expect(result).toBeUndefined();
+		expect(event.input.command).toContain("export HARBOR_PASSWORD='harbor-secret-value'");
+	});
+
+	it("单引号内未存名引用不拦（未注入即无缺口）", async () => {
+		const h = await setupHarness(SEED);
+		const { event, result } = await runToolCall(h, "sh -c 'echo $MISSING_NAME'");
+		expect(result).toBeUndefined();
+		expect(event.input.command).toBe("sh -c 'echo $MISSING_NAME'");
 	});
 });
 
@@ -457,6 +505,19 @@ describe("tool_call：存储 guard（拦读存储文件本身）", () => {
 		// 相对路径 + ctx.cwd=agentDir
 		const rel = await runToolCall(h, "cat ./secret-store.json", "bash", { cwd: h.agentDir });
 		expect(rel.result?.block).toBe(true);
+	});
+
+	it("受保护路径字面兜底覆盖全部保护面（r5 #1）：含空格/引号拼写的 keyPath/agePath 读取被拦", async () => {
+		// agentDir 含空格：token 化把路径切碎、逐 token resolve 不中——此前仅 storePath 有字面兜底，
+		// keyPath（身份密钥=全部明文）可借含空格/引号拼写绕过 guard
+		const base = await mkdtemp(join(tmpdir(), "pi-ss-space-"));
+		const h = await setupHarness(undefined, join(base, "agent dir"));
+		await h.handlers.session_start[0]({ reason: "new" }, { hasUI: false });
+		const key = await runToolCall(h, `cat "${join(h.agentDir, "secret-store.key")}"`);
+		expect(key.result?.block).toBe(true);
+		const age = await runToolCall(h, `cat "${join(h.agentDir, "secret-store.json.age")}"`);
+		expect(age.result?.block).toBe(true);
+		await rm(base, { recursive: true, force: true });
 	});
 
 	it("read/grep 类文件工具的 path 指向存储文件 → block（文案同，[7]）", async () => {
