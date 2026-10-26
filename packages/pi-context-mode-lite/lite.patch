@@ -12,7 +12,7 @@
 +    // 审计建议：给保留工具写量化触发判据 + 小输出反例，压 echo/sleep 类小输出旁路（62% 调用 <2KB）。
 +    const DESCRIPTION_OVERRIDES = {
 +        "ctx_execute":
-+            "Run code over data when ordinary tools do not fit. Use ONLY when: (a) a command's raw output exceeds ~5KB and would flood context, or (b) you need to filter/aggregate/parse large output and print only a small derived summary. Do NOT use for short fixed outputs (single lines, small listings) — call bash/read directly; the sandbox wrapper costs more tokens than it saves there. Multiple related commands → prefer ctx_batch_execute.",
++            "Run code over data when ordinary tools do not fit. Use ONLY when: (a) a command's raw output exceeds ~5KB and would flood context, or (b) you need to filter/aggregate/parse large output and print only a small derived summary. Do NOT use for short fixed outputs (single lines, small listings) — call bash/read directly; the sandbox wrapper costs more tokens than it saves there. Multiple related commands → prefer ctx_batch_execute. timeout is in MILLISECONDS (60000 = 60s, not 60s — passing 60 means 60ms); omit it for no server-side timer.",
 +        "ctx_batch_execute":
 +            "Run 3+ related commands in ONE call and query their combined output. Use ONLY when: total raw output exceeds ~5KB, or you would otherwise run several sequential greps/reads over large artifacts. Do NOT use for a single short command — call bash directly. Pass `queries` covering every question you have about the output.",
 +    };
@@ -38,11 +38,11 @@
 -                "Read/edit files → ctx_execute_file. Multi-command research → ctx_batch_execute. " +
 -                "Web pages → ctx_fetch_and_index then ctx_search. Index docs → ctx_index. " +
 -                "Stats → ctx_stats. Doctor → ctx_doctor. Upgrade → ctx_upgrade. Purge → ctx_purge.");
-+            // pi-context-mode-lite: hierarchy 锚点同步收敛到保留的四个工具。
-+            parts.push("context-mode active. Hierarchy: ctx_batch_execute > ctx_execute > ctx_search. " +
-+                "Large/multi-command output → ctx_batch_execute. One heavy command → ctx_execute. " +
-+                "Query indexed knowledge → ctx_search; index docs → ctx_index. " +
-+                "Web pages and single-file processing: NOT covered — use bash/curl/read directly.");
++            // pi-context-mode-lite: hierarchy 锚点收敛到保留的四个工具（writing-for-agents
++            // 规范：砍 identity 复述与 Hierarchy 重复行、负向 NOT covered 改正向指路）。
++            parts.push("Large/multi-command output → ctx_batch_execute. One heavy command → ctx_execute. " +
++                "Knowledge recall → ctx_search; add docs to the index → ctx_index. " +
++                "Web pages and single files → bash/curl/read.");
              // Pi-3 + Pi-4: Always build active_memory (not just post-compact),
              // capped at 500 tokens via buildAutoInjection. Falls back to inline
              // budget loop if the helper is unavailable.

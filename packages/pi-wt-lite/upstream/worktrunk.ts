@@ -175,7 +175,7 @@ const COMPACT_REFERENCE = `Worktrunk command reference (subset; run \`wt <cmd> -
 - switch [BRANCH] [-c] [-b BASE] [-C REPO] — switch to or create a worktree; checkouts live at ~/projects/<repo>-<branch>. -c creates the branch (-b sets its base, default main). -C targets another repo checkout (bare repos) — also required for ANY command when the session cwd is outside a git repo.
 - remove [BRANCH...] [-D] [-f] [--no-delete-branch] — remove worktrees; branches deleted if merged. If the session sits in the target tree, wt refuses: switch out first (any branch, e.g. the main checkout's).
 - list [--branches] [--full] [--removes] — show worktrees and status
-- merge [TARGET] [--no-squash] [--no-rebase] [--no-remove] — squash-merge current branch into TARGET (default main); pre-merge hooks run as quality gate
+- merge [TARGET] [--no-squash] [--no-rebase] [--no-remove] — squash-merge CURRENT branch INTO TARGET (default main); pre-merge hooks run as quality gate. Direction rule: run it from the feature's checkout (or \`wt -C <feature-worktree-path> merge\`) — from the main checkout with an explicit feature TARGET the direction is reversed (guarded, the call is rejected).
 - step rebase [TARGET] | step push [TARGET] | step commit | step diff | step squash — single operations on the current worktree
 Any other subcommand (hook, config, step promote/relocate/tether/for-each/eval/prune, …): run via bash instead, e.g. \`wt hook show\`. Aliases registered via wt config also work as the command.`;
 const HELP_DESCRIPTION_INDENT = 10;
@@ -733,6 +733,30 @@ export function removeSelfGuardDecision(
   return removeTargetsSelf(list ?? [], commandArgs, cwd) ? REMOVE_SELF_GUARD_MESSAGE : undefined;
 }
 
+/** Whether `wt merge <TARGET>` fired in reverse: the session sits in the main checkout
+ * while TARGET is another live worktree's branch. wt merge squashes the CURRENT branch
+ * INTO TARGET, so that shape merges the main checkout's branch into the feature line
+ * (2026-10-26 c2 incident). Bare merge (TARGET defaults to main) and invocations from
+ * non-main checkouts are not touched; unknown TARGET branches fail open (wt errors on
+ * its own), and discovery failure fails open too — a reversed merge is recoverable via
+ * rebase-conflict abort, unlike remove. */
+export function mergeDirectionGuardDecision(
+  items: readonly WorktreeItem[] | undefined,
+  commandArgs: readonly string[],
+): string | undefined {
+  const target = commandArgs.find((arg) => !arg.startsWith("-"));
+  if (target === undefined) return undefined;
+  const current = items?.find((item) => item.worktree?.current);
+  if (!current?.worktree?.main || !current.branch || current.branch === target) return undefined;
+  const targetItem = items?.find((item) => item.branch === target);
+  if (!targetItem) return undefined;
+  return [
+    `wt merge 的语义是“把当前检出的分支 squash 进 TARGET”，不是把 TARGET 合进来。`,
+    `当前 session 在主检出（${current.branch}），这条命令会把 ${current.branch} 反向合进 ${target}。`,
+    `到 ${target} 的检出里执行：wt -C ${targetItem.worktree?.path ?? `<${target}-worktree>`} merge（TARGET 缺省 main）；或先 wt switch ${target} 再跑。`,
+  ].join("");
+}
+
 function relationText(relation?: Relation): string { return `ahead ${relation?.ahead ?? 0}, behind ${relation?.behind ?? 0}`; }
 function changeText(item: WorktreeItem): string {
   const changes = item.worktree?.changes ?? {};
@@ -966,6 +990,23 @@ export default function extension(
     const targetArgs = invocation.commandArgs.filter((arg, index, arr) =>
       arg !== "-C" && !(index > 0 && arr[index - 1] === "-C"));
     return removeSelfGuardDecision(items, targetArgs, cwd);
+  }
+  async function mergeDirectionGuard(invocation: Invocation, cwd: string, signal?: AbortSignal): Promise<string | undefined> {
+    if (invocation.command !== "merge") return undefined;
+    // Discovery runs against the -C target repo when given — direction is judged
+    // in the repo the merge actually targets, not the session cwd.
+    let discovery = cwd;
+    const all = [invocation.command, ...invocation.commandArgs];
+    for (let index = 0; index < all.length; index++) {
+      const value = all[index];
+      if (value === "-C" && index + 1 < all.length) { discovery = resolve(cwd, all[++index]); break; }
+      if (value.startsWith("-C") && value.length > 2) { discovery = resolve(cwd, value.slice(2)); break; }
+    }
+    let items: WorktreeItem[] | undefined;
+    try { items = await client.list(discovery, signal); } catch { items = undefined; }
+    const targetArgs = invocation.commandArgs.filter((arg, index, arr) =>
+      arg !== "-C" && !(index > 0 && arr[index - 1] === "-C"));
+    return mergeDirectionGuardDecision(items, targetArgs);
   }
   async function readWorktreeIdentity(cwd: string): Promise<RepositoryIdentity | undefined> {
     try {
@@ -1249,7 +1290,8 @@ export default function extension(
       }
       args = ["switch", selected.worktree.path];
     }
-    const guardMessage = await removeSelfGuard(invocation, ctx.cwd, ctx.signal);
+    const guardMessage = (await removeSelfGuard(invocation, ctx.cwd, ctx.signal))
+      ?? (await mergeDirectionGuard(invocation, ctx.cwd, ctx.signal));
     if (guardMessage) {
       displayCommand(ctx, args, guardMessage, true, modelOrigin);
       // Turn already ended (queued); nothing was deleted, so the model must get the rejection.
@@ -1501,7 +1543,8 @@ export default function extension(
               `Command not run: Pi's working directory is no longer usable. Restart Pi in ${target?.path ?? "a surviving worktree"}.`);
           }
           if (ctx.mode === "print" || ctx.mode === "json" || (usable && canRunInline(invocation, aliasNames.has(params.command)))) {
-            const guardMessage = await removeSelfGuard(invocation, ctx.cwd, signal);
+            const guardMessage = (await removeSelfGuard(invocation, ctx.cwd, signal))
+              ?? (await mergeDirectionGuard(invocation, ctx.cwd, signal));
             if (guardMessage) return toolReply("failed", args, ctx.cwd, guardMessage);
             let result: WtResult;
             try { result = await invoke(args, { cwd: ctx.cwd, signal }); }

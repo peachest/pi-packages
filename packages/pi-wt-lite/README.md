@@ -4,10 +4,11 @@ vendored [pi-worktrunk](https://github.com/mavam/pi-worktrunk)（npm `0.12.2`，
 
 ## 为什么 vendor
 
-worktrunk 工具由本地 vendored 扩展提供（`wt` v0.77.0 配套），有两处手改：
+worktrunk 工具由本地 vendored 扩展提供（`wt` v0.77.0 配套），有三处手改：
 
 1. **`buildReference` 替换为 `COMPACT_REFERENCE` 常量**：上游每次调用会对已安装 wt 的每个子命令跑 `--help-md` 探测（`HELP_PROBE_CONCURRENCY=8`）生成全量命令目录，token 开销大且每次启动重打。改为手写的常用子集参考（switch/remove/list/merge/step，其余子命令指引走 bash `wt <cmd> --help`）。调用点删除后，整条死掉的 reference 生成管线（buildReference/renderReference/formatReference/truncateReference/mapConcurrent/attributeExamples/renderToolExample/firstSentence 及两个管线常量）在 patch 内一并删除，parseCommand/parseSectionEntries 等解析工具保留。
 2. **`registerTool` description/promptGuidelines 压缩**：与紧凑参考对齐，去掉生成目录相关表述，强调 args 不重复命令名、codemode queued 即停。
+3. **merge 方向守卫（2026-10-26）**：`wt merge <TARGET>` 的语义是“把**当前检出** squash 进 TARGET”，模型在主检出里对 feature 分支名跑 merge 会反向合流（c2 事故实证：主检出停在 wt-guardrails 上跑 `wt merge feat/ask-user-c2-side-editor`，差点把守卫大线合进 c2）。守卫在两条执行路径（slash command + agent tool）的 remove-self guard 之后串联：命中“当前检出是主检出 + 显式 TARGET 是另一条活跃 worktree 的分支”即拦截并给出 `wt -C <feature-worktree> merge` 修正命令。裸 merge（TARGET 缺省 main）、feature 检出内的调用、TARGET 无活跃 worktree、list 发现失败均不拦（反向 merge 可 rebase-conflict abort 逃生，fail-open 合理）。测试见 `tests/merge-direction-guard.test.mjs`。
 
 ## 结构
 
@@ -45,6 +46,8 @@ diff -u --label a/upstream/package.json --label b/upstream/package.json <pristin
 **失败含义**（任一步失败 exit 1 并指明步骤）：步骤 2 红 = lite.patch 与 pristine 版本不匹配，需按上文重新生成 patch；步骤 3 红 = `upstream/` 脱离「pristine+patch」可复现基线（手改了 upstream/ 没同步进 patch，或 patch 过期）；步骤 4 红 = patch 后行为断言失败，禁止安装。全过输出 `verified: pristine+patch==upstream, behavior green`。
 
 历史上首次迁移（旧 skills 仓 `d972f3c:extensions/pi-wt-lite.ts` → 本包）的零行为变化等价性已于 2026-10-21 验证，持续的等价性证明由 `verify.sh` 承担。
+
+**实盘合规轨迹（remove-self guard 首例正例）**：2026-10-22 peer session（HAMi 仓 ci/llm30-trivy-scan 收尾）在 session 仍处于待删 worktree 内时调 `wt remove`，guard 以 exit 1 + 引导文案（"先 wt switch main 迁出，再 remove"）拦截（trace：`custom_message` `pi-worktrunk-continuation`，06:32:19）；peer 6 秒内遵引导迁出主检出后重删成功，随后 squash 合并场景先 diff 内容再 `-D` 删分支，全程无残留。此前该 guard 的证据全是事故反例（cwd 失效 spawn ENOENT），这是首条拦截→遵从→干净收尾的正向闭环。
 
 安装方式见仓库根 AGENTS.md（`pi install` 规范）；settings.json 中原 `../../skills` 扩展目录条目保留（仍服务 pi-herdr-peer.ts），本包以 `../../projects/pi-mypackage/packages/pi-wt-lite` 相对路径条目接入。
 
