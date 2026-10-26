@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Sync the packaged guard script into the live kendex hooks directory and
+# Sync the packaged guard engine into the live kendex hooks directory and
 # verify the registry still points at it. Run from anywhere:
 #   bash <pkg>/scripts/install.sh   (or `npm run sync` inside the package)
 set -euo pipefail
 
 PKG_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SRC="$PKG_DIR/scripts/bash-guards.sh"
-DST="${HOME}/.pi/agent/kendex/hooks/bash-guards.sh"
+SRC="$PKG_DIR/scripts/bash-guards.py"
+DST="${HOME}/.pi/agent/kendex/hooks/bash-guards.py"
 REG="${HOME}/.pi/agent/kendex/hooks.json"
 
 [ -f "$SRC" ] || { echo "FAIL: source missing: $SRC" >&2; exit 1; }
@@ -25,7 +25,35 @@ trap - EXIT
 # write hooks.json — it is created once by pi-hooks; we only verify it).
 # Parsed as JSON, not substring grep: a stale/commented/disabled mention must
 # not count — an active tool_call listener with a Bash matcher must carry
-# this exact script path in its command.
+# this exact script path in its command. A second listener with matcher
+# "subagent" routes the pi-subagents SA1-SA4 guards; its absence is a WARN
+# (bash guards work without it, the SA rules are silently off).
+if [ -f "$REG" ] && python3 -c '
+import json, sys
+reg, dst = sys.argv[1], sys.argv[2]
+try:
+    with open(reg, encoding="utf-8") as f:
+        data = json.load(f)
+except Exception:
+    sys.exit(1)
+listeners = (data.get("hooks") or {}).get("tool_call") or []
+has_bash = has_subagent = False
+for m in listeners:
+    matcher = str(m.get("matcher", ""))
+    hit = any(dst in str(h.get("command", "")) for h in m.get("hooks") or [])
+    if "Bash" in matcher and hit:
+        has_bash = True
+    if "subagent" in matcher and hit:
+        has_subagent = True
+sys.exit(0 if has_bash else 1)
+' "$REG" "$DST"; then
+  echo "hooks.json: registry entry present ✓"
+else
+  echo "WARN: $REG missing, invalid, or has no active Bash-matcher hook referencing bash-guards.py." >&2
+  echo "      If guards never fire, register a tool_call listener (matcher \"Bash\", command \"python3 $DST\", timeout 10) in pi-hooks." >&2
+fi
+
+# SA-route check: subagent matcher entry (WARN only — see comment above).
 if [ -f "$REG" ] && python3 -c '
 import json, sys
 reg, dst = sys.argv[1], sys.argv[2]
@@ -35,17 +63,16 @@ try:
 except Exception:
     sys.exit(1)
 for m in (data.get("hooks") or {}).get("tool_call") or []:
-    if "Bash" not in str(m.get("matcher", "")):
+    if "subagent" not in str(m.get("matcher", "")):
         continue
-    for h in m.get("hooks") or []:
-        if dst in str(h.get("command", "")):
-            sys.exit(0)
+    if any(dst in str(h.get("command", "")) for h in m.get("hooks") or []):
+        sys.exit(0)
 sys.exit(1)
 ' "$REG" "$DST"; then
-  echo "hooks.json: registry entry present ✓"
+  echo "hooks.json: subagent (SA1-SA4) route present ✓"
 else
-  echo "WARN: $REG missing, invalid, or has no active Bash-matcher hook referencing bash-guards.sh." >&2
-  echo "      If guards never fire, register a tool_call listener (matcher \"Bash\", command \"bash $DST\", timeout 10) in pi-hooks." >&2
+  echo "WARN: $REG has no active subagent-matcher hook referencing bash-guards.py — SA1-SA4 guards are silently off." >&2
+  echo "      Register a second tool_call listener (matcher \"subagent\", command \"python3 $DST\", timeout 10) in pi-hooks." >&2
 fi
 
 # Byte-identical verification

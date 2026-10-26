@@ -11,11 +11,11 @@
 #   R2  raw `git merge` (non --ff-only) -> wt merge / git pull --ff-only;
 #       git pull family fully allowed
 #   R3  cross-branch `git checkout <branch>` / `git switch <branch>` inside a
-#       LINKED worktree (.git is a file) -> wt switch; main checkout (.git is
-#       a dir) never touched; file restores and -b/-c creation allowed
+#       wt-layout LINKED worktree (.git is a file, ~/projects/<repo>-<slug>)
+#       -> wt switch; main checkout (.git is a dir) never touched; file
+#       restores, -b/-c creation, full-sha materialization and non-wt-layout
+#       trees allowed (#153)
 #   R4  `wt merge -y/--yes` -> block (merge approval is the user's decision)
-#   override channel: `# guard-override:` marker comment -> allow + stderr
-#   audit warning
 #   rtk prefix penetration for every rule
 #   heredoc-body literal regression: document text quoting the guarded
 #   command literals must NOT block (spec #137 was false-blocked twice by
@@ -25,6 +25,12 @@ GUARD="${GUARD:-$HOME/.pi/agent/kendex/hooks/bash-guards.sh}"
 PASS=0; FAIL=0
 
 PROJ="$HOME/.pi/agent/sessions/--mnt-disk1-hyx-projects--/2026-10-21T00-00-00-000Z_c.jsonl"
+# Sandbox github repo for identity-sensitive ambient cases (P6 probes the cwd
+# repo's identity; must not depend on the checkout the suite runs from).
+SUITE_REPO="$HOME/tmp/hook-mining/fake-gh-repo"
+mkdir -p "$SUITE_REPO"; git -C "$SUITE_REPO" init -q 2>/dev/null
+git -C "$SUITE_REPO" remote add origin https://github.com/x/y 2>/dev/null || true
+git -C "$SUITE_REPO" config user.email dev@personal.example
 
 json_for() {
   python3 -c "
@@ -66,20 +72,6 @@ expect_msg() {
   fi
 }
 
-# expect_out <label> <exit> <output-pattern> <transcript_path> <command> [cwd]
-# arbitrary exit code with a required marker in combined output (stderr trail).
-expect_out() {
-  local label="$1" want="$2" pattern="$3" tp="$4" cmd="$5" dir="${6:-.}"
-  local out rc
-  out=$(json_for "$cmd" "$tp" | (cd "$dir" && bash "$GUARD") 2>&1)
-  rc=$?
-  if [ "$rc" = "$want" ] && printf '%s' "$out" | grep -q -- "$pattern"; then
-    PASS=$((PASS+1)); echo "PASS  $label"
-  else
-    FAIL=$((FAIL+1)); echo "FAIL  $label (want=$want got=$rc pattern='$pattern')"; echo "      out: ${out:0:160}"
-  fi
-}
-
 # ---- real git fixtures: main checkout (.git dir) + linked worktree (.git file)
 FX="$HOME/tmp/guardc-fixtures"
 rm -rf "$FX"; mkdir -p "$FX"
@@ -90,17 +82,34 @@ git -C "$MAIN" config user.name guardc
 echo readme > "$MAIN/README.md"
 git -C "$MAIN" add README.md
 git -C "$MAIN" commit -qm init
-git -C "$MAIN" worktree add -q "$FX/linked-wt" -b side
-echo wt > "$FX/linked-wt/WT.md"
-git -C "$FX/linked-wt" add WT.md
-git -C "$FX/linked-wt" commit -qm wt-init
-LINKED="$FX/linked-wt"
+# The GUARDED boundary worktree must sit in the wt layout (~/projects/<repo>-
+# <slug>, #153) — R3 only enforces that layout. $FX hosts the non-wt trees.
+WTP="$HOME/projects"
+mkdir -p "$WTP"; rm -rf "$WTP/main-repo-side"
+git -C "$MAIN" worktree add -q "$WTP/main-repo-side" -b side
+echo wt > "$WTP/main-repo-side/WT.md"
+git -C "$WTP/main-repo-side" add WT.md
+git -C "$WTP/main-repo-side" commit -qm wt-init
+LINKED="$WTP/main-repo-side"
+# child repo + submodule inside the linked wt (ascend libvgpu materialization
+# shape, e932): cwd inside the submodule, its own .git file
+git init -q "$FX/child-repo"
+git -C "$FX/child-repo" config user.email guardc@example.com
+git -C "$FX/child-repo" config user.name guardc
+echo child > "$FX/child-repo/CHILD.md"
+git -C "$FX/child-repo" add CHILD.md
+git -C "$FX/child-repo" commit -qm init
+git -C "$LINKED" -c protocol.file.allow=always submodule add -q "$FX/child-repo" child
+# non-wt-layout linked trees (exempt since #153): autoresearch-style sibling
+# under ~/tmp and pi-subagents-style embedded <repo>/worktrees/<name>
+git -C "$MAIN" worktree add -q "$FX/self-managed" -b side2
+git -C "$MAIN" worktree add -q "$MAIN/worktrees/embedded" -b side3
 
 # P6 fixture repos (rolling-r1): known-platform repo with matching identity,
 # plus an unknown-platform remote repo (platform not in the expected map).
 P6GH="$FX/p6-gh"
 git init -q "$P6GH"
-git -C "$P6GH" config user.email 1938913473@qq.com
+git -C "$P6GH" config user.email dev@personal.example
 git -C "$P6GH" remote add origin https://github.com/peachest/pi-packages.git
 P6UNK="$FX/p6-unknown"
 git init -q "$P6UNK"
@@ -139,6 +148,17 @@ expect 0 "switch -c allowed"                  "$PROJ" "git switch -c nb3" "$LINK
 expect 0 "checkout rev -- path allowed"       "$PROJ" "git checkout origin/main -- README.md" "$LINKED"
 expect_msg "r3 msg points to wt switch" "wt switch" "$PROJ" "git checkout main" "$LINKED"
 
+echo "== R3 exemptions: full-sha materialization + non-wt layout (#153) =="
+# A full 40-hex sha is pinned-commit materialization (submodule content sync),
+# not a branch move — allowed even inside an enforced wt-layout tree.
+expect 0 "checkout full sha allowed (wt-layout top)"    "$PROJ" "git checkout 0123456789abcdef0123456789abcdef01234567" "$LINKED"
+expect 0 "checkout full sha allowed (inside submodule)" "$PROJ" "git checkout 0123456789abcdef0123456789abcdef01234567" "$LINKED/child"
+# Trees outside the wt layout are self-managed (autoresearch, pi-subagents
+# worktrees/) — wt switch would adopt them into wt management; allow.
+expect 0 "non-wt-layout linked tree checkout allowed"   "$PROJ" "git checkout main" "$FX/self-managed"
+expect 0 "embedded worktrees/ tree switch allowed"      "$PROJ" "git switch main" "$MAIN/worktrees/embedded"
+expect 2 "wt-layout tree still blocks branch checkout"  "$PROJ" "git checkout main" "$LINKED"
+
 echo "== R3 boundary: main checkout (.git is a dir) never blocked =="
 expect 0 "main checkout branch allowed"       "$PROJ" "git checkout main" "$MAIN"
 expect 0 "main checkout switch allowed"       "$PROJ" "git switch side" "$MAIN"
@@ -162,13 +182,6 @@ expect 0 "wt merge plain allowed"               "$PROJ" "wt merge"
 expect 0 "wt merge --no-remove allowed"         "$PROJ" "wt merge --no-remove"
 expect_msg "r4 msg names the approval rule"     "approval" "$PROJ" "wt merge -y"
 
-echo "== override channel (# guard-override: marker) =="
-expect 0 "override marker allows worktree remove" "$PROJ" "git worktree remove ../x # guard-override: rescue"
-expect 0 "override marker allows wt merge -y"   "$PROJ" "wt merge -y # guard-override: user pre-approved"
-expect 0 "override marker on own line allows"   "$PROJ" "# guard-override: deliberate cleanup
-git worktree prune"
-expect_out "override leaves stderr audit trail" 0 "guard-override" "$PROJ" "git worktree prune # guard-override: x"
-
 echo "== heredoc body literals must not trip R1/R2 (spec #137 creation incident) =="
 DOC=$(cat <<'FEOF'
 gh issue create --title wt-guard-spec --body "$(cat <<'EOF'
@@ -189,7 +202,7 @@ expect 0 "unknown platform remote: commit allowed"   "$PROJ" "git commit -m x" "
 expect 2 "no-remote default identity still enforced" "$PROJ" "git commit -m x" "$MAIN"
 expect 0 "email literal in -m message not an identity" "$PROJ" "git commit -m 'docs: see user.email=someone@example.com note'" "$P6GH"
 expect 2 "inline -c stranger still blocked"          "$PROJ" "git -c user.email=wrong@evil.com commit -m x" "$P6GH"
-expect 0 "inline -c matching identity allowed"        "$PROJ" "git -c user.email=1938913473@qq.com commit -m x" "$P6GH"
+expect 0 "inline -c matching identity allowed"        "$PROJ" "git -c user.email=dev@personal.example commit -m x" "$P6GH"
 
 echo "== G1 hand-copy destination parsing (rolling-r1) =="
 expect 2 "cp -t into extensions blocked"       "$PROJ" "cp -t ~/.pi/agent/extensions x"
@@ -225,21 +238,10 @@ expect 0 "quoted && literal is not a container cmd"   "$PROJ" "printf '%s\\n' 'a
 expect 0 "quoted remote cmd with ; still allowed"     "$PROJ" "ssh host 'true; ${D} ps'"
 expect 2 "genuine chained merge still blocked"        "$PROJ" "echo start; git merge origin/main"
 
-echo "== override marker only where a real bash comment starts (rolling-r2 L68) =="
-expect 2 "marker inside quoted string is not authorization" "$PROJ" "printf '%s\\n' '# guard-override: example'; git worktree prune"
-expect 2 "marker inside double quotes is not authorization" "$PROJ" "echo \"see # guard-override: docs\"; git worktree prune"
-expect 2 "marker inside heredoc body is not authorization"  "$PROJ" "cat <<'EOF'
-# guard-override: docs claim this bypasses
-EOF
-git worktree prune"
-expect 0 "trailing real comment still bypasses"       "$PROJ" "git worktree prune # guard-override: rescue"
-expect 0 "own-line comment marker still bypasses"     "$PROJ" "# guard-override: deliberate cleanup
-git worktree prune"
-
 echo "== bypass flag belongs to its own git invocation (rolling-r2 L291) =="
-expect 0 "push dry-run -n does not condemn the commit" "$PROJ" "git commit -m x && git push -n origin HEAD"
-expect 0 "head -n 20 does not condemn the commit"     "$PROJ" "git diff | head -n 20; git commit -m x"
-expect 0 "-n inside -m message is message text"       "$PROJ" "git commit -m 'mention -n flag in message'"
+( cd "$SUITE_REPO" && expect 0 "push dry-run -n does not condemn the commit" "$PROJ" "git commit -m x && git push -n origin HEAD" )
+( cd "$SUITE_REPO" && expect 0 "head -n 20 does not condemn the commit" "$PROJ" "git diff | head -n 20; git commit -m x" )
+( cd "$SUITE_REPO" && expect 0 "-n inside -m message is message text" "$PROJ" "git commit -m 'mention -n flag in message'" )
 expect 2 "commit with its own -n still blocked"       "$PROJ" "git commit -n -m x"
 expect 2 "commit with its own --no-verify still blocked" "$PROJ" "git commit --no-verify -m x"
 expect 2 "push with its own --no-verify still blocked" "$PROJ" "git push --no-verify origin main"
@@ -265,12 +267,12 @@ echo "== P6 probes the repo the commit targets (rolling-r2 L410) =="
 # own config, not the hook-process cwd's repo.
 P6B="$FX/p6-b-wrong"
 git init -q "$P6B"
-git -C "$P6B" config user.email yuxi.hou@transwarp.io
+git -C "$P6B" config user.email dev@corp.example
 git -C "$P6B" remote add origin https://github.com/x/y.git
 expect 2 "git -C wrong-repo commit judged by target repo"  "$PROJ" "git -C $P6B commit -m x" "$P6GH"
 expect 2 "cd wrong-repo commit judged by target repo"      "$PROJ" "cd $P6B && git commit -m x" "$P6GH"
 expect 0 "git -C right-repo commit judged by target repo"  "$PROJ" "git -C $P6GH commit -m x" "$MAIN"
-expect 0 "git -C wrong-repo + inline matching identity ok" "$PROJ" "git -C $P6B -c user.email=1938913473@qq.com commit -m x" "$MAIN"
+expect 0 "git -C wrong-repo + inline matching identity ok" "$PROJ" "git -C $P6B -c user.email=dev@personal.example commit -m x" "$MAIN"
 
 echo
 echo "PASS=$PASS FAIL=$FAIL"

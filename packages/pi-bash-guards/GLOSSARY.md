@@ -15,11 +15,11 @@ _Avoid_: full-text match, substring scan, 整条命令匹配
 _Avoid_: line, command string, chunk
 
 **Linked worktree**:
-`.git` 为**文件**的检出（git worktree 机制），区别于主检出（`.git` 为目录）。跨分支移动在 linked worktree 内被拦截（走 `wt switch`），在主检出放行——判定依据是 `.git` 的形态，不是路径。
+`.git` 为**文件**的检出（git worktree 机制），区别于主检出（`.git` 为目录）。跨分支移动在 **wt 布局**（`~/projects/<repo>-<slug>`）的 linked worktree 内被拦截（走 `wt switch`）；主检出与非 wt 布局自管树（autoresearch、pi-subagents `<repo>/worktrees/`）放行——判定依据是 `.git` 形态加路径模板（#153）。
 _Avoid_: worktree checkout（歧义：主检出也是 worktree）
 
 **Guard 规则**:
-一条可独立裁决的行为约束，声明为规则表条目：`{id, scope, matcher, message}`。matcher 是 regex 或谓词函数（多态）；message 是含三要素（原因 + 正确替代命令 + 示例/出口）的模板。新规则 = 加一个表条目，不改引擎。
+一条可独立裁决的行为约束，声明为规则表条目：`{id, scope, matcher, message}`。matcher 是 regex 或谓词函数（多态）；message 是含三要素（原因 + 正确替代命令 + 示例）的模板——出口即替代命令本身，无旁路通道（#153）。新规则 = 加一个表条目，不改引擎。
 _Avoid_: check, hook script, 拦截逻辑
 
 **Verdict**:
@@ -27,15 +27,11 @@ _Avoid_: check, hook script, 拦截逻辑
 _Avoid_: block/allow 布尔（丢失理由通道）, exit code 裸数字语义
 
 **Fail-open**:
-守卫无法得出结论时放行并留痕，与 fail-closed 相对。适用于：payload 不可解析、subprocess 探测异常、未知 remote 平台。红线：fail-open 永不适用于"解析成功且规则命中"的场景。
+守卫无法得出结论时放行并留痕，与 fail-closed 相对。适用于：payload 不可解析、subprocess 探测异常、未知 remote 平台。红线：fail-open 永不适用于“解析成功且规则命中”的场景；不存在标记式人工豁免——拦截不允许绕过（#153）。
 _Avoid_: 静默放行（无留痕的 fail-open 是 bug 不是策略）
 
-**Guard-override**:
-命令文本内 `# guard-override: <理由>` 注释标记，显式绕过全部守卫，stderr 留审计痕。仅真注释位置生效（引号字符串/参数内的标记不认）。用途限定应急抢救（如 worktrunk 工具不可用需 bash 应急）。
-_Avoid_: -f/--force 语义混淆（那是 git 自身的），禁用词式豁免
-
 **Fixture suite**:
-表驱动回归测试：一个 .sh 文件含自报数的用例序列（给定命令 payload → 断言 exit code 与 stderr 要点），由 vitest spawn 执行并断言零失败。三套件：A（全局规则）、B（P6 身份矩阵）、C（worktree 生命周期 + 绕过回归）。新守卫规则必须先在 fixture 里红。
+表驱动回归测试：一个 .sh 文件含自报数的用例序列（给定命令 payload → 断言 exit code 与 stderr 要点），由 vitest spawn 执行并断言零失败。三套件：A（全局规则）、B（P6 身份矩阵）、C（worktree 生命周期 + R3 边界回归）。新守卫规则必须先在 fixture 里红。
 _Avoid_: unit test（fixtures 是行为级黑盒，非函数级）
 
 **Session 挖掘**:

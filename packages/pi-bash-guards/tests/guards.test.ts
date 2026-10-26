@@ -17,23 +17,26 @@
  *
  * Suite C (test-wt-lifecycle.sh): worktree lifecycle guards R1-R4 (#138,
  * spec #137) — raw `git worktree remove/prune` -> wt remove, raw `git merge`
- * -> wt merge / pull --ff-only, cross-branch checkout/switch in a linked
- * worktree (.git is a file) -> wt switch, `wt merge -y` approval flag,
- * `# guard-override:` bypass with stderr audit trail, rtk prefix, main vs
- * linked worktree boundary, heredoc-body literal false-positive regression.
+ * -> wt merge / pull --ff-only, cross-branch checkout/switch in a wt-layout
+ * linked worktree (.git is a file, ~/projects/<repo>-<slug>) -> wt switch,
+ * full-sha materialization and non-wt-layout trees exempt (#153),
+ * `wt merge -y` approval flag, rtk prefix, main vs linked worktree boundary,
+ * heredoc-body literal false-positive regression.
  *
  * GUARD env override points the fixtures at any guard script; default is the
- * packaged source (scripts/bash-guards.sh), NOT the live synced copy — the
+ * packaged source (scripts/bash-guards.py), NOT the live synced copy — the
  * package tests its own source, `npm run sync` is responsible for parity.
+ * Fixtures invoke `bash "$GUARD"`: the engine's exec-polyglot line makes the
+ * pure-python file bash-executable (spec #142), so fixtures stay untouched.
  */
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, cpSync, mkdirSync } from "node:fs";
+import { mkdtempSync, rmSync, cpSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 const PKG = resolve(__dirname, "..");
-const GUARD = join(PKG, "scripts", "bash-guards.sh");
+const GUARD = join(PKG, "scripts", "bash-guards.py");
 
 interface SuiteResult {
 	output: string;
@@ -55,12 +58,27 @@ function runSuite(fixture: string, env: Record<string, string>): SuiteResult {
 	return { output: out, pass, fail };
 }
 
+
+function writeIdentityConf(home: string): void {
+	const dir = join(home, ".pi", "agent");
+	mkdirSync(dir, { recursive: true });
+	const conf = [
+		"gitblue.example=dev@corp.example",
+		"gitlab.example=dev@corp.example",
+		"github=dev@personal.example",
+		"DEFAULT_EMAIL=dev@corp.example",
+		"",
+	].join("\n");
+	writeFileSync(join(dir, "bash-guards-identity.conf"), conf);
+}
+
 describe("bash-guards fixture suite A (global regression)", () => {
 	let sandbox: string;
 	beforeAll(() => {
 		// Suite A writes probe dirs under $HOME/tmp — point HOME at a sandbox
 		// so the run never touches the real ~/.pi or ~/tmp.
 		sandbox = mkdtempSync(join(tmpdir(), "pi-bash-guards-a-"));
+		writeIdentityConf(sandbox);
 		mkdirSync(join(sandbox, "tmp"), { recursive: true });
 		mkdirSync(join(sandbox, ".pi", "agent", "sessions", "--mnt-disk1-hyx-projects--"), { recursive: true });
 	});
@@ -84,8 +102,9 @@ describe("bash-guards fixture suite B (P6 multi-remote matrix)", () => {
 		// needs a git identity (commit -m x with inline -c user.email mostly,
 		// but global default is consulted too).
 		sandbox = mkdtempSync(join(tmpdir(), "pi-bash-guards-b-"));
+		writeIdentityConf(sandbox);
 		mkdirSync(join(sandbox, "tmp"), { recursive: true });
-		execFileSync("git", ["config", "--global", "user.email", "yuxi.hou@transwarp.io"], {
+		execFileSync("git", ["config", "--global", "user.email", "dev@corp.example"], {
 			env: { ...process.env, HOME: sandbox },
 		});
 		execFileSync("git", ["config", "--global", "user.name", "test"], {
@@ -113,15 +132,31 @@ describe("bash-guards fixture suite C (worktree lifecycle R1-R4)", () => {
 		// Suite C git-inits a main checkout + a linked worktree under
 		// $HOME/tmp/guardc-fixtures; point HOME at a sandbox like suite A.
 		sandbox = mkdtempSync(join(tmpdir(), "pi-bash-guards-c-"));
+		writeIdentityConf(sandbox);
 		mkdirSync(join(sandbox, "tmp"), { recursive: true });
 	});
 	afterAll(() => rmSync(sandbox, { recursive: true, force: true }));
 
-	it("39 cases, zero failures", () => {
+	it("95 cases, zero failures", () => {
 		const r = runSuite("test-wt-lifecycle.sh", { HOME: sandbox });
 		console.log(r.output.split("\n").filter((l) => l.startsWith("FAIL")).join("\n"));
 		expect(r.fail, `suite C failures:\n${r.output.split("\n").filter((l) => l.includes("FAIL")).join("\n")}`).toBe(0);
-		expect(r.pass).toBeGreaterThanOrEqual(39);
+		expect(r.pass).toBeGreaterThanOrEqual(95);
+	});
+});
+
+describe("bash-guards fixture suite D (subagent SA1-SA4)", () => {
+	let sandbox: string;
+	beforeAll(() => {
+		sandbox = mkdtempSync(join(tmpdir(), "pi-bash-guards-d-"));
+	});
+	afterAll(() => rmSync(sandbox, { recursive: true, force: true }));
+
+	it("19 cases, zero failures", () => {
+		const r = runSuite("test-subagent-guards.sh", { HOME: sandbox });
+		console.log(r.output.split("\n").filter((l) => l.startsWith("FAIL")).join("\n"));
+		expect(r.fail, `suite D failures:\n${r.output.split("\n").filter((l) => l.includes("FAIL")).join("\n")}`).toBe(0);
+		expect(r.pass).toBeGreaterThanOrEqual(19);
 	});
 });
 
@@ -129,7 +164,7 @@ describe("packaged guard sanity (direct payload probes)", () => {
 	it("blocks docker in command position (global guard, any cwd)", () => {
 		let blocked = false;
 		try {
-			execFileSync("bash", [GUARD], {
+			execFileSync("python3", [GUARD], {
 				input: JSON.stringify({
 					tool_input: { command: "docker ps" },
 					transcript_path: "/tmp/anywhere/x.jsonl",
@@ -144,7 +179,7 @@ describe("packaged guard sanity (direct payload probes)", () => {
 	});
 
 	it("allows plain ls (exit 0)", () => {
-		const out = execFileSync("bash", [GUARD], {
+		const out = execFileSync("python3", [GUARD], {
 			input: JSON.stringify({
 				tool_input: { command: "ls -la" },
 				transcript_path: "/tmp/anywhere/x.jsonl",

@@ -44,11 +44,11 @@ t() {
 
 GH_FORK="https://github.com/peachest/ascend-device-plugin.git"
 GH_UP="https://github.com/Project-HAMi/ascend-device-plugin.git"
-BLUE="ssh://git@gitblue.transwarp.io:10022/llm/llmops/hami/ascend-device-plugin.git"
-HAMI_BLUE="ssh://git@gitblue.transwarp.io:10022/llm/llmops/hami/HAMi.git"
+BLUE="ssh://git@gitblue.example:10022/llm/llmops/hami/ascend-device-plugin.git"
+HAMI_BLUE="ssh://git@gitblue.example:10022/llm/llmops/hami/HAMi.git"
 HAMI_GH="https://github.com/Project-HAMi/HAMi.git"
-TW=yuxi.hou@transwarp.io
-QQ=1938913473@qq.com
+TW=dev@corp.example
+QQ=dev@personal.example
 PROJ="--mnt-disk1-hyx-projects"
 
 echo "== 1. single github origin (pi-mypackage shape) =="
@@ -59,7 +59,7 @@ t 2 "gh-single: inline transwarp blocked"             "$D" "$PROJ" "git -c user.
 t 2 "gh-single: inline stranger blocked"              "$D" "$PROJ" "git -c user.email=x@y.z commit -m x"
 
 echo "== 2. single gitblue origin (base-charts/HAMi-WebUI family shape) =="
-D=$(mkrepo blue-single "origin=ssh://git@gitblue.transwarp.io:10022/applied-ai/HAMi-WebUI.git" "$TW")
+D=$(mkrepo blue-single "origin=ssh://git@gitblue.example:10022/applied-ai/HAMi-WebUI.git" "$TW")
 t 0 "blue-single: repo-local transwarp commits"       "$D" "$PROJ" "git commit -m x"
 t 0 "blue-single: inline transwarp commits"           "$D" "$PROJ" "git -c user.email=$TW commit -m x"
 t 2 "blue-single: inline qq blocked"                  "$D" "$PROJ" "git -c user.email=$QQ commit -m x"
@@ -79,7 +79,7 @@ t 0 "ascend: inline qq (github remotes exist, fork push legal)" "$D" "$PROJ" "gi
 t 2 "ascend: inline stranger blocked"                         "$D" "$PROJ" "git -c user.email=x@y.z commit -m x"
 
 echo "== 5. sglang shape: origin=internal gitlab, upstream=github =="
-D=$(mkrepo sglang "origin=ssh://git@gitlab.transwarp.io:10022/tos/ai-infra/inferencex/sglang.git,upstream=https://github.com/sgl-project/sglang.git" "$TW")
+D=$(mkrepo sglang "origin=ssh://git@gitlab.example:10022/tos/ai-infra/inferencex/sglang.git,upstream=https://github.com/sgl-project/sglang.git" "$TW")
 t 0 "sglang: repo-local transwarp commits"            "$D" "$PROJ" "git commit -m x"
 t 0 "sglang: inline qq (upstream github fork-push)"   "$D" "$PROJ" "git -c user.email=$QQ commit -m x"
 t 2 "sglang: inline stranger blocked"                 "$D" "$PROJ" "git -c user.email=x@y.z commit -m x"
@@ -88,11 +88,8 @@ echo "== 6. pushRemote overrides (branch.<b>.pushRemote=internal on ascend shape
 D=$(mkrepo ascend-push-remote "origin=$GH_FORK,internal=$BLUE" "$TW")
 git -C "$D" config remote.pushDefault internal
 t 0 "pushDefault=internal: transwarp commits"         "$D" "$PROJ" "git commit -m x"
-t 2 "pushDefault=internal: inline qq blocked?"        "$D" "$PROJ" "git -c user.email=$QQ commit -m x"
-# NOTE: currently ANY-remote match wins, so qq (github origin exists) still passes.
-# This case documents the semantic: with remote.pushDefault=internal the qq push
-# would target github via explicit remote, still legal → any-match stays 0.
-PASS=$((PASS-1)); FAIL=$((FAIL-1))  # re-judge: expect 0
+# Semantic: any-remote match wins — qq (github origin exists) is a legal push
+# target even with remote.pushDefault=internal (explicit-remote push).
 t 0 "pushDefault=internal: inline qq (fork push still legal)" "$D" "$PROJ" "git -c user.email=$QQ commit -m x"
 
 echo "== 7. no remote (local-only: pi-arena shape) =="
