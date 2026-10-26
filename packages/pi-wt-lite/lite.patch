@@ -1,22 +1,3 @@
-diff --git a/upstream/package.json b/upstream/package.json
---- a/upstream/package.json
-+++ b/upstream/package.json
-@@ -29,10 +29,10 @@
-     "node": ">=24.0.0"
-   },
-   "peerDependencies": {
--    "@earendil-works/pi-ai": "*",
--    "@earendil-works/pi-coding-agent": "*",
--    "@earendil-works/pi-tui": "*",
--    "typebox": "*"
-+    "@earendil-works/pi-ai": "^0.99.1",
-+    "@earendil-works/pi-coding-agent": "^0.99.1",
-+    "@earendil-works/pi-tui": "^0.99.1",
-+    "typebox": "^1.1.0"
-   },
-   "scripts": {
-     "check": "tsc --noEmit && node --test --experimental-strip-types *.test.ts",
-diff --git a/upstream/worktrunk.ts b/upstream/worktrunk.ts
 --- a/upstream/worktrunk.ts
 +++ b/upstream/worktrunk.ts
 @@ -1,7 +1,7 @@
@@ -41,7 +22,7 @@ diff --git a/upstream/worktrunk.ts b/upstream/worktrunk.ts
 +- switch [BRANCH] [-c] [-b BASE] [-C REPO] — switch to or create a worktree; checkouts live at ~/projects/<repo>-<branch>. -c creates the branch (-b sets its base, default main). -C targets another repo checkout (bare repos) — also required for ANY command when the session cwd is outside a git repo.
 +- remove [BRANCH...] [-D] [-f] [--no-delete-branch] — remove worktrees; branches deleted if merged. If the session sits in the target tree, wt refuses: switch out first (any branch, e.g. the main checkout's).
 +- list [--branches] [--full] [--removes] — show worktrees and status
-+- merge [TARGET] [--no-squash] [--no-rebase] [--no-remove] — squash-merge current branch into TARGET (default main); pre-merge hooks run as quality gate
++- merge [TARGET] [--no-squash] [--no-rebase] [--no-remove] — squash-merge CURRENT branch INTO TARGET (default main); pre-merge hooks run as quality gate. Direction rule: run it from the feature's checkout (or \`wt -C <feature-worktree-path> merge\`) — from the main checkout with an explicit feature TARGET the direction is reversed (guarded, the call is rejected).
 +- step rebase [TARGET] | step push [TARGET] | step commit | step diff | step squash — single operations on the current worktree
 +Any other subcommand (hook, config, step promote/relocate/tether/for-each/eval/prune, …): run via bash instead, e.g. \`wt hook show\`. Aliases registered via wt config also work as the command.`;
  const HELP_DESCRIPTION_INDENT = 10;
@@ -245,7 +226,7 @@ diff --git a/upstream/worktrunk.ts b/upstream/worktrunk.ts
  export function parseWtInvocation(input: string): Invocation {
    const args = parseAliasArguments(input);
    let commandIndex: number | undefined;
-@@ -850,6 +691,48 @@
+@@ -850,6 +691,72 @@
    return invocation.command === command && invocation.commandArgs.length === 0;
  }
  
@@ -291,10 +272,34 @@ diff --git a/upstream/worktrunk.ts b/upstream/worktrunk.ts
 +  return removeTargetsSelf(list ?? [], commandArgs, cwd) ? REMOVE_SELF_GUARD_MESSAGE : undefined;
 +}
 +
++/** Whether `wt merge <TARGET>` fired in reverse: the session sits in the main checkout
++ * while TARGET is another live worktree's branch. wt merge squashes the CURRENT branch
++ * INTO TARGET, so that shape merges the main checkout's branch into the feature line
++ * (2026-10-26 c2 incident). Bare merge (TARGET defaults to main) and invocations from
++ * non-main checkouts are not touched; unknown TARGET branches fail open (wt errors on
++ * its own), and discovery failure fails open too — a reversed merge is recoverable via
++ * rebase-conflict abort, unlike remove. */
++export function mergeDirectionGuardDecision(
++  items: readonly WorktreeItem[] | undefined,
++  commandArgs: readonly string[],
++): string | undefined {
++  const target = commandArgs.find((arg) => !arg.startsWith("-"));
++  if (target === undefined) return undefined;
++  const current = items?.find((item) => item.worktree?.current);
++  if (!current?.worktree?.main || !current.branch || current.branch === target) return undefined;
++  const targetItem = items?.find((item) => item.branch === target);
++  if (!targetItem) return undefined;
++  return [
++    `wt merge 的语义是“把当前检出的分支 squash 进 TARGET”，不是把 TARGET 合进来。`,
++    `当前 session 在主检出（${current.branch}），这条命令会把 ${current.branch} 反向合进 ${target}。`,
++    `到 ${target} 的检出里执行：wt -C ${targetItem.worktree?.path ?? `<${target}-worktree>`} merge（TARGET 缺省 main）；或先 wt switch ${target} 再跑。`,
++  ].join("");
++}
++
  function relationText(relation?: Relation): string { return `ahead ${relation?.ahead ?? 0}, behind ${relation?.behind ?? 0}`; }
  function changeText(item: WorktreeItem): string {
    const changes = item.worktree?.changes ?? {};
-@@ -1064,6 +947,26 @@
+@@ -1064,6 +971,43 @@
    async function safeList(cwd: string, signal?: AbortSignal): Promise<WorktreeItem[]> {
      try { return await client.list(cwd, signal); } catch { return []; }
    }
@@ -318,10 +323,27 @@ diff --git a/upstream/worktrunk.ts b/upstream/worktrunk.ts
 +      arg !== "-C" && !(index > 0 && arr[index - 1] === "-C"));
 +    return removeSelfGuardDecision(items, targetArgs, cwd);
 +  }
++  async function mergeDirectionGuard(invocation: Invocation, cwd: string, signal?: AbortSignal): Promise<string | undefined> {
++    if (invocation.command !== "merge") return undefined;
++    // Discovery runs against the -C target repo when given — direction is judged
++    // in the repo the merge actually targets, not the session cwd.
++    let discovery = cwd;
++    const all = [invocation.command, ...invocation.commandArgs];
++    for (let index = 0; index < all.length; index++) {
++      const value = all[index];
++      if (value === "-C" && index + 1 < all.length) { discovery = resolve(cwd, all[++index]); break; }
++      if (value.startsWith("-C") && value.length > 2) { discovery = resolve(cwd, value.slice(2)); break; }
++    }
++    let items: WorktreeItem[] | undefined;
++    try { items = await client.list(discovery, signal); } catch { items = undefined; }
++    const targetArgs = invocation.commandArgs.filter((arg, index, arr) =>
++      arg !== "-C" && !(index > 0 && arr[index - 1] === "-C"));
++    return mergeDirectionGuardDecision(items, targetArgs);
++  }
    async function readWorktreeIdentity(cwd: string): Promise<RepositoryIdentity | undefined> {
      try {
        const result = await pi.exec("git", ["rev-parse", "--absolute-git-dir"], { cwd, timeout: 5000 });
-@@ -1135,27 +1038,17 @@
+@@ -1135,27 +1079,17 @@
      installedCommands = parseWorktrunkCommands(rootOutput);
      for (const { name } of installedCommands) commandNames.add(name);
  
@@ -352,11 +374,12 @@ diff --git a/upstream/worktrunk.ts b/upstream/worktrunk.ts
      if (settings !== undefined) aliases = parseWorktrunkAliases(settings);
      for (const { name } of aliases) aliasNames.add(name);
    }
-@@ -1356,6 +1249,12 @@
+@@ -1356,6 +1290,13 @@
        }
        args = ["switch", selected.worktree.path];
      }
-+    const guardMessage = await removeSelfGuard(invocation, ctx.cwd, ctx.signal);
++    const guardMessage = (await removeSelfGuard(invocation, ctx.cwd, ctx.signal))
++      ?? (await mergeDirectionGuard(invocation, ctx.cwd, ctx.signal));
 +    if (guardMessage) {
 +      displayCommand(ctx, args, guardMessage, true, modelOrigin);
 +      // Turn already ended (queued); nothing was deleted, so the model must get the rejection.
@@ -365,7 +388,7 @@ diff --git a/upstream/worktrunk.ts b/upstream/worktrunk.ts
  
      const scope = approvalScope(invocation, ctx.cwd);
      const canPrompt = interactive && ctx.hasUI;
-@@ -1409,6 +1308,10 @@
+@@ -1409,6 +1350,10 @@
        output = [output, await describeApprovalFailure(output, scope, ctx.cwd, ctx.signal)].filter(Boolean).join("\n");
      }
      output = [...notes, output].filter(Boolean).join("\n\n");
@@ -376,7 +399,7 @@ diff --git a/upstream/worktrunk.ts b/upstream/worktrunk.ts
      progress.hide();
      displayCommand(ctx, args, output, result.code !== 0 || Boolean(result.killed), modelOrigin);
      const base: Execution = { result, output, moved: false, canContinue: false };
-@@ -1539,12 +1442,12 @@
+@@ -1539,12 +1484,12 @@
      pi.registerTool({
        name: "worktrunk",
        label: "Worktrunk",
@@ -393,7 +416,7 @@ diff --git a/upstream/worktrunk.ts b/upstream/worktrunk.ts
          "Never pass -y/--yes to worktrunk; approving project commands is the user's decision, and Pi asks the user when Worktrunk needs approval.",
        ],
        parameters: Type.Object({
-@@ -1556,7 +1459,14 @@
+@@ -1556,7 +1501,14 @@
        outputSchema: WorktrunkOutput,
        executionMode: "sequential",
        async execute(_id, params, _signal, _update, ctx) {
@@ -409,16 +432,17 @@ diff --git a/upstream/worktrunk.ts b/upstream/worktrunk.ts
          const invocation = parseWtInvocation(args.map(quoteArgument).join(" "));
          if (isBareCommand(invocation, "switch")) {
            throw new WorktrunkError("The worktrunk tool requires an explicit target for `wt switch`.");
-@@ -1591,6 +1501,8 @@
+@@ -1591,6 +1543,9 @@
                `Command not run: Pi's working directory is no longer usable. Restart Pi in ${target?.path ?? "a surviving worktree"}.`);
            }
            if (ctx.mode === "print" || ctx.mode === "json" || (usable && canRunInline(invocation, aliasNames.has(params.command)))) {
-+            const guardMessage = await removeSelfGuard(invocation, ctx.cwd, signal);
++            const guardMessage = (await removeSelfGuard(invocation, ctx.cwd, signal))
++              ?? (await mergeDirectionGuard(invocation, ctx.cwd, signal));
 +            if (guardMessage) return toolReply("failed", args, ctx.cwd, guardMessage);
              let result: WtResult;
              try { result = await invoke(args, { cwd: ctx.cwd, signal }); }
              catch (error) {
-@@ -1601,6 +1513,10 @@
+@@ -1601,6 +1556,10 @@
                ? await pendingApprovals(approvalScope(invocation, ctx.cwd), ctx.cwd, signal)
                : undefined;
              const approval = approvalFailureDetails(output, pending);
@@ -429,7 +453,7 @@ diff --git a/upstream/worktrunk.ts b/upstream/worktrunk.ts
              let stopReason: string | undefined;
              try {
                const destination = await directedDestination(result.directive, identity);
-@@ -1624,14 +1540,14 @@
+@@ -1624,14 +1583,14 @@
              }
              if (stopReason) {
                ctx.abort();
@@ -446,3 +470,20 @@ diff --git a/upstream/worktrunk.ts b/upstream/worktrunk.ts
            }
            const nonce = randomUUID();
            placementInFlight = true;
+--- a/upstream/package.json
++++ b/upstream/package.json
+@@ -29,10 +29,10 @@
+     "node": ">=24.0.0"
+   },
+   "peerDependencies": {
+-    "@earendil-works/pi-ai": "*",
+-    "@earendil-works/pi-coding-agent": "*",
+-    "@earendil-works/pi-tui": "*",
+-    "typebox": "*"
++    "@earendil-works/pi-ai": "^0.99.1",
++    "@earendil-works/pi-coding-agent": "^0.99.1",
++    "@earendil-works/pi-tui": "^0.99.1",
++    "typebox": "^1.1.0"
+   },
+   "scripts": {
+     "check": "tsc --noEmit && node --test --experimental-strip-types *.test.ts",

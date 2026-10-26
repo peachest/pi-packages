@@ -30,8 +30,10 @@ for name in worktrunk.ts package.json LICENSE; do
 done
 
 # 4. behavior assertion on the vendored (patched) source
-echo "[4/4] node tests/remove-self-guard.test.mjs"
+echo "[4/4] node tests/remove-self-guard.test.mjs + merge-direction-guard.test.mjs"
 node "$HERE/tests/remove-self-guard.test.mjs" \
   || { echo "ERROR: step 4: behavior test failed" >&2; exit 1; }
+node "$HERE/tests/merge-direction-guard.test.mjs" \
+  || { echo "ERROR: step 4: merge direction guard test failed" >&2; exit 1; }
 
 echo "verified: pristine+patch==upstream, behavior green"
