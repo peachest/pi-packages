@@ -298,6 +298,7 @@ const ageBackend = (plainPath: string, cipherPath: string, keyPath: string): Sto
 };
 
 /** 遗留明文迁移（D7=a）：内存解析校验（损坏即中止，原文件不动）→ 存储锁内加密落盘 → shred 原文件。
+ *  review-high #2：解析走 strict——条目级/结构级损坏抛错保原件；宽松跳过会让损坏条目被静默丢弃后 shred 销毁原明文。
  *  明文只在扩展进程内存与 age 的 stdin 管道中经过，不进上下文/日志/agent 可见面。 */
 async function migrateLegacy(
 	raw: string,
@@ -306,7 +307,7 @@ async function migrateLegacy(
 	keyPath: string,
 	onWarning?: (msg: string) => void,
 ): Promise<Store> {
-	const store = parseStoreText(raw, plainPath, onWarning);
+	const store = parseStoreText(raw, plainPath, onWarning, true);
 	await withStoreLock(cipherPath, async () => {
 		await ensureIdentity(keyPath, onWarning);
 		await encryptToFile(serialize(store), cipherPath, keyPath);
@@ -360,6 +361,9 @@ export async function updateStore(
 		const next = mutate(store);
 		if (next === undefined) return store;
 		validateStore(next); // [9] 任一条目非法 → 整体拒绝，零文件落地
+		// 已知缝（review-high #2 登记，本票不修）：load 时被宽松跳过的条目（parseStoreText 非严格路径的 onWarning
+		// 分支）不在内存 store 中，本次 persist 的 serialize 亦不含——磁盘上的非法条目会在下次成功写回时静默
+		// 消失（无 shred，但属无提示丢失）。现网宽松语义维持；收口需 load 返回被跳过清单并在 serialize 前显式裁决。
 		await b.persist(next);
 		return next;
 	});

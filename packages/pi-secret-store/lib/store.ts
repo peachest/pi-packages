@@ -81,8 +81,11 @@ export async function loadStore(storePath: string, onWarning?: (msg: string) => 
 	return parseStoreText(raw, storePath, onWarning);
 }
 
-/** 已读文本 → Store（age 后端解密产物共用同一解析/校验路径，#173）。 */
-export function parseStoreText(raw: string, storePath: string, onWarning?: (msg: string) => void): Store {
+/** 已读文本 → Store（age 后端解密产物共用同一解析/校验路径，#173）。
+ *  review-high #2：strict（迁移路径专用）= 结构/条目级 problem 即抛错而非跳过——migrateLegacy 随后 shred 原明文，
+ *  宽松跳过会变成"静默丢弃+销毁原件"（不可恢复）；strict 抛错使原文件保留。读路径（loadStore/age 解密装载）
+ *  维持宽松跳过（现网行为）。 */
+export function parseStoreText(raw: string, storePath: string, onWarning?: (msg: string) => void, strict = false): Store {
 	let parsed: unknown;
 	try {
 		parsed = JSON.parse(raw);
@@ -93,14 +96,20 @@ export function parseStoreText(raw: string, storePath: string, onWarning?: (msg:
 	const secrets = (parsed as { secrets?: unknown }).secrets;
 	if (secrets === undefined) return Object.create(null) as Store;
 	if (typeof secrets !== "object" || secrets === null) {
+		if (strict) throw new Error(`secret-store: 存储文件 ${storePath} secrets 字段非对象，迁移中止（原文件保留未动）`);
 		onWarning?.("secret-store: secrets 字段非对象，按空存储处理");
 		return Object.create(null) as Store;
 	}
 	const out = Object.create(null) as Store; // null 原型：磁盘条目名不可信（__proto__ 键不得触发原型链写）
 	for (const [name, entry] of Object.entries(secrets)) {
 		const problem = entryProblem(name, entry);
-		if (problem) onWarning?.(`secret-store: 忽略条目 ${name}：${problem}`);
-		else {
+		if (problem) {
+			if (strict)
+				throw new Error(
+					`secret-store: 存储文件 ${storePath} 条目 ${name} 校验失败（${problem}），迁移中止：原文件保留未动、未写任何密文；请修复或移除该条目后重试`,
+				);
+			onWarning?.(`secret-store: 忽略条目 ${name}：${problem}`);
+		} else {
 			const e = entry as StoreEntry;
 			// r3 #5：显式构造新条目对象（allowedPrefix schema 迁移补全，#171），不共享解析中间对象引用
 			out[name] = { ...e, allowedPrefix: e.allowedPrefix ?? [] };

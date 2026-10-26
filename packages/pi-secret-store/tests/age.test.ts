@@ -97,6 +97,30 @@ describe.skipIf(!hasRealAge)("age 后端：遗留明文自动迁移（D7=a）", 
 		await expect(stat(ageFile(h))).resolves.toBeDefined(); // 密文已落盘
 	});
 
+	it("review-high #2：遗留明文含非法条目 → 迁移抛错中止，原文件保留、无密文无密钥落盘（条目级损坏不再静默丢弃+shred 销毁）", async () => {
+		const h = await setupHarness(undefined, undefined, "age");
+		await assertAgeBackend(h);
+		// 一好一坏：GOOD_TOKEN 可迁移，bad-name 违反变量名规则（entryProblem 命中）
+		const raw = `${JSON.stringify(
+			{
+				secrets: {
+					GOOD_TOKEN: { value: "good-token-value-1", updatedAt: "t", fingerprint: "fp0000gg11" },
+					"bad-name": { value: "bad-name-value-12", updatedAt: "t", fingerprint: "fp0000bb11" },
+				},
+			},
+			null,
+			2,
+		)}\n`;
+		await writeFile(h.storePath, raw, { mode: 0o600 });
+		await start(h); // session_start 捕获 load 错误转通知（[13]：文件不动）
+		const log = h.notifyLog.join("\n");
+		expect(log).toContain("bad-name");
+		expect(log).toContain("迁移中止");
+		expect(await readFile(h.storePath, "utf8")).toBe(raw); // 原明文逐字节保留（不 shred）
+		await expect(stat(ageFile(h))).rejects.toThrow(/ENOENT/); // 无密文落盘（非法条目不被静默丢弃后加密）
+		await expect(stat(keyFile(h))).rejects.toThrow(/ENOENT/); // 无密钥生成（严格解析先于 ensureIdentity）
+	});
+
 	it("损坏的遗留明文 → 显式报错，原文件不动、不产生密文（防覆盖语义与 [13] 一致）", async () => {
 		const h = await setupHarness(SEED, undefined, "age");
 		await writeFile(h.storePath, "{not json", { mode: 0o600 });
