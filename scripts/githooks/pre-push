@@ -29,7 +29,12 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     if [[ "$remote_sha" =~ ^0+$ ]]; then
         log_opts="$local_sha --not --remotes --first-parent"
     else
-        log_opts="$remote_sha..$local_sha"
+        # "--not --remotes" keeps the scan focused on commits not already on
+        # ANY remote branch. Without it, a rebased branch's remote_sha..local_sha
+        # range swallows every main-branch commit since the last push and
+        # re-flags leaks that are already public on origin/main (2026-10-26
+        # false positive: 073769ff fixture flagged from a rebased push).
+        log_opts="$remote_sha..$local_sha --not --remotes"
     fi
     # Scan failure (e.g. missing remote_sha object after gc) is NOT a leak:
     # refetch and retry once before blocking.
