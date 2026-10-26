@@ -10,7 +10,10 @@ export interface PresetDefinition {
 
 /** The presets configuration block in settings.json. */
 export interface PresetsConfig {
-  /** Name of the default preset (loaded to system prompt via settings.skills). */
+  /** Name of the default preset. Its name is NOT stored in the active set —
+   * its skills are unioned into the allowed set at resolution time (see
+   * PresetState.resolveSkills), so changing this value mid-session takes
+   * effect immediately. */
   default?: string;
   /** Map of preset name → definition. */
   definitions: Record<string, PresetDefinition>;
@@ -23,14 +26,19 @@ export interface PresetOpEntry {
   timestamp: number;
 }
 
-/** Result of resolving the full active set. */
+/** Result of resolving the full active set (v3 semantics: allowed =
+ * default ∪ explicitly loaded presets, computed fresh on each resolve). */
 export interface ResolvedActiveSet {
-  /** All skill names from active presets (deduplicated). */
+  /** All skill names from the default preset plus explicitly loaded
+   * (active) presets (deduplicated). */
   skillNames: string[];
-  /** Skills that could not be resolved to a file path. */
-  missing: string[];
-  /** Skills excluded because they're disabled by skill-manager toggle. */
-  disabled: string[];
-  /** Skills appearing in multiple loaded presets (deduplicated, informational). */
-  duplicates: string[];
+  /** Preset names that resolved to nothing, from two sources (ocr R8L):
+   * 1) names in the active set no longer present in config; 2) the
+   * defaultName argument passed to resolveSkills when it is absent from
+   * config. When no default is defined/defaultName is undefined, no entry
+   * is produced for it. */
+  missingPresets: string[];
 }
+
+/** Custom entry type for preset operations (shared by commands and dialog). */
+export const PRESET_OP_CUSTOM_TYPE = "preset-op";

@@ -1,0 +1,64 @@
+# Gitleaks rules for peachest/pi-packages (public repo).
+# Scope shape: credentials + internal identifiers. See skill setup-gitleaks:
+# "gitleaks passing ≠ sanitize complete" — scripts/sanitize-check.sh adds the
+# pattern layer; this file is the credential/identifier layer shared by the
+# checker and the pre-push hook.
+title = "pi-packages sanitize gate"
+
+[[rules]]
+id = "internal-domain"
+description = "Transwarp internal domains (placeholder: gitlab.blue.example et al.)"
+regex = '''[\w.-]+\.transwarp\.(?:io|com)'''
+tags = ["internal", "domain"]
+
+[[rules]]
+id = "internal-ip"
+description = "RFC1918 private IPs (except doc/vendored allowlisted paths)"
+regex = '''\b(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3})\b'''
+tags = ["internal", "network"]
+
+[[rules]]
+id = "generic-api-key"
+description = "Generic high-entropy API key assignments"
+regex = '''(?i)(?:api[_-]?key|secret|token|password)\s*[:=]\s*['"][a-z0-9/+_-]{24,}['"]'''
+tags = ["credential"]
+
+[[rules]]
+id = "db-connection-string"
+description = "Database connection strings with inline credentials"
+regex = '''(?:mysql|postgresql|postgres|redis|mongodb)://\w+:[^@\s]+@'''
+tags = ["credential", "database"]
+
+[[rules]]
+id = "private-key"
+description = "Private key blocks"
+regex = '''-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----'''
+tags = ["credential", "key"]
+
+[allowlist]
+description = "Deliberate exclusions — each entry reviewed (uncommented = unreviewed hole)"
+paths = [
+    # this file and the checker contain the patterns themselves (self-match)
+    '''gitleaks\.toml''',
+    '''scripts/sanitize-check\.sh''',
+    '''scripts/githooks/.*''',
+    # untracked caches / agent state — never committed
+    '''\.git/.*''',
+    '''node_modules/.*''',
+    '''\.pi/.*''',
+    '''\.pi-subagents/.*''',
+    '''\.scratch/.*''',
+    # security-guard test fixtures: scoped to the two fixture suites only (real
+    # creds in a NEW fixture file would still be caught) — spec#137 suite A/C
+    '''packages/pi-bash-guards/tests/fixtures/test-bash-guards\.sh''',
+    '''packages/pi-bash-guards/tests/fixtures/test-wt-lifecycle\.sh''',
+    '''\.venv/.*''',
+    '''__pycache__/.*''',
+    # vendored upstream build artifact; its 172.16.0.0/12 mention is public
+    # IANA documentation of private ranges, not an internal identifier
+    '''packages/pi-context-mode-lite/upstream/.*''',
+    # example IPs in tests/design docs (10.0.0.5 et al. as arbitrary fixtures,
+    # not internal hosts); real-host findings would still surface elsewhere
+    '''packages/pi-proxy/proxy\.test\.ts''',
+    '''packages/pi-proxy/docs/.*''',
+]

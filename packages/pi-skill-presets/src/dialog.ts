@@ -24,12 +24,14 @@ import {
   visibleWidth,
 } from "@earendil-works/pi-tui";
 import type { TUI } from "@earendil-works/pi-tui";
-import type { ExtensionContext, ExtensionAPI, Theme, Skill } from "@earendil-works/pi-coding-agent";
+import type { ExtensionContext, ExtensionCommandContext, ExtensionAPI, Theme, Skill } from "@earendil-works/pi-coding-agent";
 import { loadSkills } from "@earendil-works/pi-coding-agent";
 import type { PresetState } from "./preset-state.ts";
 import type { PresetsConfig, PresetOpEntry } from "./types.ts";
-import { getPresetSkills, writePresetsConfig, getAgentDir } from "./config.ts";
-import { PRESET_OP_CUSTOM_TYPE } from "./commands.ts";
+import { getPresetSkills, readPresetsConfig, writePresetsConfig, getAgentDir } from "./config.ts";
+import { findBadRefs } from "./bad-refs.ts";
+import { markWarned } from "./notify.ts";
+import { PRESET_OP_CUSTOM_TYPE } from "./types.ts";
 
 type DialogMode = "browse" | "preset-edit" | "skill-list" | "new-preset" | "confirm";
 
@@ -58,7 +60,7 @@ export async function showPresetDialog(
   pi: ExtensionAPI,
   state: PresetState,
   config: PresetsConfig,
-  defaultPreset?: string,
+  getDefaultPreset?: () => string | undefined,
 ): Promise<void> {
   if (!ctx.hasUI) {
     ctx.ui.notify("/preset requires interactive mode", "warning");
@@ -66,7 +68,16 @@ export async function showPresetDialog(
   }
 
   await ctx.ui.custom<void>((tui, theme, _kb, done) => {
-    return new PresetDialog(ctx, pi, state, config, theme, tui, done, defaultPreset);
+    return new PresetDialog(
+      ctx,
+      pi,
+      state,
+      config,
+      theme,
+      tui,
+      done,
+      getDefaultPreset ?? (() => undefined),
+    );
   }, {
     overlay: true,
     overlayOptions: {
@@ -147,7 +158,9 @@ class PresetDialog extends Container {
   private readonly done: (result: void) => void;
   private readonly state: PresetState;
   private config: PresetsConfig;
-  private readonly defaultPreset?: string;
+  /** Delta base for merging saves — refreshed to the merged result after each save (ocr R4M2). */
+  private originalDefinitions: PresetsConfig["definitions"];
+  private readonly getDefaultPreset: () => string | undefined;
   private readonly cwd: string;
 
   // Navigation state
@@ -169,17 +182,18 @@ class PresetDialog extends Container {
     theme: Theme,
     tui: TUI,
     done: (result: void) => void,
-    defaultPreset: string | undefined,
+    getDefaultPreset: () => string | undefined,
   ) {
     super();
     this.ctx = ctx;
     this.pi = pi;
     this.state = state;
     this.config = config;
+    this.originalDefinitions = structuredClone(config.definitions);
     this.theme = theme;
     this.tui = tui;
     this.done = done;
-    this.defaultPreset = defaultPreset;
+    this.getDefaultPreset = getDefaultPreset;
     this.cwd = ctx.cwd;
 
     this.nameInput.onSubmit = () => this.confirmNewPreset();
@@ -195,8 +209,81 @@ class PresetDialog extends Container {
     return Object.keys(this.config.definitions);
   }
 
-  private saveConfig(): void {
-    writePresetsConfig(this.config, "global");
+  // Live read (ocr N2): the default can change in settings.json while the
+  // dialog is open; every default comparison uses the current value.
+  // Tri-state (ocr R10M): an unreadable settings.json (corrupt or truncated
+  // JSON) makes the live read throw, and a bare undefined would make operation
+  // paths mistake the always-on default for "no default configured" and
+  // proceed to load/offload it with an entry written. Callers must handle
+  // ok:false: render paths degrade to the error line, operation paths refuse
+  // to act. (ocr R11M1: with parse errors no longer swallowed by
+  // readSettingsFile, this tri-state now actually fires for the common
+  // "truncated to `{`" corruption, not just legal JSON `null`.)
+  private readDefaultPreset(): { ok: true; name?: string } | { ok: false; error: string } {
+    try {
+      return { ok: true, name: this.getDefaultPreset() };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
+  /** Returns true when the write succeeded; false after a notified failure (ocr R6M1). */
+  private saveConfig(presetName?: string): boolean {
+    // Merge dialog edits onto a fresh read (ocr R2): settings.json can change
+    // while the dialog is open (e.g. a new default written externally); writing
+    // the stale snapshot whole would clobber it. Only the definitions this
+    // dialog actually touched (added, edited, deleted) are applied — the fresh
+    // default and all externally-modified/untouched definitions survive.
+    // Catch read + merge + write failures (ocr R6M1/R7M): the fresh read can
+    // throw too — e.g. settings.json externally corrupted (legal JSON `null`
+    // or truncated/invalid JSON, ocr R11M1) makes readPresetsConfig throw —
+    // so the whole read-merge-write sequence shares one failure path: notify the user
+    // with the preset name and reason, then report failure to the caller —
+    // which rolls back its local edit so retrying the original action
+    // re-attempts the save instead of hitting an already-exists /
+    // already-added guard. this.config/originalDefinitions still hold the
+    // pre-save edits, so a retry re-merges and re-writes them (ocr R5M4).
+    let fresh: PresetsConfig;
+    try {
+      fresh = readPresetsConfig(this.cwd);
+      const defs = { ...fresh.definitions };
+      for (const name of Object.keys(this.originalDefinitions)) {
+        if (!this.config.definitions[name]) delete defs[name]; // deleted in dialog
+      }
+      for (const [name, def] of Object.entries(this.config.definitions)) {
+        const original = this.originalDefinitions[name];
+        if (!original || JSON.stringify(original) !== JSON.stringify(def)) {
+          defs[name] = def; // added or edited in dialog
+        }
+      }
+      fresh.definitions = defs;
+      writePresetsConfig(fresh, "global");
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      const label = presetName ? `preset "${presetName}"` : "presets";
+      this.ctx.ui.notify(`Failed to save ${label}: ${reason}`, "error");
+      return false;
+    }
+    // ocr R13L: capture the selected name BEFORE swapping in fresh —
+    // presetNames derives from this.config, so reading it after the swap
+    // yields the NEW list's name at the old index (e.g. [a,b,c] selecting b,
+    // external delete of a → [b,c] would silently re-select c).
+    const oldSelected = this.presetNames[this.browseIndex];
+    this.config = fresh;
+    // Realign browseIndex to the captured name in the merged on-disk state
+    // (ocr R12L): the selected preset may have been externally deleted while
+    // editing — fall back to clamping only when the name is gone, so
+    // returning to browse always has a valid selection.
+    const idx = oldSelected ? this.presetNames.indexOf(oldSelected) : -1;
+    this.browseIndex = idx >= 0
+      ? idx
+      : Math.min(this.browseIndex, Math.max(0, this.presetNames.length - 1));
+    // Refresh the delta baseline to the merged result (ocr R4M2/M3): later
+    // saves only merge edits not yet on disk, so external changes made after
+    // this save survive, and a preset created-then-deleted in this dialog is
+    // actually deleted (it is now part of the baseline).
+    this.originalDefinitions = structuredClone(fresh.definitions);
+    return true;
   }
 
   private loadAllSkills(): void {
@@ -250,6 +337,14 @@ class PresetDialog extends Container {
   }
 
   private buildBrowseLines(lines: string[], innerWidth: number): void {
+    // Read the default once up front: on unreadable settings the tri-state
+    // getter returns ok:false and we render the error state instead of
+    // throwing (ocr R9M).
+    const def = this.readDefaultPreset();
+    const defaultName = def.ok ? def.name : undefined;
+    if (!def.ok) {
+      lines.push(this.theme.fg("warning", `settings.json unreadable: ${def.error}`));
+    }
     const names = this.presetNames;
     const maxRows = this.visibleListRows;
 
@@ -268,13 +363,18 @@ class PresetDialog extends Container {
         const name = names[i]!;
         const isSelected = i === this.browseIndex;
         const loaded = this.state.has(name);
-        const isDefault = name === this.defaultPreset;
+        const isDefault = name === defaultName;
 
         const prefix = isSelected ? this.theme.fg("accent", "→ ") : "  ";
         const namePart = name;
-        const status = loaded
-          ? " " + this.theme.fg("success", "[loaded]")
-          : " " + this.theme.fg("dim", "[─]");
+        let status: string;
+        if (isDefault) {
+          status = " " + this.theme.fg("accent", "[always-on]");
+        } else if (loaded) {
+          status = " " + this.theme.fg("success", "[loaded]");
+        } else {
+          status = " " + this.theme.fg("dim", "[─]");
+        }
         const star = isDefault ? " " + this.theme.fg("accent", "★") : "";
         const skills = getPresetSkills(this.config, name) ?? [];
         const count = this.theme.fg("dim", ` (${skills.length})`);
@@ -296,7 +396,13 @@ class PresetDialog extends Container {
     const name = this.editPresetName;
     if (!name) return;
 
-    const isDefault = name === this.defaultPreset;
+    // ocr R9M: same corrupt-settings guard as buildBrowseLines.
+    const def = this.readDefaultPreset();
+    const defaultName = def.ok ? def.name : undefined;
+    if (!def.ok) {
+      lines.push(this.theme.fg("warning", `settings.json unreadable: ${def.error}`));
+    }
+    const isDefault = name === defaultName;
     if (isDefault) {
       lines.push(this.theme.fg("accent", "★ default preset"));
     }
@@ -568,8 +674,24 @@ class PresetDialog extends Container {
     if (!action) return;
 
     if (matchesKey(data, Key.enter)) {
+      // Always restore returnMode after the callback (ocr R6M2): a rejected
+      // confirm (e.g. deleting the default preset) returns without changing
+      // mode — without this the dialog stays in confirm mode with no pending
+      // action and both Enter and Esc are swallowed by the guard above.
+      const returnMode = action.returnMode;
       this.pendingConfirm = null;
-      action.onConfirm();
+      try {
+        action.onConfirm();
+      } catch (error) {
+        // The callback runs on a fresh settings read (ocr R8M): a corrupt
+        // config can throw. Report it and still return to returnMode so
+        // the dialog does not stay stuck in confirm mode.
+        this.ctx.ui.notify(
+          `Action failed: ${action.message} (${error instanceof Error ? error.message : String(error)})`,
+          "error",
+        );
+      }
+      this.mode = returnMode;
       return;
     }
 
@@ -590,6 +712,20 @@ class PresetDialog extends Container {
   // --- Actions ---
 
   private togglePreset(name: string): void {
+    // ocr R10M: refuse to act while settings.json is unreadable — treating
+    // the always-on default as "no default" would offload/load it and write
+    // a replay entry for a config we cannot even read.
+    const def = this.readDefaultPreset();
+    if (!def.ok) {
+      this.ctx.ui.notify("settings.json unreadable, cannot proceed", "error");
+      return;
+    }
+    if (name === def.name) {
+      // Default preset is always-on: it is not a member of the explicit
+      // active set, so it can be neither offloaded nor usefully re-loaded.
+      this.ctx.ui.notify(`Preset "${name}" is the default preset and cannot be offloaded.`, "warning");
+      return;
+    }
     if (this.state.has(name)) {
       this.state.offload(name);
       this.pi.appendEntry<PresetOpEntry>(PRESET_OP_CUSTOM_TYPE, {
@@ -598,15 +734,35 @@ class PresetDialog extends Container {
         timestamp: Date.now(),
       });
       this.ctx.ui.notify(`Offloaded preset "${name}".`, "info");
-    } else {
-      this.state.load(name);
-      this.pi.appendEntry<PresetOpEntry>(PRESET_OP_CUSTOM_TYPE, {
-        action: "load",
-        preset: name,
-        timestamp: Date.now(),
-      });
-      this.ctx.ui.notify(`Loaded preset "${name}".`, "info");
+      return;
     }
+    // Align with /preset-load: warn on bad references, still load. The
+    // platform skill list comes from this dialog's own command context
+    // (optional at runtime even though only commands normally open it);
+    // absent that, skip the check.
+    const platformOptions = (this.ctx as ExtensionCommandContext).getSystemPromptOptions?.();
+    if (platformOptions) {
+      const badRefs = findBadRefs(
+        (platformOptions.skills ?? []).map((s) => s!.name),
+        getPresetSkills(this.config, name) ?? [],
+      );
+      if (badRefs.length > 0) {
+        this.ctx.ui.notify(
+          `Preset "${name}" loaded, but these skills are unavailable (missing or disabled): ${badRefs.join(", ")}`,
+          "warning",
+        );
+        // Aligned with /preset-load (ocr N3): the warned names are recorded
+        // so the replay path does not repeat them (dedup policy in notify ledger).
+        markWarned(badRefs);
+      }
+    }
+    this.state.load(name);
+    this.pi.appendEntry<PresetOpEntry>(PRESET_OP_CUSTOM_TYPE, {
+      action: "load",
+      preset: name,
+      timestamp: Date.now(),
+    });
+    this.ctx.ui.notify(`Loaded preset "${name}".`, "info");
   }
 
   private addSkillToPreset(presetName: string, skillName: string): void {
@@ -619,7 +775,10 @@ class PresetDialog extends Container {
     }
 
     def.skills.push(skillName);
-    this.saveConfig();
+    if (!this.saveConfig(presetName)) {
+      def.skills.pop(); // roll back so retrying this action re-attempts the write
+      return;
+    }
     this.ctx.ui.notify(`Added "${skillName}" to preset "${presetName}".`, "info");
   }
 
@@ -628,7 +787,10 @@ class PresetDialog extends Container {
     if (!def || skillIndex < 0 || skillIndex >= def.skills.length) return;
 
     const removed = def.skills.splice(skillIndex, 1)[0];
-    this.saveConfig();
+    if (!this.saveConfig(presetName)) {
+      def.skills.splice(skillIndex, 0, removed); // roll back for retry
+      return;
+    }
     this.ctx.ui.notify(`Removed "${removed}" from preset "${presetName}".`, "info");
 
     const len = def.skills.length;
@@ -638,10 +800,33 @@ class PresetDialog extends Container {
   }
 
   private deletePreset(presetName: string): void {
-    delete this.config.definitions[presetName];
+    // ocr R10M: same unreadable-config gate as togglePreset.
+    const def = this.readDefaultPreset();
+    if (!def.ok) {
+      this.ctx.ui.notify("settings.json unreadable, cannot proceed", "error");
+      return;
+    }
+    if (presetName === def.name) {
+      // Default preset is protected (#63): offload is rejected, so is delete.
+      this.ctx.ui.notify(
+        `Preset "${presetName}" is the default preset and cannot be deleted.`,
+        "warning",
+      );
+      return;
+    }
 
-    if (this.config.default === presetName) {
-      this.config.default = undefined;
+    const removedDef = this.config.definitions[presetName];
+    delete this.config.definitions[presetName];
+    // No default clearing here: default protection is judged against the live
+    // getter above, and saveConfig preserves whatever default is fresh on disk
+    // (ocr R2 — the dialog's snapshot default may be stale).
+
+    // Save first; commit session side effects only after success (ocr R6M1):
+    // a failed write must not leave the preset offloaded or a replay entry
+    // written for a definition that is still on disk.
+    if (!this.saveConfig(presetName)) {
+      this.config.definitions[presetName] = removedDef; // roll back for retry
+      return;
     }
 
     if (this.state.has(presetName)) {
@@ -653,7 +838,6 @@ class PresetDialog extends Container {
       });
     }
 
-    this.saveConfig();
     this.ctx.ui.notify(`Deleted preset "${presetName}".`, "info");
 
     this.mode = "browse";
@@ -678,7 +862,10 @@ class PresetDialog extends Container {
     }
 
     this.config.definitions[name] = { skills: [] };
-    this.saveConfig();
+    if (!this.saveConfig(name)) {
+      delete this.config.definitions[name]; // roll back so the name is free to retry
+      return;
+    }
     this.ctx.ui.notify(`Created preset "${name}".`, "info");
 
     this.editPresetName = name;

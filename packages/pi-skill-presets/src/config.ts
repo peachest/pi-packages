@@ -5,7 +5,7 @@
  * Uses direct file I/O following the pi-skills-manager pattern.
  */
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { homedir } from "node:os";
 import type { PresetsConfig, PresetDefinition } from "./types.ts";
@@ -28,16 +28,27 @@ export function getProjectSettingsPath(cwd: string): string {
 }
 
 /**
- * Read a settings.json file and return the parsed JSON (or {} if missing/invalid).
+ * Read a settings.json file and return the parsed JSON.
+ *
+ * A missing file is legal ({}). A file that exists but cannot be read or
+ * parsed (truncated JSON, permissions, …) THROWS (ocr R11M1): swallowing the
+ * error returned {} and made the "truncated to `{`" corruption invisible to
+ * every tri-state guard downstream — operation paths then ran as usual.
+ *
+ * ocr R12M1: no existsSync pre-check. existsSync returns false on EACCES
+ * (present but unreadable → wrongly treated as empty config) and races with
+ * readFileSync (deleted in between → legal ENOENT wrongly thrown). Read
+ * directly and treat only ENOENT as "missing"; every other error surfaces.
  */
 function readSettingsFile(filePath: string): Record<string, unknown> {
-  if (!existsSync(filePath)) return {};
+  let raw: string;
   try {
-    const raw = readFileSync(filePath, "utf-8");
-    return JSON.parse(raw) as Record<string, unknown>;
-  } catch {
-    return {};
+    raw = readFileSync(filePath, "utf-8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return {};
+    throw err;
   }
+  return JSON.parse(raw) as Record<string, unknown>;
 }
 
 /**

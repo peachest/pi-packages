@@ -5,10 +5,13 @@
  * Skills are resolved dynamically from preset names each turn.
  */
 
+import type { CustomEntry, SessionEntry } from "@earendil-works/pi-coding-agent";
 import type { PresetOpEntry, ResolvedActiveSet, PresetsConfig } from "./types.ts";
+import { PRESET_OP_CUSTOM_TYPE } from "./types.ts";
 import { getPresetSkills } from "./config.ts";
 
-/** In-memory active set: names of loaded presets. */
+/** In-memory active set: names of loaded presets (explicit loads only — the
+ * default preset is NOT auto-added; its skills are unioned in resolveSkills). */
 export class PresetState {
   private activePresets = new Set<string>();
 
@@ -39,11 +42,43 @@ export class PresetState {
 
   /**
    * Replay persistent entries to rebuild the active set.
-   * Entries are processed in chronological order.
+   *
+   * The single production replay path (index.ts session_start/session_tree
+   * and tests all call this): preset-op custom entries on the given entry
+   * list are replayed in order. Callers pass the entry list; path-awareness
+   * (session tree / compaction) is the caller's source choice — index.ts
+   * passes sessionManager.getBranch() (full root→leaf history, compaction-
+   * safe per ocr R4H), so preset-ops on abandoned branches never enter.
+   *
+   * The active set is pure explicit-load state: the default preset is NOT
+   * part of it (its skills are unioned per turn in resolveSkills), so
+   * switching settings.json's default mid-session drops the old default's
+   * skills immediately.
    */
-  replayEntries(entries: PresetOpEntry[]): void {
+  rebuildFromEntries(entries: SessionEntry[]): void {
     this.clear();
-    for (const entry of entries) {
+
+    // Historical load(<old-default>) entries still enter the active set here;
+    // harmless — the per-turn union with the current default dedups skills.
+    const presetOps: PresetOpEntry[] = entries
+      .filter(
+        (e): e is CustomEntry<PresetOpEntry> =>
+          e.type === "custom" && e.customType === PRESET_OP_CUSTOM_TYPE,
+      )
+      .map((e) => e.data as PresetOpEntry)
+      .filter(
+        (d) =>
+          // Null guard (ocr R5M3): a custom entry with null data is legal on
+          // disk and `typeof null === "object"` — dereferencing it here would
+          // throw and abort the whole replay after clear(). Skip it.
+          d !== null &&
+          d !== undefined &&
+          typeof d === "object" &&
+          typeof d.action === "string" &&
+          typeof d.preset === "string",
+      );
+
+    for (const entry of presetOps) {
       if (entry.action === "load") {
         this.load(entry.preset);
       } else if (entry.action === "offload") {
@@ -53,55 +88,41 @@ export class PresetState {
   }
 
   /**
-   * Get all skill names from all presets in the active set.
-   * Used by before_agent_start to filter available_skills.
-   */
-  getActiveSkillNames(config: PresetsConfig): Set<string> {
-    const names = new Set<string>();
-    for (const presetName of this.activePresets) {
-      const skills = getPresetSkills(config, presetName);
-      if (skills) {
-        for (const s of skills) names.add(s);
-      }
-    }
-    return names;
-  }
-
-  /**
    * Resolve the active set to a deduplicated list of skill names.
-   * In v2, default preset is in active set, so no exclusion is needed.
-   * Used by transient injection to determine which skills to inject.
+   *
+   * v3 semantics: the active set holds ONLY explicitly loaded presets — the
+   * default preset is not stored in it. Instead, the default's skills are
+   * unioned in here on every call (allowed = default ∪ active, computed
+   * fresh each turn), so changing settings.json's default mid-session takes
+   * effect immediately without stale default names lingering in the set.
+   * A default or loaded preset name absent from config is reported in
+   * missingPresets (preset-level); skill-level bad references (listed names
+   * absent from pi's discovery) are computed by the caller against the
+   * discovered skill set, not here.
    *
    * @param config - Presets configuration
-   * @returns Resolved active set with skill names, missing skills, and warnings
+   * @param defaultName - Current default preset name from config, if any
    */
-  resolveSkills(config: PresetsConfig): ResolvedActiveSet {
+  resolveSkills(config: PresetsConfig, defaultName?: string): ResolvedActiveSet {
     const skillSet = new Set<string>();
-    const skillCount = new Map<string, number>();
-    const missing: string[] = [];
+    const missingPresets: string[] = [];
 
-    for (const presetName of this.activePresets) {
+    const mergePreset = (presetName: string) => {
       const skills = getPresetSkills(config, presetName);
       if (!skills) {
-        missing.push(`preset:${presetName}`);
-        continue;
+        missingPresets.push(presetName);
+        return;
       }
 
-      for (const skill of skills) {
-        skillSet.add(skill);
-        skillCount.set(skill, (skillCount.get(skill) ?? 0) + 1);
-      }
-    }
+      for (const skill of skills) skillSet.add(skill);
+    };
 
-    const duplicates = [...skillCount.entries()]
-      .filter(([, count]) => count > 1)
-      .map(([name]) => name);
+    if (defaultName !== undefined) mergePreset(defaultName);
+    for (const presetName of this.activePresets) mergePreset(presetName);
 
     return {
       skillNames: [...skillSet],
-      missing,
-      disabled: [],
-      duplicates,
+      missingPresets,
     };
   }
 }

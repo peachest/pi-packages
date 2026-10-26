@@ -1,0 +1,74 @@
+import { spawn } from "node:child_process";
+import type { Exec, ExecOptions, ExecResult } from "./types.ts";
+
+/** SIGTERM→SIGKILL 升级宽限期：给忽略 TERM 的 hung checker（shell trap）一次体面退出的机会，仍不退则整组强杀。 */
+const KILL_GRACE_MS = 5_000;
+
+/**
+ * 真执行薄 adapter：shell 命令行转发到 child_process.spawn（shell:true 与 exec 同为 /bin/sh -c 语义）。
+ * 超时升级（Exec 契约：timeoutMs 后 run 必结算，hung checker 不得挂死承诺 wedge 池）：
+ * 到点先 SIGTERM 整进程组（detached:true → sh 为组长），KILL_GRACE_MS 内未退出则 SIGKILL 整进程组。
+ */
+export class ShellExec implements Exec {
+  run(command: string, opts?: ExecOptions): Promise<ExecResult> {
+    return new Promise((resolve, reject) => {
+      const child = spawn(command, {
+        shell: true,
+        // detached:true → sh 为新进程组长：超时杀形经 kill(-pid) 覆盖整组，sh 的子进程（curl/sleep…）无从豁免
+        detached: true,
+        env: opts?.env ? { ...opts.env } : undefined,
+      });
+      let stdout = "";
+      let stderr = "";
+      let timedOut = false;
+      let settled = false;
+      let graceTimer: NodeJS.Timeout | null = null;
+      // 票 133（scan-⑥）：输出上限回归（旧 exec maxBuffer 1MB 语义恢复）——异常 checker 快速
+      // 输出可在超时前 OOM daemon；超限截断并标注（evidence 面可见 truncation）。
+      const MAX_OUTPUT = 1_000_000;
+      let truncated = false;
+      child.stdout.on("data", (d: Buffer) => {
+        if (stdout.length < MAX_OUTPUT) stdout += d;
+        else truncated = true;
+      });
+      child.stderr.on("data", (d: Buffer) => {
+        if (stderr.length < MAX_OUTPUT) stderr += d;
+        else truncated = true;
+      });
+      const settle = (finish: () => void) => {
+        if (settled) return;
+        settled = true;
+        if (graceTimer) clearTimeout(graceTimer);
+        finish();
+      };
+      child.on("close", (exitCode, signal) =>
+        settle(() =>
+          resolve({
+            exitCode,
+            signal: signal ?? null,
+            stdout: truncated ? `${stdout}\n[output truncated at ${MAX_OUTPUT} bytes]` : stdout,
+            stderr,
+            timedOut,
+          }),
+        ),
+      );
+      child.on("error", (err) => settle(() => reject(err)));
+      if (opts?.timeoutMs === undefined) return;
+      const killGroup = (sig: NodeJS.Signals) => {
+        if (child.pid === undefined) return;
+        try {
+          process.kill(-child.pid, sig); // 负 pid = 整进程组（POSIX）；组不存在（已退出）即无事可杀
+        } catch {
+          // 进程组已消失：忽略
+        }
+      };
+      const timer = setTimeout(() => {
+        timedOut = true;
+        killGroup("SIGTERM");
+        graceTimer = setTimeout(() => killGroup("SIGKILL"), KILL_GRACE_MS);
+        graceTimer.unref();
+      }, opts.timeoutMs);
+      timer.unref();
+    });
+  }
+}

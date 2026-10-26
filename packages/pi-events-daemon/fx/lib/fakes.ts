@@ -1,0 +1,121 @@
+import type { Clock, Exec, ExecOptions, ExecResult, Fs, Pusher } from "./types.ts";
+
+/**
+ * FakeClock——manual drive 行为契约（fx.md 钉死：手动推进、到期定时器按序触发后返回）。
+ * step 同步触发全部到期定时器（按到期时刻、同刻按调度序），回调内新调度者若在推进终点前到期同样本步触发。
+ */
+export class FakeClock implements Clock {
+  private time = 0;
+  private nextSeq = 0;
+  private timers: { due: number; seq: number; fn: () => void; cancelled: boolean }[] = [];
+
+  now(): number {
+    return this.time;
+  }
+
+  /** 未触发的定时器数——「parked 零副作用」类断言的观测面（spec31 fx:Effects）。 */
+  get pendingCount(): number {
+    return this.timers.filter((t) => !t.cancelled).length;
+  }
+
+  setTimeout(fn: () => void, ms: number): { cancel(): void } {
+    const timer = { due: this.time + Math.max(0, ms), seq: this.nextSeq++, fn, cancelled: false };
+    this.timers.push(timer);
+    return { cancel: () => void (timer.cancelled = true) };
+  }
+
+  /** 手动推进 ms 毫秒：到期定时器按序同步触发后返回。触发时虚拟时间走到该定时器的到期时刻（回调内 now() 与新调度均相对触发时刻），全部结算后 now() 停在推进终点；回调内重入 step 推进更远时保留最大值（now() 单调不减）。 */
+  step(ms = 0): void {
+    const target = this.time + Math.max(0, ms);
+    for (;;) {
+      const next = this.timers
+        .filter((t) => !t.cancelled && t.due <= target)
+        .sort((a, b) => a.due - b.due || a.seq - b.seq)[0];
+      if (!next) break;
+      this.timers.splice(this.timers.indexOf(next), 1);
+      this.time = Math.max(this.time, next.due);
+      next.fn();
+    }
+    // 结算取最大值：回调内重入 step 已推进超过本步终点时不得倒退（单调契约）
+    this.time = Math.max(this.time, target);
+    this.timers = this.timers.filter((t) => !t.cancelled);
+  }
+}
+
+/** FakeExec——脚本化响应序列（fx.md 钉死）：run 按入队次序逐个消费（结果/失败同队混排），partial 补平台原形默认值；耗尽即响亮失败。 */
+export class FakeExec implements Exec {
+  readonly calls: { command: string; opts: ExecOptions | undefined }[] = [];
+  private readonly script: (Partial<ExecResult> | { failure: unknown; sync: boolean })[] = [];
+
+  /** 入队后续 run 的响应（按序消费）。 */
+  enqueue(...results: Partial<ExecResult>[]): void {
+    this.script.push(...results);
+  }
+
+  /** 入队后续 run 的失败注入（与 enqueue 同队按调用序消费）：failSync=true 同步抛错（调用方 try/catch 面），否则 Promise 拒绝（.catch 面）。票 13 fake 契约延续。 */
+  enqueueFailure(err: unknown, failSync = false): void {
+    this.script.push({ failure: err, sync: failSync });
+  }
+
+  run(command: string, opts?: ExecOptions): Promise<ExecResult> {
+    this.calls.push({ command, opts });
+    const next = this.script.shift();
+    if (!next) return Promise.reject(new Error(`FakeExec: script exhausted, unexpected run: ${command}`));
+    if ("failure" in next) {
+      if (next.sync) throw next.failure;
+      return Promise.reject(next.failure);
+    }
+    return Promise.resolve({ exitCode: 0, signal: null, stdout: "", stderr: "", timedOut: false, ...next });
+  }
+}
+
+/** FakePusher——push 记录 + 注入投递失败（fx.md 钉死 close/reject 路径）：failures 队列按序消费，耗尽后恢复投递。
+ *  resolve = 送达数（单客户端 fake = 1）；0 送达语义测试用自定义 pusher 注入（Pusher 契约：resolve 数即送达数）。 */
+export class FakePusher implements Pusher {
+  readonly pushed: string[] = [];
+  /** 预注入的投递失败（按序，每次 push 消费一个；close/reject 场景按确定性脚本预填）。 */
+  readonly failures: Error[] = [];
+
+  async push(line: string): Promise<number> {
+    const failure = this.failures.shift();
+    if (failure) throw failure; // 失败的投递不记入 pushed——投递成功才产生外部效应
+    this.pushed.push(line);
+    return 1;
+  }
+}
+
+/** FakeFs——内存树（fx.md 钉死：内存树 + 撕裂尾行 fixture）：files 即 fixture 写入口，撕裂尾行 = 无尾换行的截断字符串。watch 同步扩展（票 18）：watch 登记、change 写入并同步通知该 path 监听者（同步 = 无定时器确定性）；close 幂等（重复 close 不经 splice(-1,1) 误删无关监听器）；change 分发逐项检查活跃（closed 标记）——回调内关掉的监听器本轮及后续均不再触发，对齐原生 FSWatcher；files 直改不通知，change 是唯一事件注入面。 */
+export class FakeFs implements Fs {
+  readonly files: Map<string, string>;
+  private readonly watchers: { path: string; onEvent: () => void; closed: boolean }[] = [];
+
+  constructor(files?: Record<string, string>) {
+    this.files = new Map(Object.entries(files ?? {}));
+  }
+
+  readFile(path: string): Promise<string> {
+    const content = this.files.get(path);
+    // ENOENT 同形 NodeFs（调用方按 error.code 分类）；内容原样返回，撕裂尾行由内容本身承载
+    return content === undefined
+      ? Promise.reject(Object.assign(new Error(`ENOENT: no such file or directory, open '${path}'`), { code: "ENOENT" }))
+      : Promise.resolve(content);
+  }
+
+  /** 变更注入：写 content（缺省 = touch 保持现值）并同步通知该 path 的 watch 监听者（快照遍历 + 逐项活跃检查：分发中被关闭者不再触发）。 */
+  change(path: string, content?: string): void {
+    if (content !== undefined) this.files.set(path, content);
+    for (const w of [...this.watchers]) if (w.path === path && !w.closed) w.onEvent();
+  }
+
+  watch(path: string, onEvent: () => void): { close(): void } {
+    const w = { path, onEvent, closed: false };
+    this.watchers.push(w);
+    return {
+      close: () => {
+        if (w.closed) return; // 幂等：二次 close 不删（splice(-1,1) 会误删尾部无关监听器）
+        w.closed = true;
+        this.watchers.splice(this.watchers.indexOf(w), 1);
+      },
+    };
+  }
+}

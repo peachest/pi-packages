@@ -11,11 +11,11 @@
 import type { ExtensionCommandContext, ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { PresetState } from "./preset-state.ts";
 import type { PresetOpEntry } from "./types.ts";
+import { PRESET_OP_CUSTOM_TYPE } from "./types.ts";
 import { readPresetsConfig, getPresetSkills } from "./config.ts";
 import { showPresetDialog } from "./dialog.ts";
-
-/** The custom type for preset operation entries. */
-export const PRESET_OP_CUSTOM_TYPE = "preset-op";
+import { findBadRefs } from "./bad-refs.ts";
+import { markWarned, recordNotify } from "./notify.ts";
 
 /**
  * Create command handlers with shared state.
@@ -23,7 +23,9 @@ export const PRESET_OP_CUSTOM_TYPE = "preset-op";
  * @param pi - The ExtensionAPI instance (for appendEntry)
  * @param state - The preset state (active set)
  * @param getCwd - Function to get current cwd
- * @param getDefaultPreset - Function to get default preset name
+ * @param getDefaultPreset - Function returning the default preset name; MUST
+ *   read config.default at call time (ocr N2) so interactions see the current
+ *   value instead of a turn-boundary cached one.
  */
 export function createCommands(
   pi: ExtensionAPI,
@@ -31,12 +33,35 @@ export function createCommands(
   getCwd: () => string,
   getDefaultPreset: () => string | undefined,
 ) {
+  /**
+   * Read config or refuse the operation (ocr R11M2): unreadable settings.json
+   * must not produce any state/entry change — notify an error and return null.
+   */
+  function readConfigOrRefuse(
+    cwd: string,
+    ctx: ExtensionCommandContext,
+  ): ReturnType<typeof readPresetsConfig> | null {
+    try {
+      return readPresetsConfig(cwd);
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      recordNotify(
+        ctx.ui,
+        `settings.json unreadable, cannot proceed: ${reason}`,
+        "error",
+      );
+      return null;
+    }
+  }
+
   /** /preset — TUI dialog */
   async function presetCommand(_args: string, ctx: ExtensionCommandContext): Promise<void> {
     const cwd = getCwd();
-    const config = readPresetsConfig(cwd);
-    const defaultPreset = getDefaultPreset();
-    await showPresetDialog(ctx, pi, state, config, defaultPreset);
+    const config = readConfigOrRefuse(cwd, ctx);
+    if (!config) return;
+    // getDefaultPreset is a live getter — the dialog re-reads the default at
+    // each interaction point, so a settings.json change mid-dialog applies.
+    await showPresetDialog(ctx, pi, state, config, getDefaultPreset);
   }
 
   /** /preset-load <name> */
@@ -48,19 +73,46 @@ export function createCommands(
     }
 
     const cwd = getCwd();
-    const config = readPresetsConfig(cwd);
+    const config = readConfigOrRefuse(cwd, ctx);
+    if (!config) return;
 
     if (!config.definitions[name]) {
-      ctx.ui.notify(
+      recordNotify(
+        ctx.ui,
         `Preset "${name}" not found. Available: ${Object.keys(config.definitions).join(", ")}`,
         "error",
       );
       return;
     }
 
+    const badRefs = findBadRefs(
+      (ctx.getSystemPromptOptions().skills ?? []).map((s) => s!.name),
+      getPresetSkills(config, name) ?? [],
+    );
+
     if (state.has(name)) {
+      // Repeat load of a bad preset warns again (no cross-action dedup).
+      if (badRefs.length > 0) {
+        recordNotify(
+          ctx.ui,
+          `Preset "${name}" is already loaded, but these skills are unavailable (missing or disabled): ${badRefs.join(", ")}`,
+          "warning",
+        );
+        markWarned(badRefs);
+      }
       ctx.ui.notify(`Preset "${name}" is already loaded.`, "info");
       return;
+    }
+
+    if (badRefs.length > 0) {
+      recordNotify(
+        ctx.ui,
+        `Preset "${name}" loaded, but these skills are unavailable (missing or disabled): ${badRefs.join(", ")}`,
+        "warning",
+      );
+      // This load consumed the warning opportunity — the warned names must
+      // not be repeated by the replay path (dedup policy in notify ledger).
+      markWarned(badRefs);
     }
 
     doLoad(pi, ctx, state, name);
@@ -71,6 +123,29 @@ export function createCommands(
     const name = args.trim();
     if (!name) {
       ctx.ui.notify("Usage: /preset-off <name>", "info");
+      return;
+    }
+
+    // ocr R11M2: the live getter re-reads settings.json — an unreadable file
+    // must refuse the offload, not crash the command with an unhandled throw.
+    let defaultPreset: string | undefined;
+    try {
+      defaultPreset = getDefaultPreset();
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      recordNotify(
+        ctx.ui,
+        `settings.json unreadable, cannot proceed: ${reason}`,
+        "error",
+      );
+      return;
+    }
+    if (defaultPreset && name === defaultPreset) {
+      recordNotify(
+        ctx.ui,
+        `Preset "${name}" is the default preset and cannot be offloaded.`,
+        "error",
+      );
       return;
     }
 
@@ -98,8 +173,13 @@ export function createCommands(
   /** /preset-status */
   async function presetStatusCommand(_args: string, ctx: ExtensionCommandContext): Promise<void> {
     const cwd = getCwd();
-    const config = readPresetsConfig(cwd);
-    const defaultPreset = getDefaultPreset();
+    const config = readConfigOrRefuse(cwd, ctx);
+    if (!config) return;
+    // ocr R12M2: reuse the protected read above — a second live getDefaultPreset()
+    // re-read inside this command was unprotected, so a corruption between the
+    // two reads made the whole command reject past the error notification.
+    // config was just read, so config.default is the same value.
+    const defaultPreset = config.default;
     const loaded = state.getLoaded();
 
     if (loaded.length === 0 && !defaultPreset) {
@@ -111,15 +191,18 @@ export function createCommands(
 
     if (defaultPreset) {
       const skills = getPresetSkills(config, defaultPreset) ?? [];
-      lines.push(`Default: ${defaultPreset} (${skills.length} skills → system prompt)`);
+      const missing = config.definitions[defaultPreset] ? "" : " (missing from config)";
+      lines.push(`Default: ${defaultPreset}${missing} (${skills.length} skills → system prompt)`);
     }
 
     if (loaded.length > 0) {
       lines.push("Active set:");
       for (const name of loaded) {
         const skills = getPresetSkills(config, name) ?? [];
-        const isDefault = name === defaultPreset;
-        const marker = isDefault ? " (default, system prompt)" : "";
+        const notes: string[] = [];
+        if (name === defaultPreset) notes.push("default, system prompt");
+        if (!config.definitions[name]) notes.push("missing from config");
+        const marker = notes.length > 0 ? ` (${notes.join(", ")})` : "";
         lines.push(`  ${name}${marker}: ${skills.join(", ")}`);
       }
     }

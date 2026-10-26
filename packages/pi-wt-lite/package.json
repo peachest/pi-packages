@@ -1,0 +1,10 @@
+{
+  "name": "pi-wt-lite",
+  "version": "0.12.2-lite.1",
+  "private": true,
+  "description": "Vendored pi-worktrunk (mavam, npm 0.12.2) with a lite patch: the generated full command reference (buildReference probing every wt subcommand's --help-md) is replaced by a hand-curated compact reference for the common switch/remove/list/merge/step subset, and the registerTool description/promptGuidelines are compressed accordingly — token budget, wt 0.77.0. See lite.patch for the exact delta.",
+  "pi": {
+    "extensions": ["./upstream/worktrunk.ts"],
+    "skills": []
+  }
+}

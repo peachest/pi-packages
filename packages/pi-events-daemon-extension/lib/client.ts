@@ -1,0 +1,218 @@
+/**
+ * client — daemon op 客户端（票 34 基础发送面；票 37 叠加惰性拉起 + 短连接有限重试）。
+ *
+ * 线协议纪律（#31）：op 走每请求短连接（连接→请求→关闭），帧携带 daemon epoch（I12）。
+ * epoch 发现约定：<socketPath>.epoch 旁车文件（daemon bootstrap 写入；票 38 对齐点），
+ * 缺失按 0 处理——I12 会静默拒帧，表现为响应超时，错误文案指向旁车文件。
+ *
+ * 票 37 韧性（相互独立，不混用）：
+ *  - 惰性拉起：首操作 daemon 未运行（连接失败）→ launcher 拉起 daemon 再重试（每请求至多一次）。
+ *  - op 短连接有限重试：每请求至多 MAX_OP_ATTEMPTS=3 次尝试（spec 自定裁量），固定间隔；
+ *    与 wake 长连接指数退避、kernel Intent 消费重试三者相互独立。
+ *  - daemon 业务错误（RpcError）不重试：错误文案已列可用选项，重试只会复读。
+ */
+import { spawn } from "node:child_process";
+import { closeSync, existsSync, openSync } from "node:fs";
+import { createRequire } from "node:module";
+import { dirname, join } from "node:path";
+import { readFileSync } from "node:fs";
+import {
+  connectEvents,
+  resolveSocketPath,
+  type EventsClient,
+} from "pi-events-daemon/transport.ts";
+import type { OpName, RpcError } from "pi-events-daemon/protocol.ts";
+
+export interface OpClientConfig {
+  socketPath?: string;
+  /** 缺省读 <socketPath>.epoch 旁车文件（每请求重读，daemon 重启换代后自动跟上）。 */
+  epoch?: number;
+  /** 单请求响应超时（缺省 10s）——epoch 静默拒帧的兜底观测面。 */
+  timeoutMs?: number;
+  /** 短连接每请求尝试上限（spec 自定裁量 3）；缺省 MAX_OP_ATTEMPTS。 */
+  maxAttempts?: number;
+  /** 惰性拉起器（daemon 未运行时调用一次后重试）；缺省 defaultDaemonLauncher（spawn daemon-main 入口）。 */
+  launcher?: () => Promise<void>;
+  /** 重试间隔（缺省固定 100ms；测试注入记录器）。 */
+  retryDelayMs?: (ms: number) => Promise<void>;
+  /** 票 136：投递类 op（subscribe）的缺省 sessionId——短连接不发 session_start（transport
+   *  不注入），脚本消费者挂订阅时经此面把 wake 目标带上。缺省读 env.PI_SESSION_ID。 */
+  sessionId?: string;
+  env?: NodeJS.ProcessEnv;
+}
+
+/** 票 136：投递类 op 的 opts.sessionId 缺省并入（显式传入不覆盖；非投递类 op 不动）。
+ *  纯函数导出供契约测试（peer 01a13d86 事故根因2：短连接订阅 sessionId="" → wake 无目标 → 通知滞留 backlog）。 */
+export const DELIVERY_OPS = new Set<string>(["subscribe"]);
+export function withDefaultSessionId(
+  op: string,
+  params: Record<string, unknown>,
+  sessionId: string | undefined,
+): Record<string, unknown> {
+  if (!sessionId || !DELIVERY_OPS.has(op)) return params;
+  const opts = (params.opts ??= {}) as Record<string, unknown>;
+  if (opts.sessionId === undefined) opts.sessionId = sessionId;
+  return params;
+}
+
+export interface OpClient {
+  request(op: OpName, params: Record<string, unknown>): Promise<unknown>;
+  close(): Promise<void>;
+}
+
+/** op 短连接每请求尝试上限（#31 round-4 补落：spec 自定裁量 3 次）。 */
+export const MAX_OP_ATTEMPTS = 3;
+/** 重试固定间隔（非指数——与 wake 退避独立）。 */
+export const OP_RETRY_DELAY_MS = 100;
+
+/** epoch 旁车文件读取（<socketPath>.epoch，整数；缺失/垃圾 → 0）。 */
+export function readDaemonEpoch(socketPath: string): number {
+  try {
+    const n = parseInt(readFileSync(`${socketPath}.epoch`, "utf8").trim(), 10);
+    return Number.isInteger(n) && n >= 0 ? n : 0;
+  } catch {
+    return 0;
+  }
+}
+
+export function isRpcError(err: unknown): err is RpcError {
+  const e = err as Partial<RpcError> | null | undefined;
+  // 评审 M：传输本地失败（socket close/error，-32000）带 phase:"transport" 标记——不计为 daemon
+  // 业务错误，重试策略只对传输失败生效。
+  return e !== null && e !== undefined && typeof e.code === "number" && typeof e.message === "string" && e.phase !== "transport";
+}
+
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+/** 失败相位：连接建立失败（唯一触发惰性拉起的相位）vs 响应相位失败（daemon 已活，只重试）。 */
+type AttemptPhase = "connection" | "response";
+type AttemptError = Error & { phase: AttemptPhase };
+
+/**
+ * 缺省惰性拉起器：spawn `pi-events-daemon` 包内 daemon-main 入口（detached，PI_EVENTS_SOCK 指向本 socket），
+ * 轮询等待 socket 文件出现（≤5s）。入口缺失/拉起超时报错列 remedies（票 38 落地真实入口后即插即用）。
+ */
+export function defaultDaemonLauncher(socketPath: string, env: NodeJS.ProcessEnv = process.env): () => Promise<void> {
+  return async () => {
+    const require = createRequire(import.meta.url);
+    let entry: string;
+    try {
+      // 票 128（scan-②）：真入口是 bin/pi-events-daemon.ts（bootstrap+epoch+信号生命周期）——
+      // 旧 daemon-main.ts 是纯 re-export（无执行副作用，spawn 即退 → 惰性拉起从未工作过）
+      entry = join(dirname(require.resolve("pi-events-daemon/package.json")), "bin", "pi-events-daemon.ts");
+    } catch {
+      throw new Error(`daemon 拉起失败：pi-events-daemon 包未找到（socket: ${socketPath}）`);
+    }
+    if (!existsSync(entry)) {
+      throw new Error(`daemon 拉起失败：入口缺失 ${entry}（票 38 bootstrap 落地前请手动启动 daemon）`);
+    }
+    // 票 126（候选5）：stderr 重定向旁车日志（10-19 首部署事故放大器清算——daemon 崩溃根因
+    // 不再被 ignore 吞掉，超时错误直接给出日志路径）；stdout 仍 ignore（守护进程无标准输出语义）。
+    const logPath = `${socketPath}.daemon.log`;
+    let stderrFd: number | undefined;
+    try {
+      stderrFd = openSync(logPath, "a");
+    } catch {
+      stderrFd = undefined; // 旁车日志开不了不阻断拉起（降级为原 stdio:ignore 行为）
+    }
+    const child = spawn(process.execPath, ["--experimental-transform-types", entry], {
+      detached: true,
+      stdio: ["ignore", "ignore", stderrFd ?? "ignore"],
+      env: { ...env, PI_EVENTS_SOCK: socketPath },
+    });
+    // 票 128（audit B4）：spawn error 无监听 = 未处理 error 事件崩宿主进程——detached+unref 下
+    // 仍需挂 error handler 吞掉（失败由 socket 轮询超时路径报错，错误细节已在旁车日志）
+    child.on("error", () => {});
+    child.unref();
+    if (stderrFd !== undefined) closeSync(stderrFd); // fd 交给子进程继承，父侧即关
+    for (let i = 0; i < 50; i++) {
+      if (existsSync(socketPath)) return;
+      await sleep(100);
+    }
+    throw new Error(
+      `daemon 拉起超时（socket 未出现）: ${socketPath} — 崩溃根因见 ${logPath}（票 126 旁车），或手动启动`,
+    );
+  };
+}
+
+function withTimeout<T>(p: Promise<T>, ms: number, message: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), ms);
+    p.then(
+      (v) => {
+        clearTimeout(timer);
+        resolve(v);
+      },
+      (e: unknown) => {
+        clearTimeout(timer);
+        reject(e);
+      },
+    );
+  });
+}
+
+export function createOpClient(cfg: OpClientConfig = {}): OpClient {
+  const socketPath = cfg.socketPath ?? resolveSocketPath(cfg.env ?? process.env);
+  const timeoutMs = cfg.timeoutMs ?? 10_000;
+  const launcher = cfg.launcher ?? defaultDaemonLauncher(socketPath, cfg.env ?? process.env);
+  const delay = cfg.retryDelayMs ?? sleep;
+  const defaultSessionId = cfg.sessionId ?? cfg.env?.PI_SESSION_ID;
+
+  /** 单次尝试：一条短连接（连接→请求→关闭）；非业务失败带 phase 标记供重试策略消费。 */
+  const once = async (op: OpName, params: Record<string, unknown>): Promise<unknown> => {
+    let client: EventsClient | null = null;
+    let phase: AttemptPhase = "connection";
+    try {
+      const epoch = cfg.epoch ?? readDaemonEpoch(socketPath);
+      client = await connectEvents(socketPath, { epoch });
+      phase = "response";
+      const p = client.request(op, params);
+      p.catch(() => {}); // 超时竞速输家的 rejection 不得成为 unhandled
+      return await withTimeout(p, timeoutMs, `op ${op} 响应超时（${timeoutMs}ms）——daemon 停摆或 epoch 过期？检查 ${socketPath}.epoch / 重启 daemon`);
+    } catch (err) {
+      if (isRpcError(err)) throw err; // daemon 业务错误原样上抛（错误文案已列可用选项）
+      const msg = (err as Error | undefined)?.message ?? String(err);
+      // 评审 M：错误带相位——响应相位失败（含 transport 断连/超时）不得触发惰性拉起
+      const wrapped = new Error(
+        `${phase === "connection" ? "daemon 连接失败" : "daemon 调用失败"}（${socketPath}）: ${msg}`,
+      ) as AttemptError;
+      wrapped.phase = phase;
+      throw wrapped;
+    } finally {
+      await client?.close();
+    }
+  };
+
+  return {
+    async request(op, params) {
+      params = withDefaultSessionId(op, params, defaultSessionId); // 票 136：投递类 op 缺省并入
+      const maxAttempts = cfg.maxAttempts ?? MAX_OP_ATTEMPTS;
+      let lastErr: unknown;
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        try {
+          return await once(op, params);
+        } catch (err) {
+          if (isRpcError(err)) throw err; // 业务错误不重试
+          lastErr = err;
+          if (attempt >= maxAttempts) break;
+          // 评审 M：惰性拉起仅对连接相位失败（daemon 未运行）；响应相位失败（daemon 已活）只重试
+          if (attempt === 1 && (err as { phase?: AttemptPhase }).phase === "connection") {
+            try {
+              await launcher();
+            } catch (launchErr) {
+              lastErr = launchErr;
+            }
+          } else {
+            await delay(OP_RETRY_DELAY_MS);
+          }
+        }
+      }
+      const detail = lastErr instanceof Error ? lastErr.message : String(lastErr);
+      throw new Error(
+        `daemon 不可达（已重试 ${maxAttempts} 次）: ${detail}\n可用选项: 检查 PI_EVENTS_SOCK / ${socketPath}.epoch / 手动启动 daemon`,
+      );
+    },
+    // 每请求短连接：无常驻资源
+    async close() {},
+  };
+}

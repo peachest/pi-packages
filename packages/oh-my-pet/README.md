@@ -34,7 +34,7 @@ No extra keystrokes needed — glance and go.
 
 ## Concepts
 
-See [CONTEXT.md](./CONTEXT.md) for the full glossary (Pet, Mod, Binlog, Adaptor Layer, Attribute Policy, etc.).
+See [GLOSSARY.md](./GLOSSARY.md) for the full glossary (Pet, Mod, Binlog, Adaptor Layer, Attribute Policy, etc.).
 
 ## Install
 

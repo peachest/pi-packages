@@ -1,0 +1,144 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "pi-events-daemon Profile 定义 schema（I-01 注册表格式的正式化，#31 Schema 策略 R3）",
+  "description": "加一种 profile = 一份数据声明、零 kernel 改动（I-01：profile 加载时把状态机定义注入 kernel 注册表，kernel 校验 transition(to) 查注册表值传递，无代码 import）。内容清单 = R3 正典 8 项：状态集（闭集）+ 转换表 + payload schema + key 生成规则 + schedule + on-transition 编排规则（C2）+ probe 模板 + 状态改名迁移映射（B7）。行为不在 schema 里（对齐 k8s 分层）：转换执行/编排由 kernel 代码承担，本文件只是注册表格式的机器契约面。Entity 语义对齐 k8s status 子资源：spec 极小（身份），status（观测态）为全部。payloadSchema 与本文件同为 draft-07 文档；daemon 侧按 D1a 子集（required/enum/type/正则）校验，完整校验归 extension/CLI 侧标准校验器。",
+  "type": "object",
+  "required": ["id", "entityType", "version", "states", "transitions", "payloadSchema", "keyGenerator", "schedule", "onTransition", "templates", "stateMigrations"],
+  "additionalProperties": false,
+  "properties": {
+    "id": { "type": "string", "description": "profile 标识（templates op 的 profile 过滤值）。" },
+    "entityType": {
+      "type": "string",
+      "description": "源系统判别符 = domain EntityRef.type（如 gitlab:mr / fs:path / task）；key generator 产出的 EntityRef 携带它（ADR 0002）。"
+    },
+    "version": {
+      "type": "integer",
+      "description": "profile 版本；stateMigrations 随改名递增（B7 版本化前提）。"
+    },
+    "states": {
+      "type": "array",
+      "items": { "type": "string" },
+      "minItems": 1,
+      "description": "封闭状态集（闭集）：实体 state 只取此处列出的值；null 表示尚未探测（无 unprobed 合成前态）。闭集性由 kernel 注册表校验执行，schema 只钉形状。"
+    },
+    "transitions": {
+      "type": "array",
+      "description": "合法转换表：from→to 对的闭集；from==to 为自转换（合法——contentIdentity 变化即发事件，ADR 0003）。表外 to 一律拒绝（publish 非法 to 同步报错）。事件侧 from=null（首转换无前置态）不是表行。", 
+      "items": {
+        "type": "object",
+        "required": ["from", "to"],
+        "properties": {
+          "from": { "type": "string", "description": "前置状态（states 成员）。" },
+          "to": { "type": "string", "description": "目标状态（states 成员）。" },
+          "description": { "type": "string" }
+        }
+      }
+    },
+    "payloadSchema": {
+      "type": "object",
+      "description": "payload 的 JSON Schema（draft-07 文档）：解释实体当前状态的属性（无历史、无大段文本；>2KB 走 evidenceRef）。identity 字段（digest/contentHash 等）驱动自转换（ADR 0003）。"
+    },
+    "keyGenerator": {
+      "type": "object",
+      "required": ["kind"],
+      "description": "key 生成规则（key generator 归 profile 层，ADR 0002：agent 不铸造不解析）。kind 为规则名（如 url 解析规范化 / cwd 派生 project 键 / condition sha1）；其余字段为该规则的参数，形状由 profile 层自定。",
+      "properties": {
+        "kind": { "type": "string" }
+      }
+    },
+    "schedule": {
+      "$ref": "#/definitions/scheduleSpec",
+      "$comment": "schedule 默认（本 profile 模板的缺省节奏；模板可覆盖）。{type:\"interval\", every} | {type:\"cron\", expr, tz?}（crontab 5 字段，缺省本地时区）。oneOf 两分支按 type 收紧（票 02 ScheduleSpec）。"
+    },
+    "onTransition": {
+      "type": "array",
+      "description": "on-transition 编排规则（C2）：转换发生时的编排声明（如自动 subscribe / close）；执行在 kernel/loops 代码，此处只是数据声明。",
+      "items": {
+        "type": "object",
+        "required": ["on", "action"],
+        "properties": {
+          "on": {
+            "type": ["string", "array"],
+            "items": { "type": "string" },
+            "description": "触发的状态名/状态集或 \"from>to\" 转换。"
+          },
+          "action": { "type": "string", "description": "编排动作（如 subscribe / close）。" },
+          "params": { "type": "object", "description": "动作参数（动作语义层自定）。" }
+        }
+      }
+    },
+    "templates": {
+      "type": "array",
+      "description": "probe 模板（templates op 渐进披露的面即此处声明；实体参数由 key generator 分解，agent 只填意图不碰 shell）。",
+      "items": {
+        "type": "object",
+        "description": "$comment: 与 op.schema.json#/definitions/templateInfo 同构（templates op 返回的就是本清单条目），两处同步维护。",
+        "required": ["name", "check", "params", "usage"],
+        "properties": {
+          "name": { "type": "string" },
+          "entityType": {
+            "type": "string",
+            "description": "本模板的 EntityRef.type 覆盖（票 33 三域：gitlab-pipeline 内 mr/ci/ticket 各自判别符）；缺省继承 profile 顶层 entityType。"
+          },
+          "check": { "type": "string", "description": "check 命令文本（tri-state 判定器原语；模板资产，agent 永不传入）。" },
+          "states": { "type": "array", "items": { "type": "string" }, "description": "模板回显的闭集子集（缺省=全 states）。" },
+          "schedule": {
+            "$ref": "#/definitions/scheduleSpec",
+            "$comment": "模板级 schedule 覆盖（缺省用 profile 顶层 schedule）。"
+          },
+          "urlPattern": {
+            "type": "string",
+            "description": "URL 路由正则（票 32 resolve：subscribe url 唯一命中绑定；多命中报错列候选；零命中列可用模板）。可编译性 load 即校验。"
+          },
+          "host": {
+            "type": "string",
+            "description": "显式 host 路由（双 GitLab 实例零 fallback 猜测）：缺省不限 host；携带时 URL host 必须精确相等才参与命中。"
+          },
+          "params": {
+            "type": "object",
+            "description": "参数名 → 说明。",
+            "additionalProperties": { "type": "string" }
+          },
+          "usage": { "type": "string" }
+        }
+      }
+    },
+    "stateMigrations": {
+      "type": "object",
+      "description": "状态改名迁移映射（B7）：旧状态名 → 新状态名；kernel 加载时对存量实体状态做一次性改名，随 version 递增。无改名时为空对象。",
+      "additionalProperties": { "type": "string" }
+    },
+    "sideEffectPatterns": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "已知副作用 pattern（子串匹配，票 33 数据面）：validate 静态面命中出 warning 不阻断（ADR 0004 checks-are-probes）。"
+    }
+  },
+  "definitions": {
+    "scheduleSpec": {
+      "$comment": "与 op.schema.json#/definitions/scheduleSpec 同构（两处同步维护）：oneOf 两分支按 type 收紧（票 02 ScheduleSpec：interval 需 every，cron 需 expr）。",
+      "type": "object",
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["type", "every"],
+          "properties": {
+            "type": { "enum": ["interval"] },
+            "every": { "type": "string", "description": "如 \"60s\"。" }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["type", "expr"],
+          "properties": {
+            "type": { "enum": ["cron"] },
+            "expr": { "type": "string", "description": "5 字段表达式。" },
+            "tz": { "type": "string", "description": "时区（缺省本地）。" }
+          },
+          "additionalProperties": false
+        }
+      ]
+    }
+  }
+}

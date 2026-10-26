@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# pre-push — hard gate: no credentials/internal identifiers leave this repo.
+# Enforced at tool level, not by memory (setup-gitleaks skill, enforcement ladder).
+#
+# Scans the commits being pushed (not the working tree — gitignored local
+# files are fine to keep locally, just not to push).
+#
+# Install: git config core.hooksPath scripts/githooks  (done in this repo)
+# Config:  ./gitleaks.toml — if missing, falls back to gitleaks default rules
+#          (weaker: no internal-domain rules).
+
+set -u
+# git runs hooks with cwd=repo top; $0 may be a relative path — resolve via git
+REPO_TOP=$(git rev-parse --show-toplevel)
+GITLEAKS_CONFIG="$REPO_TOP/gitleaks.toml"
+
+cmd=(gitleaks git --redact)
+if [ -f "$GITLEAKS_CONFIG" ]; then
+    cmd+=(-c "$GITLEAKS_CONFIG")
+else
+    echo "pre-push: WARN repo gitleaks.toml not found — using default rules (no internal-domain checks)" >&2
+fi
+cmd+=(.)
+
+# stdin lines: <local_ref> <local_sha> <remote_ref> <remote_sha>
+# remote_sha all-zeros = new branch → scan everything not already on a remote.
+fail=0
+while read -r local_ref local_sha remote_ref remote_sha; do
+    if [[ "$remote_sha" =~ ^0+$ ]]; then
+        log_opts="$local_sha --not --remotes --first-parent"
+    else
+        log_opts="$remote_sha..$local_sha"
+    fi
+    # Scan failure (e.g. missing remote_sha object after gc) is NOT a leak:
+    # refetch and retry once before blocking.
+    if ! out=$("${cmd[@]}" --log-opts="$log_opts" 2>&1); then
+        if printf '%s' "$out" | grep -q "leaks found"; then
+            printf '%s\n' "$out" >&2
+            echo "pre-push: BLOCKED — gitleaks found issues in $local_ref ($log_opts). Remove them (git rebase/filter) and push again." >&2
+            fail=1
+        else
+            echo "pre-push: WARN gitleaks scan failed (not a leak finding) for $local_ref — attempting fetch + retry" >&2
+            git fetch --quiet origin 2>/dev/null || true
+            if ! out=$("${cmd[@]}" --log-opts="$log_opts" 2>&1); then
+                printf '%s\n' "$out" >&2
+                echo "pre-push: BLOCKED — gitleaks scan errored twice for $local_ref ($log_opts). Investigate manually (gitleaks git --log-opts='$log_opts')." >&2
+                fail=1
+            fi
+        fi
+    fi
+done
+
+exit "$fail"

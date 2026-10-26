@@ -1,0 +1,137 @@
+{
+  "id": "gitlab-pipeline",
+  "entityType": "gitlab:mr",
+  "version": 1,
+  "states": [
+    "passed",
+    "failed",
+    "waiting"
+  ],
+  "transitions": [
+    {
+      "from": "waiting",
+      "to": "passed",
+      "description": "probe 通过（阈值 1:1，先建者定）"
+    },
+    {
+      "from": "waiting",
+      "to": "failed",
+      "description": "probe 失败"
+    },
+    {
+      "from": "passed",
+      "to": "failed",
+      "description": "状态翻转"
+    },
+    {
+      "from": "failed",
+      "to": "passed",
+      "description": "恢复"
+    },
+    {
+      "from": "passed",
+      "to": "passed",
+      "description": "自转换（contentIdentity 变化，ADR 0003）"
+    },
+    {
+      "from": "failed",
+      "to": "failed",
+      "description": "自转换（contentIdentity 变化）"
+    },
+    {
+      "from": "waiting",
+      "to": "waiting",
+      "description": "探针异常（timeout/exit 其他，仍在等待）"
+    }
+  ],
+  "payloadSchema": {
+    "type": "object",
+    "properties": {
+      "host": {
+        "type": "string",
+        "description": "GitLab 实例 host（双实例显式路由）"
+      },
+      "project": {
+        "type": "string",
+        "description": "项目 id（数字或 URL 编码路径）"
+      },
+      "iid": {
+        "type": "string",
+        "description": "对象序号（mr iid / pipeline id / issue iid）"
+      }
+    }
+  },
+  "keyGenerator": {
+    "kind": "url",
+    "param": "url"
+  },
+  "schedule": {
+    "type": "interval",
+    "every": "60s"
+  },
+  "onTransition": [],
+  "templates": [
+    {
+      "name": "mr",
+      "entityType": "gitlab:mr",
+      "check": "st=$(glab api --hostname {host} \"projects/{project}/merge_requests/{mr_iid}\" 2>/dev/null | jq -r '.state'); case \"$st\" in opened) echo mr-opened; exit 1;; merged) echo mr-merged; exit 0;; closed) echo mr-closed; exit 2;; *) echo mr-${st:-none}; exit 1;; esac",
+      "states": [
+        "passed",
+        "failed",
+        "waiting"
+      ],
+      "params": {
+        "host": "GitLab 实例 host（如 gitlab.a.com，双实例显式填、无 fallback）",
+        "project": "项目 id（数字或 URL 编码路径，如 grp%2Fproj）",
+        "mr_iid": "merge request 序号"
+      },
+      "usage": "mr 判定：.state = opened/merged/closed 之外按 check 退出码三态映射（0=passed / 2=failed / 其他=waiting）；零凭证——glab 运行时自取 token（$(glab config get token --host <host>)），模板禁硬编码",
+      "urlPattern": "^(?<host>[^/]+)/(?<project>.+)/-/merge_requests/(?<mr_iid>\\d+)$"
+    },
+    {
+      "name": "ci",
+      "entityType": "gitlab:pipeline",
+      "check": "st=$(glab api --hostname {host} \"projects/{project}/pipelines/{pipeline_id}\" 2>/dev/null | jq -r '.status'); case \"$st\" in success) echo pipeline-success; exit 0;; failed|canceled) echo pipeline-$st; exit 2;; *) echo running-${st:-none}; exit 1;; esac",
+      "states": [
+        "passed",
+        "failed",
+        "waiting"
+      ],
+      "schedule": {
+        "type": "interval",
+        "every": "30s"
+      },
+      "params": {
+        "host": "GitLab 实例 host（双实例显式填）",
+        "project": "项目 id（数字或 URL 编码路径）",
+        "pipeline_id": "pipeline id"
+      },
+      "usage": "CI pipeline 判定：终态 success→passed / failed/canceled→failed，进行中→waiting；节奏比 mr 密（30s）",
+      "urlPattern": "^(?<host>[^/]+)/(?<project>.+)/-/pipelines/(?<pipeline_id>\\d+)$"
+    },
+    {
+      "name": "ticket",
+      "entityType": "gitlab:ticket",
+      "check": "st=$(glab api --hostname {host} \"projects/{project}/issues/{issue_iid}\" 2>/dev/null | jq -r '.state'); case \"$st\" in opened) echo ticket-opened; exit 1;; closed) echo ticket-closed; exit 0;; *) echo ticket-${st:-none}; exit 1;; esac",
+      "states": [
+        "passed",
+        "failed",
+        "waiting"
+      ],
+      "params": {
+        "host": "GitLab 实例 host（双实例显式填）",
+        "project": "项目 id（数字或 URL 编码路径）",
+        "issue_iid": "issue 序号"
+      },
+      "usage": "ticket 判定：state 语义同 mr 域；issue 更新低频，节奏用顶层缺省 60s",
+      "urlPattern": "^(?<host>[^/]+)/(?<project>.+)/-/issues/(?<issue_iid>\\d+)$"
+    }
+  ],
+  "stateMigrations": {},
+  "sideEffectPatterns": [
+    " mr close",
+    " mr reopen",
+    " issue close",
+    " pipeline cancel"
+  ]
+}

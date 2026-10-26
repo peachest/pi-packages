@@ -1,8 +1,9 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { createCommands, PRESET_OP_CUSTOM_TYPE } from "../src/commands.ts";
-import { PresetState } from "../src/preset-state.ts";
+import { createCommands } from "../index.ts";
+import { PRESET_OP_CUSTOM_TYPE } from "../index.ts";
+import { PresetState } from "../index.ts";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import type { PresetOpEntry } from "../src/types.ts";
+import type { PresetOpEntry } from "../index.ts";
 import * as os from "node:os";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -22,8 +23,11 @@ function makeFakePi(): { pi: ExtensionAPI; entries: PresetOpEntry[] } {
   return { pi, entries };
 }
 
-// Fake command context that records notify calls
-function makeFakeCtx(): { ctx: ExtensionCommandContext; notifications: Array<{ msg: string; type: string }> } {
+// Fake command context that records notify calls; platformSkills feeds
+// ctx.getSystemPromptOptions() (the platform's discovered skill set).
+function makeFakeCtx(
+  platformSkills: string[] = [],
+): { ctx: ExtensionCommandContext; notifications: Array<{ msg: string; type: string }> } {
   const notifications: Array<{ msg: string; type: string }> = [];
   const ctx = {
     ui: {
@@ -35,6 +39,9 @@ function makeFakeCtx(): { ctx: ExtensionCommandContext; notifications: Array<{ m
     },
     hasUI: true,
     cwd: TMP_DIR,
+    getSystemPromptOptions: () => ({
+      skills: platformSkills.map((name) => ({ name, description: "", filePath: "" })),
+    }),
   } as unknown as ExtensionCommandContext;
   return { ctx, notifications };
 }
@@ -115,6 +122,44 @@ describe("command dispatch", () => {
       expect(entries).toHaveLength(0);
       expect(notifications.some((n) => n.msg.includes("Usage"))).toBe(true);
     });
+
+    it("warns about bad references but still loads", async () => {
+      const { pi } = makeFakePi();
+      const { ctx, notifications } = makeFakeCtx(["wayfinder", "tdd", "domain-modeling"]);
+      const commands = createCommands(pi, new PresetState(), () => TMP_DIR, () => "engineer");
+
+      // "ddd" references domain-modeling (present) only — no warning.
+      await commands.presetLoadCommand("ddd", ctx);
+      expect(notifications.some((n) => n.type === "warning")).toBe(false);
+
+      // Platform list missing domain-modeling: bad ref warns, load proceeds.
+      const state2 = new PresetState();
+      const fake2 = makeFakePi();
+      const fakeCtx2 = makeFakeCtx(["wayfinder", "tdd"]);
+      const commands2 = createCommands(fake2.pi, state2, () => TMP_DIR, () => "engineer");
+      await commands2.presetLoadCommand("ddd", fakeCtx2.ctx);
+
+      expect(state2.has("ddd")).toBe(true);
+      expect(fake2.entries).toHaveLength(1);
+      const warn = fakeCtx2.notifications.find((n) => n.type === "warning");
+      expect(warn?.msg).toContain("domain-modeling");
+      expect(warn?.msg).toContain("missing or disabled");
+    });
+
+    it("warns again when a bad preset is loaded twice", async () => {
+      const state = new PresetState();
+      state.load("ddd");
+      const { pi, entries } = makeFakePi();
+      const { ctx, notifications } = makeFakeCtx(["wayfinder", "tdd"]);
+      const commands = createCommands(pi, state, () => TMP_DIR, () => "engineer");
+
+      await commands.presetLoadCommand("ddd", ctx);
+
+      const warnings = notifications.filter((n) => n.type === "warning");
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]!.msg).toContain("domain-modeling");
+      expect(entries).toHaveLength(0);
+    });
   });
 
   describe("/preset-off", () => {
@@ -144,6 +189,22 @@ describe("command dispatch", () => {
       expect(entries).toHaveLength(0);
       expect(notifications.some((n) => n.msg.includes("not loaded"))).toBe(true);
     });
+
+    it("rejects offloading the default preset", async () => {
+      const state = new PresetState();
+      state.load("engineer");
+      const { pi, entries } = makeFakePi();
+      const { ctx, notifications } = makeFakeCtx();
+      const commands = createCommands(pi, state, () => TMP_DIR, () => "engineer");
+
+      await commands.presetOffCommand("engineer", ctx);
+
+      expect(state.has("engineer")).toBe(true);
+      expect(entries).toHaveLength(0);
+      const err = notifications.find((n) => n.type === "error");
+      expect(err?.msg).toContain("default preset");
+      expect(err?.msg).toContain("cannot be offloaded");
+    });
   });
 
   describe("/preset-status", () => {
@@ -162,15 +223,67 @@ describe("command dispatch", () => {
       expect(statusMsg).toContain("domain-modeling");
     });
 
+    it("reuses the protected config read instead of a second live read (ocr R12M2)", async () => {
+      const state = new PresetState();
+      const { pi } = makeFakePi();
+      const { ctx, notifications } = makeFakeCtx();
+      // If status still called the unprotected live getter, this throw would
+      // reject the whole command past the error-notification path.
+      const commands = createCommands(pi, state, () => TMP_DIR, () => {
+        throw new Error("second read must not happen");
+      });
+
+      await commands.presetStatusCommand("", ctx);
+
+      const statusMsg = notifications[0]?.msg ?? "";
+      expect(statusMsg).toContain("Default: engineer");
+      expect(notifications.some((n) => n.type === "error")).toBe(false);
+    });
+
     it("shows no presets loaded when empty", async () => {
       const state = new PresetState();
       const { pi } = makeFakePi();
       const { ctx, notifications } = makeFakeCtx();
       const commands = createCommands(pi, state, () => TMP_DIR, () => undefined);
 
+      // ocr R12M2: status reads the default from the protected config read,
+      // not the injected live getter — remove the default from settings to
+      // simulate "no default configured" (restored in finally).
+      const settingsPath = path.join(AGENT_DIR, "settings.json");
+      const original = fs.readFileSync(settingsPath, "utf-8");
+      fs.writeFileSync(
+        settingsPath,
+        JSON.stringify({
+          presets: {
+            definitions: {
+              engineer: { skills: ["wayfinder", "tdd"] },
+              ddd: { skills: ["domain-modeling"] },
+            },
+          },
+        }),
+      );
+      try {
+        await commands.presetStatusCommand("", ctx);
+
+        expect(notifications[0]?.msg).toContain("No presets loaded");
+      } finally {
+        fs.writeFileSync(settingsPath, original);
+      }
+    });
+
+    it("annotates presets missing from config", async () => {
+      const state = new PresetState();
+      state.load("ddd");
+      state.load("ghost");
+      const { pi } = makeFakePi();
+      const { ctx, notifications } = makeFakeCtx();
+      const commands = createCommands(pi, state, () => TMP_DIR, () => "engineer");
+
       await commands.presetStatusCommand("", ctx);
 
-      expect(notifications[0]?.msg).toContain("No presets loaded");
+      const msg = notifications[0]?.msg ?? "";
+      expect(msg).toContain("ghost (missing from config)");
+      expect(msg).not.toContain("ddd (missing from config)");
     });
   });
 });
