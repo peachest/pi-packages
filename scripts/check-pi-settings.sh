@@ -31,3 +31,20 @@ for pkg in settings.get("packages", []):
         fail = 1
 sys.exit(fail)
 PY
+py_exit=$?
+
+# kendex hook 副本 drift 探针（票 #174：部署副本 sha 必须 == repo 源 sha）。
+# 背景事件：2026-10-26 KB gate 84 行只存在于部署副本未回流（~/ops/kendex-bash-guards-deploy-drift*.md）。
+kendex_fail=0
+for pair in "bash-guards.py" "write-home-guard.py"; do
+    src="packages/pi-bash-guards/scripts/$pair"
+    dst="${HOME}/.pi/agent/kendex/hooks/$pair"
+    if [ ! -f "$dst" ]; then
+        echo "FAIL kendex deploy missing: $dst — run: bash packages/pi-bash-guards/scripts/install.sh"
+        kendex_fail=1
+    elif ! cmp -s "$src" "$dst"; then
+        echo "FAIL kendex deploy drift: $dst differs from $src — run: bash packages/pi-bash-guards/scripts/install.sh"
+        kendex_fail=1
+    fi
+done
+exit $((py_exit + kendex_fail))
