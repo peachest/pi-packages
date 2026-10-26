@@ -956,7 +956,23 @@ def subagent_main(args):
     return 0
 
 
+def _rescue_cwd():
+    # Ticket #175: when the session cwd is a recycled worktree, spawn inherits
+    # a dead directory and the hook process dies before any verdict (two
+    # confirmed full-lockout incidents 2026-10-26 — every bash call returned
+    # hook-exit=-1 with no way for the agent to self-rescue). The guard must
+    # never be the thing that hard-locks the session: park on /tmp and judge.
+    try:
+        os.getcwd()
+    except OSError:
+        try:
+            os.chdir("/tmp")
+        except OSError:
+            pass  # even /tmp unwritable: proceed, individual rules fail open
+
+
 def main():
+    _rescue_cwd()
     raw = sys.stdin.read()
     try:
         tool_input = json.loads(raw).get("tool_input") or {}
