@@ -133,6 +133,9 @@ func (g *GitHubBackend) CreateTicket(opts TicketOpts) (TicketSummary, error) {
 	if err := validateTicketOpts(opts); err != nil {
 		return TicketSummary{}, err
 	}
+	if opts.BlockedBy == nil {
+		opts.BlockedBy = []string{}
+	}
 
 	// Label set: map (identity), type, triage, status for claimed.
 	labels := []string{mapLabel(opts.MapSlug), "type/" + opts.Type}
@@ -249,6 +252,12 @@ func (g *GitHubBackend) SetStatus(mapSlug, ticketID, status string) error {
 		if cur.Status == "resolved" {
 			return nil // idempotent, mirrors local
 		}
+		// Clean up the claimed label so a resolved issue doesn't carry it.
+		if cur.Status == "claimed" {
+			if _, err := g.gh("issue", "edit", id, "-R", g.repo, "--remove-label", "status/claimed"); err != nil {
+				return err
+			}
+		}
 		_, err := g.gh("issue", "close", id, "-R", g.repo)
 		return err
 	}
@@ -256,12 +265,10 @@ func (g *GitHubBackend) SetStatus(mapSlug, ticketID, status string) error {
 	if cur.Status == "open" {
 		return nil
 	}
-	editArgs := []string{"issue", "edit", id, "-R", g.repo}
 	if cur.Status == "claimed" {
-		editArgs = append(editArgs, "--remove-label", "status/claimed")
-	}
-	if _, err := g.gh(editArgs...); err != nil {
-		return err
+		if _, err := g.gh("issue", "edit", id, "-R", g.repo, "--remove-label", "status/claimed"); err != nil {
+			return err
+		}
 	}
 	if cur.Status == "resolved" {
 		_, err := g.gh("issue", "reopen", id, "-R", g.repo)

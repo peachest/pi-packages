@@ -142,6 +142,9 @@ func (gl *GitLabBackend) CreateTicket(opts TicketOpts) (TicketSummary, error) {
 	if err := validateTicketOpts(opts); err != nil {
 		return TicketSummary{}, err
 	}
+	if opts.BlockedBy == nil {
+		opts.BlockedBy = []string{}
+	}
 	labels := []string{mapLabel(opts.MapSlug), "type/" + opts.Type}
 	if opts.Triage != nil {
 		labels = append(labels, "triage/"+*opts.Triage)
@@ -246,6 +249,12 @@ func (gl *GitLabBackend) SetStatus(mapSlug, ticketID, status string) error {
 	if status == "resolved" {
 		if cur.Status == "resolved" {
 			return nil
+		}
+		// Clean up the claimed label so a resolved issue doesn't carry it.
+		if cur.Status == "claimed" {
+			if _, err := gl.api(gl.projectEndpoint("issues/"+id), "-X", "PUT", "-f", "remove_labels=status/claimed"); err != nil {
+				return err
+			}
 		}
 		_, err := gl.api(gl.projectEndpoint("issues/"+id), "-X", "PUT", "-f", "state_event=close")
 		return err
