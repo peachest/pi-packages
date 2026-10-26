@@ -460,19 +460,32 @@ def _match_g1(ctx):
 def _match_p2(ctx):
     # P2. git add -A / --all / . — stage files explicitly (AGENTS.md repo
     # rule; 15 repos, ~960 calls mined).
-    # debt (spec#137 review; kept verbatim by spec#142): FULL-TEXT match —
-    # echo literals false-block (golden-locked current behavior).
-    if re.search(r"\bgit\s+add\s+(?:-\S*\s+)*(?:-A\b|--all\b|\.(?:\s|$))", ctx["cmd"]):
-        return {}
+    # Command-position match (2026-10-26, R1 grilling upgrade from FULL-TEXT):
+    # only a segment that STARTS with git add is an execution — literals inside
+    # echo strings / comments / heredoc bodies are not. Evidence: 16
+    # interceptions in one session, 15 pure literals (94% false-block), and the
+    # FULL-TEXT made analyzing the guard itself impossible (any diagnostic
+    # script quoting the blocked literal was blocked too). Fail direction is
+    # now missed blocks (var indirection X="git add -A"; $X), consistent with
+    # the fail-open philosophy.
+    for seg in segments(ctx["cmd"]):
+        if re.match(r"^git\s+add\b", seg) and re.search(
+            r"^git\s+add\s+(?:-\S*\s+)*(?:-A\b|--all\b|\.(?:\s|$))", seg
+        ):
+            return {}
     return None
 
 def _match_p3(ctx):
     # P3. Foreground sleep >= 60s parks the whole turn (14 repos, ~700 calls,
     # tens of hours of wall clock; near-zero bg adoption). Nudge, don't
     # block: exit 2 with a redirect is the nudge channel pi-hooks gives us.
-    # debt (spec#137 review; kept verbatim by spec#142): FULL-TEXT finditer —
-    # echo literals false-block (golden-locked current behavior).
-    for m in re.finditer(r"\bsleep\s+(\d+)([smh]?)\b", ctx["cmd"]):
+    # Command-position match (2026-10-26, R1 grilling upgrade from FULL-TEXT,
+    # same rationale/evidence as P2): only segments headed by sleep are
+    # executions; literals in strings/comments/heredoc bodies are not.
+    for seg in segments(ctx["cmd"]):
+        m = re.match(r"^sleep\s+(\d+)([smh]?)\b", seg)
+        if not m:
+            continue
         n, unit = int(m.group(1)), m.group(2)
         seconds = n * {"": 1, "s": 1, "m": 60, "h": 3600}[unit]
         if seconds >= 60:
