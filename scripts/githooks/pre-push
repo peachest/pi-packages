@@ -53,6 +53,32 @@ while read -r local_ref local_sha remote_ref remote_sha; do
             fi
         fi
     fi
+
+    # Default-branch gate: an empty (no file change, non-merge) commit landing
+    # on origin/main pollutes shared history (2026-10-26: 3 hook-stability-probe-*
+    # commits reached main). Empty commits stay legal on feature branches —
+    # only refs/heads/main is guarded. Same range logic as the gitleaks scan:
+    # --not --remotes counts only commits this push actually adds.
+    if [ "$remote_ref" = "refs/heads/main" ]; then
+        if [[ "$remote_sha" =~ ^0+$ ]]; then
+            empty_opts="$local_sha --not --remotes"
+        else
+            empty_opts="$remote_sha..$local_sha --not --remotes"
+        fi
+        empty_commits=""
+        for c in $(git rev-list --no-merges $empty_opts 2>/dev/null); do
+            [ -z "$(git diff-tree --no-commit-id --name-only -r --root "$c")" ] && empty_commits="$empty_commits $c"
+        done
+        if [ -n "$empty_commits" ]; then
+            echo "pre-push: BLOCKED — empty commit(s) would land on origin/main:" >&2
+            for c in $empty_commits; do
+                echo "  $(git log -1 --format='%h %s' "$c")" >&2
+            done
+            echo "  Clean up: git rebase -i <good-base> and drop them, or git revert <sha> and push the revert." >&2
+            echo "  (Empty commits are allowed on feature branches; only origin/main is guarded.)" >&2
+            fail=1
+        fi
+    fi
 done
 
 exit "$fail"
