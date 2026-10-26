@@ -26,4 +26,3 @@
 - **每问一次 ≤4 题**：维持 rpiv MAX_QUESTIONS=4（FINDINGS"≤3 问"是个人提问习惯，不进 schema）。
 - **事件通道名不变**：`rpiv:ask-user:*` 逐字保留（pi-herdr-ask-bridge 依赖）。
 - **包根 seams re-export**：tests 只 import 包根（repo 边界规则），见 `seams.ts`。
-# relink-wiring-probe
