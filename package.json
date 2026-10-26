@@ -13,6 +13,8 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@juicesharp/rpiv-config": "^2.15.0",
+    "@juicesharp/rpiv-i18n": "^2.15.0",
     "@stryker-mutator/core": "^10.0.0",
     "@stryker-mutator/vitest-runner": "^10.0.0",
     "@types/node": "^25.9.1",
