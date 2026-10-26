@@ -289,3 +289,47 @@ func TestGitHubCloseVerifyApplyRefusesUnmergedPR(t *testing.T) {
 		t.Errorf("dry-run refs = %+v", report.Refs)
 	}
 }
+
+func TestGitHubCloseVerifyApplyRefusesUnreachableSHA(t *testing.T) {
+	commitJSON := `{"html_url":"https://github.com/o/r/commit/abc","commit":{"message":"merge: Closes #4"}}`
+	r := &fakeRunner{responses: map[string]string{
+		"gh api repos/o/r/commits/abc123": commitJSON,
+		"gh api repos/o/r":                `{"default_branch":"main"}`,
+		// compare main...abc123 intentionally absent → 404 → unreachable
+	}}
+	b := NewGitHubBackend(r, "o/r")
+	// compare 404 (not in responses → fakeRunner errors) == unreachable:
+	// apply refused, dry-run allowed
+	_, err := b.CloseVerify(CloseVerifyOpts{Ref: "abc123", Apply: true})
+	if !isErr(err, ErrInvalidInput) {
+		t.Fatalf("want ErrInvalidInput, got %v", err)
+	}
+	r.responses["gh issue view 4 -R o/r --json number,title,state,labels,body,createdAt,url,comments"] = singleIssueJSON(4, "OPEN", []string{}, "")
+	report, err := b.CloseVerify(CloseVerifyOpts{Ref: "abc123"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Refs) != 1 || report.Refs[0].Issue != "4" {
+		t.Errorf("dry-run refs = %+v", report.Refs)
+	}
+}
+
+func TestGitHubCloseVerifyApplyAllowsMergedSHA(t *testing.T) {
+	commitJSON := `{"html_url":"https://github.com/o/r/commit/abc","commit":{"message":"merge: Closes #4"}}`
+	r := &fakeRunner{responses: map[string]string{
+		"gh api repos/o/r/commits/abc123":        commitJSON,
+		"gh api repos/o/r":                       `{"default_branch":"main"}`,
+		"gh api repos/o/r/compare/main...abc123": `{"status":"behind"}`,
+		"gh issue view 4 -R o/r --json number,title,state,labels,body,createdAt,url,comments":                                                             singleIssueJSON(4, "OPEN", []string{}, ""),
+		"gh issue comment 4 -R o/r --body Closed by commit abc123 (https://github.com/o/r/commit/abc). Verified automatically by `tracker close-verify`.": "",
+		"gh issue close 4 -R o/r": "",
+	}}
+	b := NewGitHubBackend(r, "o/r")
+	report, err := b.CloseVerify(CloseVerifyOpts{Ref: "abc123", Apply: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Applied) != 1 || report.Applied[0] != "4" {
+		t.Errorf("applied = %v, want [4]", report.Applied)
+	}
+}

@@ -24,7 +24,7 @@ import (
 // tickets via --apply (ocr finding H3); they are filtered by
 // isNegatedClosing after the match, using the tokens before the keyword —
 // RE2 has no lookbehind, so negation cannot be expressed in one pattern.
-var closingKeywordRe = regexp.MustCompile(`(?im)(close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b\s*:?\s*`)
+var closingKeywordRe = regexp.MustCompile(`(?im)\b(close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b\s*:?\s*`)
 
 // negationWords are checked in the window before a keyword match. "will not
 // close" spans three tokens, so the window is token-based, not fixed-width.

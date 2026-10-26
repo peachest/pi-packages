@@ -226,10 +226,17 @@ func runCloseVerify(b Backend, mapSlug string, src closeSource, opts CloseVerify
 			// the report. The reverse order leaves an open ticket wearing a
 			// "Closed by" note, a lie on the record (ocr M4).
 			if err := b.SetStatus(mapSlug, ref, "resolved"); err != nil {
-				return CloseVerifyReport{}, errors.Wrapf(err, "closing issue #%s", ref)
+				// Return the PARTIAL report: the caller must see which
+				// tickets were already closed before the failure (ocr M'2 —
+				// a zero-value report discards the audit trail).
+				return report, errors.Wrapf(err, "closing issue #%s", ref)
 			}
 			if err := b.AddComment(mapSlug, ref, note); err != nil {
-				return CloseVerifyReport{}, errors.Wrapf(err, "closing issue #%s succeeded but adding the close-note failed — ticket is closed, note missing", ref)
+				cr.State = "resolved"
+				cr.Closed = true
+				report.Applied = append(report.Applied, ref)
+				report.Refs = append(report.Refs, cr)
+				return report, errors.Wrapf(err, "closing issue #%s succeeded but adding the close-note failed — ticket is closed, note missing", ref)
 			}
 			cr.State = "resolved"
 			cr.Closed = true

@@ -57,6 +57,12 @@ func (gl *GitLabBackend) apiJSON(v any, endpoint string, extraArgs ...string) er
 	return nil
 }
 
+// perPage is the page size every paginated GitLab list request uses. A
+// full page with NO x-next-page header means pagination is degraded (glab
+// didn't expose the header) — we fail loudly rather than silently
+// truncating (ocr re-review M'4; the silent variant was the original M3).
+const perPage = 100
+
 // apiJSONAll fetches every page of a list endpoint, following the
 // x-next-page header. Without it, results stop at the first page (100
 // items) and silently truncate — ListMaps misses maps, frontier/blocker
@@ -78,9 +84,14 @@ func (gl *GitLabBackend) apiJSONAll(v any, endpoint string) error {
 				sep = "&"
 			}
 			url = endpoint + sep + "page=" + n
-		} else {
-			url = ""
+			continue
 		}
+		// No header. A full page means we likely stopped early.
+		if n := countJSONElements(pages[len(pages)-1]); n >= perPage {
+			return errors.Wrapf(ErrInvalidInput,
+				"gitlab list returned a full %d-element page with no x-next-page header — pagination unavailable (degraded glab output?), refusing to silently truncate; narrow the query or upgrade glab", n)
+		}
+		url = ""
 	}
 	joined := make([]byte, 0, 2)
 	joined = append(joined, '[')
@@ -94,13 +105,25 @@ func (gl *GitLabBackend) apiJSONAll(v any, endpoint string) error {
 	return json.Unmarshal(joined, v)
 }
 
-// trimArray strips the enclosing brackets of a JSON array page.
+// trimArray strips the enclosing brackets of a JSON array page. Empty or
+// non-array pages yield "" so the join never produces invalid JSON like
+// "[,]" (ocr re-review M'4).
 func trimArray(b []byte) []byte {
 	b = bytes.TrimSpace(b)
 	if len(b) >= 2 && b[0] == '[' && b[len(b)-1] == ']' {
-		return b[1 : len(b)-1]
+		inner := bytes.TrimSpace(b[1 : len(b)-1])
+		return inner
 	}
-	return b
+	return nil
+}
+
+// countJSONElements counts top-level elements of a JSON array page.
+func countJSONElements(page []byte) int {
+	var els []json.RawMessage
+	if err := json.Unmarshal(page, &els); err != nil {
+		return 0
+	}
+	return len(els)
 }
 
 // runCapture runs one glab api page, returning stdout plus the stderr text
@@ -275,8 +298,10 @@ func (gl *GitLabBackend) ListTickets(mapSlug string, filter ListFilter) ([]Ticke
 func (gl *GitLabBackend) GetTicket(mapSlug, ticketID string) (TicketDetail, error) {
 	var issue glIssue
 	if err := gl.apiJSON(&issue, gl.projectEndpoint("issues/"+remoteID(ticketID))); err != nil {
-		// GitLab returns 404 JSON {"message":"404 Not found"} for missing issues.
-		if strings.Contains(err.Error(), "404") {
+		// GitLab returns {"message":"404 Not found"} for missing issues.
+		// Match the specific body text: a bare "404" would also swallow
+		// unrelated errors that merely contain the digits (ocr re-review M'3).
+		if strings.Contains(err.Error(), "404 Not Found") || strings.Contains(err.Error(), "404 Not found") {
 			return TicketDetail{}, errors.Wrapf(ErrNotFound, "issue #%s not found in %s", remoteID(ticketID), gl.repo)
 		}
 		return TicketDetail{}, err
@@ -444,6 +469,32 @@ func (gl *GitLabBackend) closeVerifySource(ref string, apply bool) (closeSource,
 	}
 	if err := gl.apiJSON(&commit, gl.projectEndpoint("repository/commits/"+ref)); err != nil {
 		return closeSource{}, errors.Wrapf(ErrNotFound, "commit %q not found in %s", ref, gl.repo)
+	}
+	// Same gate as the MR path: only commits that landed on the default
+	// branch are closure evidence (ocr re-review H4-residual). GitLab has no
+	// direct "merged" flag on commits; a commit is merged evidence iff some
+	// MERGED merge request contains it (merge_requests?sha=<ref>).
+	if apply {
+		var mrs []struct {
+			IID   int    `json:"iid"`
+			State string `json:"state"`
+		}
+		if err := gl.apiJSONAll(&mrs, gl.projectEndpoint(fmt.Sprintf(
+			"merge_requests?state=all&sha=%s&per_page=100", commit.ID))); err != nil {
+			return closeSource{}, errors.Wrapf(err, "checking %q reachability (merge requests containing it)", shortSHA(commit.ID))
+		}
+		merged := false
+		for _, mr := range mrs {
+			if mr.State == "merged" {
+				merged = true
+				break
+			}
+		}
+		if !merged {
+			return closeSource{}, errors.Wrapf(ErrInvalidInput,
+				"commit %s has no merged merge request — --apply refuses to close tickets from an unmerged commit (dry-run is still available)",
+				shortSHA(commit.ID))
+		}
 	}
 	return closeSource{
 		Source: "commit " + shortSHA(commit.ID),

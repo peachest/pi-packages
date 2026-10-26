@@ -214,8 +214,12 @@ func (g *GitHubBackend) GetTicket(mapSlug, ticketID string) (TicketDetail, error
 	err := g.ghJSON(&issue, "issue", "view", remoteID(ticketID), "-R", g.repo,
 		"--json", "number,title,state,labels,body,createdAt,url,comments")
 	if err != nil {
-		// gh exits non-zero with "Could not resolve to an issue" for missing IDs.
-		if strings.Contains(err.Error(), "Could not resolve") || strings.Contains(err.Error(), "not found") {
+		// gh (GraphQL) exits with "Could not resolve to an issue" for
+		// missing IDs. Only that exact shape maps to ErrNotFound — broader
+		// matches ("repository not found", auth failures) would mislabel
+		// real failures as missing tickets (ocr re-review M'3).
+		if strings.Contains(err.Error(), "Could not resolve to an issue") ||
+			strings.Contains(err.Error(), "Could not resolve to a PullRequest") {
 			return TicketDetail{}, errors.Wrapf(ErrNotFound, "issue #%s not found in %s", remoteID(ticketID), g.repo)
 		}
 		return TicketDetail{}, err
@@ -393,6 +397,27 @@ func (g *GitHubBackend) closeVerifySource(ref string, apply bool) (closeSource, 
 	}
 	if err := g.ghJSON(&commit, "api", "repos/"+g.repo+"/commits/"+ref); err != nil {
 		return closeSource{}, errors.Wrapf(ErrNotFound, "commit %q not found in %s", ref, g.repo)
+	}
+	// Same gate as the PR path: only commits reachable from the default
+	// branch are closure evidence. A commit on a feature branch (or any
+	// unreachable SHA) carrying "Closes #n" must not close tickets (ocr
+	// re-review H4-residual: the SHA path bypassed the merged gate).
+	// GitHub's compare API 404s exactly when the head commit is not an
+	// ancestor of the base (verified live: merged SHA → status=behind,
+	// unknown SHA → 404), so any compare error = unreachable.
+	if apply {
+		var branches struct {
+			DefaultBranch string `json:"default_branch"`
+		}
+		if err := g.ghJSON(&branches, "api", "repos/"+g.repo); err != nil {
+			return closeSource{}, errors.Wrapf(err, "resolving default branch for reachability check")
+		}
+		if err := g.ghJSON(&struct{}{}, "api",
+			fmt.Sprintf("repos/%s/compare/%s...%s", g.repo, branches.DefaultBranch, ref)); err != nil {
+			return closeSource{}, errors.Wrapf(ErrInvalidInput,
+				"commit %s is not reachable from %s — --apply refuses to close tickets from an unmerged commit (dry-run is still available)",
+				shortSHA(ref), branches.DefaultBranch)
+		}
 	}
 	return closeSource{
 		Source: "commit " + shortSHA(ref),

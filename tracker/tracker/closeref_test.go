@@ -33,6 +33,9 @@ func TestParseClosingRefs(t *testing.T) {
 		{"negated mid-text", "We decided not to close #9 today", nil},
 		{"negation elsewhere is fine", "not related, but closes #6", []string{"6"}},
 		{"overflow ref skipped", "Closes #99999999999999999999999", nil},
+		{"compound word hotfix", "hotfix #7", nil},
+		{"compound word recloses", "recloses #1", nil},
+		{"compound word autofixes", "autofixes #2", nil},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

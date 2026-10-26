@@ -219,3 +219,18 @@ func (p *stderrPagedRunner) RunStderr(env []string, name string, args ...string)
 	out, err := p.page2.Run(env, name, args...)
 	return out, "", err
 }
+
+func TestGitLabCloseVerifyApplyRefusesUnmergedSHA(t *testing.T) {
+	r := &fakeRunner{responses: map[string]string{
+		"glab api projects/g%2Fp/repository/commits/abc123":                        `{"id":"abc123","message":"merge: Resolves #4","web_url":"https://gitlab.example/g/p/-/commit/abc123"}`,
+		"glab api projects/g%2Fp/merge_requests?state=all&sha=abc123&per_page=100": `[{"iid":9,"state":"opened"}]`,
+	}}
+	b := NewGitLabBackend(r, "g/p", "")
+	_, err := b.CloseVerify(CloseVerifyOpts{Ref: "abc123", Apply: true})
+	if !isErr(err, ErrInvalidInput) {
+		t.Fatalf("want ErrInvalidInput, got %v", err)
+	}
+	if strings.Contains(strings.Join(r.calls, "\n"), "state_event=close") {
+		t.Errorf("refused run must not write")
+	}
+}

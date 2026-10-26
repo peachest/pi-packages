@@ -93,7 +93,7 @@ tracker --backend github --repo owner/name ticket close-verify --ref <PR-number|
 tracker --backend github --repo owner/name ticket close-verify --ref 123 --apply                    # only a MERGED PR/MR is accepted for --apply
 ```
 
-Dry-run is always safe; `--apply` refuses non-merged PRs/MRs. After any
+Dry-run is always safe; `--apply` refuses non-merged PRs/MRs and commits not reachable from the default branch. After any
 non-default-branch merge, run close-verify dry-run, review the list, then
 apply.
 
