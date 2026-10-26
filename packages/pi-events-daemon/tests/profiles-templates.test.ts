@@ -114,3 +114,24 @@ describe("票 137（scan-A）：gitlab-pipeline ci 模板三态 case 映射—�
     }
   });
 });
+
+describe("票 138（移植）：URL-encode × 三态 case 合流——bb43876 与票 137 双修复并集", () => {
+  const load = (name: string): { check: string; params: Record<string, string> } => {
+    const d = JSON.parse(readFileSync(new URL("../templates/gitlab-pipeline.json", import.meta.url), "utf8"));
+    return d.templates.find((t: { name: string }) => t.name === name)!;
+  };
+  it("三域 check 同时含 @uri 编码（gitblue 裸斜杠 404 修复）与 case 三态映射（票 137）", () => {
+    for (const name of ["ci", "mr", "ticket"]) {
+      const t = load(name);
+      expect(t.check, `${name} @uri`).toContain("$p|@uri");
+      expect(t.check, `${name} case`).toContain("case");
+      expect(t.check, `${name} exit 2 或 exit 0 终态`).toMatch(/exit [02]/);
+    }
+  });
+  it("ci check 端到端形状：encoded project + status case 映射（双层修复不可拆）", () => {
+    const ci = load("ci");
+    expect(ci.check).toContain("success) echo pipeline-success; exit 0");
+    expect(ci.check).toContain("failed|canceled) echo pipeline-$st; exit 2");
+    expect(ci.check).toContain("jq -rn --arg p '{project}'");
+  });
+});
