@@ -21,7 +21,7 @@
 #                   rules needing state beyond the seam (cwd tracking, argv
 #                   dest, git probes, full-text debt rules).
 #   ═══ MESSAGES ═══ every verdict text as a template; dynamic messages are
-#                   callables over the matcher's params. 12 entries carry 15
+#                   callables over the matcher's params. 13 entries carry 16
 #                   verdicts: no-verify/G1/P6 each hold two messages whose
 #                   selection is order-sensitive within one scan pass —
 #                   splitting them into per-message rules would reorder which
@@ -337,6 +337,41 @@ def _match_r4(ctx):
     for seg in segments(ctx["cmd"]):
         if re.match(r"^wt\s+merge(\s|$)", seg) and re.search(r"(^|\s)(-y|--yes)(\s|$)", seg):
             return {}
+    return None
+
+BRANCH_TYPE_RE = re.compile(
+    r"^(feat|fix|chore|docs|refactor|perf|test|ci|build|style|revert|research)/[A-Za-z0-9._-]+$")
+
+def _match_r5(ctx):
+    # New worktree branch naming (AGENTS.md): <type>/<name> with type from
+    # the conventional-commits set plus research (wayfinder's sanctioned
+    # throwaway-research type). Session mining 2026-10-26 (1007 creations,
+    # 341 branches): tw/, ticket/, impl/, peer/, autoresearch/, tmp/, pick/
+    # and bare names all drifted. One-off probe/tmp branches use test/ —
+    # common-ci runs test* branches as test-CI branches. Command-position
+    # only, token walk: `wt [opts] switch [opts] -c <branch> [opts]`.
+    for seg in segments(ctx["cmd"]):
+        try:
+            toks = shlex.split(seg)
+        except ValueError:
+            toks = seg.split()
+        if not toks or toks[0] != "wt" or "switch" not in toks[1:] or "-c" not in toks:
+            continue
+        i = toks.index("switch") + 1
+        branch = None
+        while i < len(toks):
+            t = toks[i]
+            if t == "-c":
+                j = i + 1
+                while j < len(toks) and toks[j].startswith("-"):
+                    j += 1
+                branch = toks[j] if j < len(toks) else None
+                break
+            if not t.startswith("-") and branch is None:
+                branch = t  # positional before -c: `wt switch feat/x -c`
+            i += 1
+        if branch and not BRANCH_TYPE_RE.match(branch):
+            return {"branch": branch}
     return None
 
 def _match_no_verify(ctx):
@@ -673,6 +708,9 @@ RULES = [
     {"id": "R3", "scope": "global", "matcher": _match_r3, "message": "R3"},
     # R4. wt merge approval flag
     {"id": "R4", "scope": "global", "matcher": _match_r4, "message": "R4"},
+    # R5. new worktree branch naming: <type>/<name>, conventional types +
+    #    research (mining 2026-10-26: 24 off-contract creations / 20 sessions)
+    {"id": "R5", "scope": "global", "matcher": _match_r5, "message": "R5"},
     # 4. commit/push --no-verify|-n (mining: 17 calls/7 sessions; two messages)
     {"id": "no-verify", "scope": "global", "matcher": _match_no_verify, "message": "no-verify"},
     # G1. hand-copy into the pi agent dirs (two messages)
@@ -749,6 +787,14 @@ MESSAGES = {
           "and report the pending merge to the parent/user session for "
           "approval (headless convention: `wt merge --no-remove` + "
           "report, never -y).",
+    "R5": "new worktree branches follow `<type>/<name>` (AGENTS.md): type from "
+          "the conventional-commits set (feat/fix/chore/docs/refactor/perf/"
+          "test/ci/build/style/revert) plus research (wayfinder throwaway "
+          "research branches). `{branch}` is off-contract — mining found "
+          "tw/, ticket/, impl/, peer/, tmp/ and bare names drifting. Re-run "
+          "with a conventional type: `wt switch -c feat/<name>` — one-off "
+          "probe/tmp branches use `test/<name>` (common-ci treats test* "
+          "branches as test-CI branches).",
     "no-verify-commit": "git commit --no-verify skips repo hooks (AGENTS.md never-do). "
                         "Drop the --no-verify/-n flag. If a hook fails, run it manually "
                         "to see the error (e.g. bash .git/hooks/pre-commit) and fix the "
