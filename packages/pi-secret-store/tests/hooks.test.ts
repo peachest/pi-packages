@@ -122,6 +122,36 @@ describe("tool_call：allowedPrefix 凭证限定（#171）", () => {
 		expect(event.input.command).toBe(cmd); // 命令未被注入改写
 	});
 
+	it("wrapper 命令真命令词（r3 #3）：sh -c / bash -lc 载荷递归取词，不再误判为 sh/bash", async () => {
+		const h = await setupHarness(PREFIXED);
+		for (const cmd of [
+			`sh -c "nerdctl login $HARBOR_PASSWORD"`,
+			`bash -lc 'harbor project list $HARBOR_PASSWORD'`,
+			`sudo sh -c "nerdctl login $HARBOR_PASSWORD"`,
+			`nohup nerdctl login $HARBOR_PASSWORD`,
+		]) {
+			const { event, result } = await runToolCall(h, cmd);
+			expect(result).toBeUndefined();
+			expect(event.input.command).toContain("export HARBOR_PASSWORD='harbor-secret-value'");
+		}
+	});
+
+	it("wrapper 不命中仍 block，报错点名真命令词而非 wrapper（r3 #3）", async () => {
+		const h = await setupHarness(PREFIXED);
+		const { result } = await runToolCall(h, `sh -c "git push $HARBOR_PASSWORD"`);
+		expect(result?.block).toBe(true);
+		expect(result?.reason).toContain("git");
+		expect(result?.reason).toContain("HARBOR_PASSWORD");
+		expect(result?.reason).toContain("secret_ensure");
+	});
+
+	it("bash 无 -c（脚本路径场景）→ 比对词就是 shell 名，保持 r2 行为", async () => {
+		const h = await setupHarness(PREFIXED);
+		const { result } = await runToolCall(h, `bash deploy.sh $HARBOR_PASSWORD`);
+		expect(result?.block).toBe(true);
+		expect(result?.reason).toContain('当前命令词 "bash"');
+	});
+
 	it("多前缀任一命中即可（第二个前缀 harbor 命中）", async () => {
 		const h = await setupHarness(PREFIXED);
 		const { event, result } = await runToolCall(h, "harbor project list $HARBOR_PASSWORD");
@@ -179,25 +209,25 @@ describe("tool_call：allowedPrefix 凭证限定（#171）", () => {
 	});
 });
 
-describe("tool_call：明文回填（#172，链路定型 P1 检测 → 回填 → prefix/注入）", () => {
-	it("命令含已存明文 → 替换为 $NAME 后走注入路径（端到端：命令体无明文）", async () => {
+describe("tool_call：明文回填（#172，链路定型 P1 检测 → 回填 → prefix/注入；r3 #1 起替换仅限裸 token）", () => {
+	it("命令含已存明文（裸 token）→ 替换为 $NAME 后走注入路径（端到端：命令体无明文）", async () => {
 		const h = await setupHarness({ A_TOKEN: { value: "a-token-value-1", updatedAt: "t", fingerprint: "fp0000aa11" } });
 		await h.handlers.session_start[0]({ reason: "new" }, { hasUI: false });
-		const { event, result } = await runToolCall(h, "echo 'a-token-value-1'");
+		const { event, result } = await runToolCall(h, "echo a-token-value-1");
 		expect(result).toBeUndefined();
-		expect(event.input.command).toBe(": __PI_SECRET_STORE__; export A_TOKEN='a-token-value-1'; echo '$A_TOKEN'");
+		expect(event.input.command).toBe(": __PI_SECRET_STORE__; export A_TOKEN='a-token-value-1'; echo $A_TOKEN");
 	});
 
-	it("明文出现在命令中段/多值混排均替换；未命中 store 值的文本逐字节原样（不误伤）", async () => {
+	it("明文出现在命令中段/多值混排均替换（裸 token）；未命中 store 值的文本逐字节原样（不误伤）", async () => {
 		const h = await setupHarness({
 			A_TOKEN: { value: "a-token-value-1", updatedAt: "t", fingerprint: "fp0000aa11" },
 			B_TOKEN: { value: "b-token-value-2", updatedAt: "t", fingerprint: "fp0000bb22" },
 		});
 		await h.handlers.session_start[0]({ reason: "new" }, { hasUI: false });
-		const mixed = `printf '%s' "pre a-token-value-1 mid b-token-value-2 post"`;
+		const mixed = `printf '%s' pre-a a-token-value-1 mid b-token-value-2 post`;
 		const { event } = await runToolCall(h, mixed);
 		expect(event.input.command).toBe(
-			`: __PI_SECRET_STORE__; export A_TOKEN='a-token-value-1' B_TOKEN='b-token-value-2'; printf '%s' "pre $A_TOKEN mid $B_TOKEN post"`,
+			`: __PI_SECRET_STORE__; export A_TOKEN='a-token-value-1' B_TOKEN='b-token-value-2'; printf '%s' pre-a $A_TOKEN mid $B_TOKEN post`,
 		);
 		const plain = "echo totally-unrelated-text";
 		const { event: e2, result: r2 } = await runToolCall(h, plain);
@@ -209,9 +239,9 @@ describe("tool_call：明文回填（#172，链路定型 P1 检测 → 回填 �
 		const h = await setupHarness({ A_TOKEN: { value: "a-token-value-1", updatedAt: "t", fingerprint: "fp0000aa11" } });
 		await h.handlers.session_start[0]({ reason: "new" }, { hasUI: false });
 		await writeFile(h.storePath, JSON.stringify({ secrets: {} }), { mode: 0o600 }); // 他 session forget
-		const { event, result } = await runToolCall(h, "echo 'a-token-value-1'");
+		const { event, result } = await runToolCall(h, "echo a-token-value-1");
 		expect(result).toBeUndefined(); // 未存名静默跳过（语义锁③），不报错
-		expect(event.input.command).toBe("echo '$A_TOKEN'"); // 无 export 前缀
+		expect(event.input.command).toBe("echo $A_TOKEN"); // 无 export 前缀
 		expect(event.input.command).not.toContain("a-token-value-1");
 	});
 
@@ -259,6 +289,58 @@ describe("tool_call：明文回填（#172，链路定型 P1 检测 → 回填 �
 	});
 });
 
+describe("tool_call：回填边界与数据形态（rolling-review-r3 #1）", () => {
+	const SEED_A = { A_TOKEN: { value: "a-token-value-1", updatedAt: "t", fingerprint: "fp0000aa11" } };
+
+	it("引号字符串内命中（单引号）→ block 不改写：报错含凭证名/数据语义原因/$NAME 指引三要素", async () => {
+		const h = await setupHarness(SEED_A);
+		await h.handlers.session_start[0]({ reason: "new" }, { hasUI: false });
+		const cmd = "echo 'a-token-value-1'";
+		const { event, result } = await runToolCall(h, cmd);
+		expect(result?.block).toBe(true);
+		expect(result?.reason).toContain("A_TOKEN");
+		expect(result?.reason).toContain("数据语义");
+		expect(result?.reason).toContain("$A_TOKEN");
+		expect(result?.reason).toContain("secret_env");
+		expect(event.input.command).toBe(cmd); // 不改写
+	});
+
+	it("JSON payload/双引号字符串内命中 → block（静默改写会篡改数据语义）", async () => {
+		const h = await setupHarness({
+			A_TOKEN: { value: "a-token-value-1", updatedAt: "t", fingerprint: "fp0000aa11" },
+			B_TOKEN: { value: "b-token-value-2", updatedAt: "t", fingerprint: "fp0000bb22" },
+		});
+		await h.handlers.session_start[0]({ reason: "new" }, { hasUI: false });
+		const cmd = `printf '%s' "pre a-token-value-1 mid b-token-value-2 post"`;
+		const { event, result } = await runToolCall(h, cmd);
+		expect(result?.block).toBe(true);
+		expect(result?.reason).toContain("A_TOKEN");
+		expect(result?.reason).toContain("B_TOKEN");
+		expect(event.input.command).toBe(cmd);
+	});
+
+	it("heredoc 体命中 → block（heredoc 是数据位）", async () => {
+		const h = await setupHarness(SEED_A);
+		await h.handlers.session_start[0]({ reason: "new" }, { hasUI: false });
+		const cmd = "cat <<EOF\na-token-value-1\nEOF";
+		const { event, result } = await runToolCall(h, cmd);
+		expect(result?.block).toBe(true);
+		expect(result?.reason).toContain("A_TOKEN");
+		expect(event.input.command).toBe(cmd);
+	});
+
+	it("heredoc 结束后的命令位命中 → 正常裸 token 回填（heredoc 不吞后续命令）", async () => {
+		const h = await setupHarness(SEED_A);
+		await h.handlers.session_start[0]({ reason: "new" }, { hasUI: false });
+		const cmd = "cat <<'EOF'\ndoc-body\nEOF\necho a-token-value-1";
+		const { event, result } = await runToolCall(h, cmd);
+		expect(result).toBeUndefined();
+		expect(event.input.command).toBe(
+			": __PI_SECRET_STORE__; export A_TOKEN='a-token-value-1'; cat <<'EOF'\ndoc-body\nEOF\necho $A_TOKEN",
+		);
+	});
+});
+
 describe("session_start：env 文件退役（#170）", () => {
 	it("不再生成 env 文件；遗留 env 文件被物理删除；guard 不再拦 env 路径", async () => {
 		const h = await setupHarness({ A_TOKEN: { value: "a-token-value-1", updatedAt: "t", fingerprint: "fp0000aa11" } });
@@ -283,6 +365,29 @@ describe("session_start：env 文件退役（#170）", () => {
 		}
 		expect(h.notifyLog.join("\n")).toMatch(/secret-store\.env/);
 		await expect(stat(legacy)).resolves.toBeTruthy(); // 文件仍在（删除失败）
+	});
+
+	it("删除失败期间 legacy env 纳入 guard 保护（fail closed，r3 #2）：cat/文件工具被拦，成功删除后解除", async () => {
+		if (typeof process.getuid === "function" && process.getuid() === 0) return; // root 无视权限位，无法构造 EACCES
+		const h = await setupHarness({ A_TOKEN: { value: "a-token-value-1", updatedAt: "t", fingerprint: "fp0000aa11" } });
+		const legacy = join(h.agentDir, "secret-store.env");
+		await writeFile(legacy, "A_TOKEN='legacy-value'\n", { mode: 0o600 });
+		await chmod(h.agentDir, 0o500); // 目录不可写 → unlink EACCES
+		try {
+			await h.handlers.session_start[0]({ reason: "new" }, { hasUI: true, ui: { notify: (msg: string) => h.notifyLog.push(msg) } });
+		} finally {
+			await chmod(h.agentDir, 0o700);
+		}
+		const cat = await runToolCall(h, `cat ${legacy}`);
+		expect(cat.result?.block).toBe(true);
+		expect(cat.result?.reason).toContain("secret_query");
+		const rd = await runToolCall(h, { path: legacy }, "read");
+		expect(rd.result?.block).toBe(true);
+		// 成功删除后保护解除（「直到成功删除」）：重跑 session_start 删除成功
+		await h.handlers.session_start[0]({ reason: "new" }, { hasUI: false });
+		await expect(stat(legacy)).rejects.toThrow(/ENOENT/);
+		const after = await runToolCall(h, `cat ${legacy}`);
+		expect(after.result).toBeUndefined();
 	});
 });
 

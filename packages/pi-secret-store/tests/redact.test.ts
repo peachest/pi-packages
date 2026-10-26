@@ -3,7 +3,8 @@
  * 值替换、多行值的行级替换、最短长度门槛、深拷贝不变异入参、双 secret 单遍交替正则行为对齐。
  */
 import { afterEach, describe, expect, it } from "vitest";
-import { cleanupEnv, contextEvent, setupHarness, toolResultEvent } from "./helpers.ts";
+import { writeFile } from "node:fs/promises";
+import { cleanupEnv, contextEvent, runToolCall, setupHarness, toolResultEvent } from "./helpers.ts";
 
 afterEach(cleanupEnv);
 
@@ -121,6 +122,29 @@ describe("redactor：details / 对象键 / JSON 转义（rolling-review-r1 批 B
 		const event = toolResultEvent(`raw ${'abcd"efgh'} end`);
 		const result = await h.handlers.tool_result[0](event, {});
 		expect(result.content[0].text).toBe("raw [REDACTED] end");
+	});
+});
+
+describe("redactor：alternation 编译缓存（r3 #4）", () => {
+	it("后续 add 使缓存失效：新注册值立即命中脱敏，旧值持续命中（热路径不重复编译且无陈旧正则）", async () => {
+		const h = await setupHarness({ TOKEN_A: { value: SECRET, updatedAt: "x", fingerprint: "aaaa1111" } });
+		await h.handlers.session_start[0]({ reason: "new" }, { hasUI: false });
+		const first = await h.handlers.tool_result[0](toolResultEvent(`one ${SECRET}`), {});
+		expect(first?.content[0].text).toBe("one [REDACTED]");
+		// 他 session 写入新凭证 → 注入链 reload → add 触发缓存失效
+		await writeFile(
+			h.storePath,
+			JSON.stringify({
+				secrets: {
+					TOKEN_A: { value: SECRET, updatedAt: "x", fingerprint: "aaaa1111" },
+					TOKEN_B: { value: "second-secret-abcdef-9876", updatedAt: "x", fingerprint: "bbbb2222" },
+				},
+			}),
+			{ mode: 0o600 },
+		);
+		await runToolCall(h, "printf '%s' \"$TOKEN_B\""); // reload：新值注册进 redactor
+		const out = await h.handlers.tool_result[0](toolResultEvent(`${SECRET} and second-secret-abcdef-9876`), {});
+		expect(out?.content[0].text).toBe("[REDACTED] and [REDACTED]");
 	});
 });
 

@@ -23,13 +23,16 @@ const createdDirs: string[] = [];
 let savedAgentDir: string | undefined;
 
 /** 创建沙箱 agentDir，可选预置 secret-store.json（0600 语义由实现保证，fixture 只灌数据；agentDir 可覆盖（[11] 特殊字符目录））。
- *  fixture 类型 = lib/store.ts 导出的 Store（经入口 re-export，rolling-review-r2 #3 消除手写漂移面）。 */
-export async function setupHarness(store?: Store, agentDirOverride?: string): Promise<Harness> {
+ *  fixture 类型 = lib/store.ts 导出的 Store（经入口 re-export，rolling-review-r2 #3 消除手写漂移面）。
+ *  backend：写入 secret-store.conf 定向存储后端（#173）。缺省 "plain" = 现行为回归锁（现有测试语义不变）；
+ *  age 语义测试显式传 "age"（缺省 age 是生产行为，测试沙箱内不隐式）。 */
+export async function setupHarness(store?: Store, agentDirOverride?: string, backend: "plain" | "age" = "plain"): Promise<Harness> {
 	const agentDir = agentDirOverride ?? (await mkdtemp(join(tmpdir(), "pi-secret-store-test-")));
 	if (!agentDirOverride) createdDirs.push(agentDir);
 	savedAgentDir = process.env.PI_CODING_AGENT_DIR;
 	await mkdir(agentDir, { recursive: true });
 	process.env.PI_CODING_AGENT_DIR = agentDir;
+	await writeFile(join(agentDir, "secret-store.conf"), `backend = ${backend}\n`, { mode: 0o600 });
 	if (store) {
 		await writeFile(
 			join(agentDir, "secret-store.json"),

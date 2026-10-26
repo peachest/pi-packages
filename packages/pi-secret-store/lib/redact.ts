@@ -8,12 +8,106 @@ export const MIN_REDACT_LENGTH = 4;
 /** Lines of a multi-line secret this long are redacted on their own too. */
 const MIN_LINE_LENGTH = 16;
 
+/** 命令文本逐字符上下文位（r3 #1 回填数据位判定）：1 = 引号字符串内（含定界符），2 = heredoc 体。 */
+const IN_QUOTE = 1;
+const IN_HEREDOC = 2;
+
+/** bash 命令文本的引号/heredoc 上下文扫描（r3 #1）：单引号无转义、双引号支持 \ 转义；
+ *  `<<`/`<<-`（定界符可带引号）开启 heredoc 体至独占终止行，`<<<`（here-string）不视为 heredoc。
+ *  守卫级近似：够判定"明文是否处在数据位"，不追求完整 shell 解析。 */
+function commandContext(cmd: string): Uint8Array {
+	const flags = new Uint8Array(cmd.length);
+	let inSingle = false;
+	let inDouble = false;
+	let heredocDelim: string | null = null;
+	let heredocTabs = false;
+	let i = 0;
+	while (i < cmd.length) {
+		const ch = cmd[i];
+		if (heredocDelim !== null) {
+			const nl = cmd.indexOf("\n", i);
+			const end = nl === -1 ? cmd.length : nl;
+			const line = cmd.slice(i, end);
+			const body = heredocTabs ? line.replace(/^\t*/, "") : line;
+			if (body === heredocDelim) {
+				heredocDelim = null; // 终止行不计入 body
+				i = end + 1;
+				continue;
+			}
+			flags.fill(IN_HEREDOC, i, end);
+			i = end + 1;
+			continue;
+		}
+		if (!inSingle && !inDouble && ch === "<" && cmd[i + 1] === "<") {
+			if (cmd[i + 2] === "<") {
+				i += 3; // <<< here-string：操作符非 heredoc
+				continue;
+			}
+			let j = i + 2;
+			if (cmd[j] === "-") {
+				heredocTabs = true;
+				j++;
+			} else {
+				heredocTabs = false;
+			}
+			let delim = "";
+			let sq = false;
+			let dq = false;
+			for (; j < cmd.length; j++) {
+				const c = cmd[j];
+				if (!sq && !dq && /[\s|&;()<>]/.test(c)) break;
+				if (!sq && c === '"') {
+					dq = !dq;
+					continue;
+				}
+				if (!dq && c === "'") {
+					sq = !sq;
+					continue;
+				}
+				delim += c;
+			}
+			if (delim) {
+				heredocDelim = delim;
+				i = j;
+				continue;
+			}
+			i = j; // 畸形 `<<` 无定界符：当普通文本扫过
+			continue;
+		}
+		if (!inDouble && ch === "'") {
+			inSingle = !inSingle;
+			flags[i] |= IN_QUOTE;
+			i++;
+			continue;
+		}
+		if (!inSingle && ch === '"') {
+			inDouble = !inDouble;
+			flags[i] |= IN_QUOTE;
+			i++;
+			continue;
+		}
+		if (!inSingle && ch === "\\" && i + 1 < cmd.length) {
+			// 反斜杠转义下一字符（双引号内取字面；单引号内 \ 是普通字符，由上方分支兜住）
+			flags[i] |= IN_QUOTE;
+			if (inDouble) flags[i + 1] |= IN_QUOTE;
+			i += 2;
+			continue;
+		}
+		if (inSingle || inDouble) flags[i] |= IN_QUOTE;
+		i++;
+	}
+	return flags;
+}
+
 export class Redactor {
 	private values = new Set<string>();
 	/** 值变体 → 凭证名（#172 回填反查）：与 values 同套变体注册；同值多名取最长名（值唯一性由 store 保证，防御性处理）。 */
 	private names = new Map<string, string>();
+	/** 已注册值的单遍交替正则缓存（r3 #4）：热路径不再逐次排序+转义+join+编译，add/clear 时脏标记失效。 */
+	private alternationCache: RegExp | null = null;
 
 	add(secret: string, name?: string): void {
+		this.alternationCache = null;
 		const normalized = secret.replace(/\r\n/g, "\n");
 		// JSON 转义变体覆盖原始值/normalized/trimmed 三形态：CRLF 值的 \r\n 转义序列只在原始值形态出现（#126）
 		for (const base of new Set([secret, normalized, normalized.trim()])) {
@@ -45,6 +139,7 @@ export class Redactor {
 	clear(): void {
 		this.values.clear();
 		this.names.clear();
+		this.alternationCache = null;
 	}
 
 	private rememberName(variant: string, name?: string): void {
@@ -58,24 +153,49 @@ export class Redactor {
 		return this.names.get(value);
 	}
 
-	/** #172 回填：文本中已注册值明文 → `$凭证名`（无感修正非拦截）；未命中的文本原样，无名值不替换。 */
-	backfill(text: string): string {
-		if (this.names.size === 0) return text;
-		return text.replace(this.alternation(), (m) => {
-			const name = this.nameOf(m);
-			return name === undefined ? m : `$${name}`;
-		});
+	/** #172 回填（r3 #1 收紧）：已注册值明文仅在其为「裸 token」（前后均为非词字符、不在引号字符串/heredoc 体等
+	 *  数据位）时机械替换为 `$凭证名`；数据位命中不改写，经 dataHits 交调用方 block（静默改写会篡改 JSON
+	 *  payload/heredoc 等数据语义）。无名值命中原样保留。 */
+	backfill(text: string): { text: string; dataHits: string[] } {
+		const dataHits: string[] = [];
+		if (this.names.size === 0) return { text, dataHits };
+		const ctx = commandContext(text);
+		const re = this.alternation();
+		let out = "";
+		let last = 0;
+		for (let m = re.exec(text); m !== null; m = re.exec(text)) {
+			const name = this.nameOf(m[0]);
+			if (name === undefined) continue; // 无名值：不替换不拦截
+			const start = m.index;
+			const end = start + m[0].length;
+			const inData = (ctx[start] & (IN_QUOTE | IN_HEREDOC)) !== 0;
+			const bare =
+				!inData &&
+				!/[A-Za-z0-9_]/.test(start > 0 ? text[start - 1] : "") &&
+				!/[A-Za-z0-9_]/.test(end < text.length ? text[end] : "");
+			if (!bare) {
+				if (inData && !dataHits.includes(name)) dataHits.push(name);
+				continue; // 非裸 token：原样保留在尾部切片
+			}
+			out += text.slice(last, start) + `$${name}`;
+			last = end;
+		}
+		out += text.slice(last);
+		return { text: out, dataHits };
 	}
 
-	/** 已注册值的单遍交替正则（长短同序：整值优先于单行，#124）；redactText 与 backfill 共用。 */
+	/** 已注册值的单遍交替正则（长短同序：整值优先于单行，#124）；redactText 与 backfill 共用，编译缓存（r3 #4）。 */
 	private alternation(): RegExp {
-		return new RegExp(
-			[...this.values]
-				.sort((a, b) => b.length - a.length)
-				.map((v) => v.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
-				.join("|"),
-			"g",
-		);
+		if (this.alternationCache === null) {
+			this.alternationCache = new RegExp(
+				[...this.values]
+					.sort((a, b) => b.length - a.length)
+					.map((v) => v.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+					.join("|"),
+				"g",
+			);
+		}
+		return this.alternationCache;
 	}
 
 	redactText(text: string): string {

@@ -3,6 +3,8 @@
  * secret_env 变量名清单）+ 泄漏执法（P1 凭证检测，迁自 bash-guards.sh P1 段）。
  * 外加 bash 选择性注入（解析命令 $NAME/${NAME} 引用，只 export 被引用且已存的变量；per-凭证
  * allowedPrefix 首词限定，#171）与 tool_result/context 双层脱敏。
+ * 存储后端接口化（#173）：age 密文为缺省正典（.age + 0600 身份密钥分离，遗留明文自动迁移+shred），
+ * plain 显式配置兜底；读写全走内存快照，链路与 plain 时代一致。
  * 明文边界：明文不进 session log 与上下文——session log 落盘的是 mutate 前原始 command（已实跑验证），
  * mutate 后含明文的 command 文本仅存在于单次执行进程内；存储 0600、agent 只见存在性/指纹、输出经 Redactor。
  * 窄缝：bash 工具若未来在报错时回显完整命令，注入前缀可能进 tool_result（当前不回显，理论路径）。
@@ -13,12 +15,14 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { Type } from "typebox";
 import { getAgentDir, type ExtensionAPI, type AgentToolResult } from "@earendil-works/pi-coding-agent";
+import { createBackend, updateStore, type StoreBackend } from "./lib/backend.ts";
 import { detectTokens, p1BlockReason } from "./lib/credentials.ts";
 import { Redactor, MIN_REDACT_LENGTH } from "./lib/redact.ts";
 import { dialogOptions, SecretInput, type DialogResult } from "./lib/secret-input.ts";
-import { loadStore, nameProblem, shellQuote, storePaths, updateStore, type Store } from "./lib/store.ts";
-// 测试走入口边界（packages/README.md 四规则）：re-export lib/store 的被测符号
-export { loadStore, storePaths, updateStore, type Store };
+import { nameProblem, shellQuote, storePaths, type Store } from "./lib/store.ts";
+// 测试走入口边界（packages/README.md 四规则）：re-export lib 的被测符号
+export { loadStore, storePaths, type Store } from "./lib/store.ts";
+export { updateStore } from "./lib/backend.ts";
 
 const MARKER = "__PI_SECRET_STORE__";
 
@@ -45,11 +49,23 @@ const referencedNames = (cmd: string): Set<string> => {
 
 const fingerprintOf = (v: string) => createHash("sha256").update(v).digest("hex").slice(0, 10);
 
-/** 前缀比对用命令词（r2 #2）：剥掉 sudo/env、VAR=value 赋值 token（括号已在切分正则里作废）后取第一个真命令词——
- *  `sudo nerdctl`/`env nerdctl`/`VAR=x nerdctl` 的首词不是命令本身，不剥离则限定凭证被误 block（fail closed 伤可用性）。 */
+/** 前缀比对用命令词（r2 #2 / r3 #3）：剥掉 sudo/env/nohup、VAR=value 赋值 token（括号已在切分正则里作废）后取第一个真命令词——
+ *  `sudo nerdctl`/`env nerdctl`/`VAR=x nerdctl` 的首词不是命令本身，不剥离则限定凭证被误 block（fail closed 伤可用性）。
+ *  sh/bash 族 wrapper 的 -c/-lc 载荷递归向后取词：`sh -c "nerdctl …"` 的真命令词是 nerdctl 不是 sh（r3 #3）；
+ *  无 -c 的脚本路径场景（bash deploy.sh）比对词就是 shell 名，保持 r2 行为。 */
+const SHELL_WRAPPERS = new Set(["sh", "bash", "zsh", "dash", "ksh"]);
 const commandWord = (cmd: string): string => {
-	for (const tok of cmd.split(/[\s'"|&;()]+/)) {
-		if (!tok || tok === "sudo" || tok === "env" || /^[A-Za-z_][A-Za-z0-9_]*=/.test(tok)) continue;
+	const toks = cmd.split(/[\s'"|&;()]+/);
+	for (let i = 0; i < toks.length; i++) {
+		const tok = toks[i];
+		if (!tok || tok === "sudo" || tok === "env" || tok === "nohup" || /^[A-Za-z_][A-Za-z0-9_]*=/.test(tok)) continue;
+		if (SHELL_WRAPPERS.has(tok)) {
+			if (/^-[A-Za-z]*c/.test(toks[i + 1] ?? "")) {
+				i++; // -c/-lc 载荷：继续向后取真命令词
+				continue;
+			}
+			return tok;
+		}
 		return tok;
 	}
 	return "";
@@ -74,21 +90,34 @@ export const valueProblem = (v: string): string | undefined =>
 
 export default function secretStore(pi: ExtensionAPI) {
 	// 工厂调用时读 env（测试沙箱靠 PI_CODING_AGENT_DIR 定向）
-	const { storePath, legacyEnvFile } = storePaths(getAgentDir());
+	const agentDir = getAgentDir();
+	const { storePath, storePathAge, keyPath, legacyEnvFile } = storePaths(agentDir);
 	const redactor = new Redactor();
+	// 后端选择（#173）：conf 文件读一次缓存（每 factory 实例一份，测试沙箱隔离）；首次使用惰性创建
+	let backendPromise: Promise<StoreBackend> | undefined;
+	const getBackend = () => (backendPromise ??= createBackend(agentDir));
 
 	async function reload(onWarning?: (msg: string) => void): Promise<Store> {
-		const store = await loadStore(storePath, onWarning);
+		const store = await (await getBackend()).load(onWarning);
 		// [4] 累积不 clear：forget/他 session 轮换后，旧值仍躺在磁盘文件与旧输出里，本 session 生存期内持续脱敏；
 		// 名随值注册（#172 回填反查 nameOf 用）
 		for (const [n, e] of Object.entries(store)) redactor.add(e.value, n);
 		return store;
 	}
 
-	// [7] 解析比对：~ 展开 + cwd 归一，~/..、./、引号包裹、--opt=path 等拼写不再绕过字面子串判断
+	// [7] 解析比对：~ 展开 + cwd 归一，~/..、./、引号包裹、--opt=path 等拼写不再绕过字面子串判断。
+	// #173 后保护面 = plain 正典 json + age 密文 + 身份密钥（读密钥 = 绕过全部加密）；
+	// r3 #2：遗留 env 删除失败期间 fail-closed 纳入保护（滞留明文副本），成功删除即解除。
+	let legacyEnvStale = false;
 	const isProtectedPath = (cwd: string, raw: string): boolean => {
 		const expanded = raw.startsWith("~") ? join(homedir(), raw.slice(1)) : raw;
-		return resolve(cwd, expanded) === storePath; // #170：guard 只保护 store json（env 文件已退役）
+		const resolved = resolve(cwd, expanded);
+		return (
+			resolved === storePath ||
+			resolved === storePathAge ||
+			resolved === keyPath ||
+			(legacyEnvStale && resolved === legacyEnvFile)
+		);
 	};
 
 	/** 命令串 → 路径 token（空白/引号/shell 结构符切分，--opt= 前缀剥离）逐个解析比对；含空格路径的规范拼写字面命中兜底。 */
@@ -106,13 +135,17 @@ export default function secretStore(pi: ExtensionAPI) {
 			if (ctx.hasUI) ctx.ui.notify(msg, "warning");
 		};
 		// #170 env 文件退役：v1 遗留文件删除（派生数据，可安全移除），此后不再生成——
-		// 注入与 source 的非同一事务竞态（原已知边界 #1）整类消失，store guard 只剩保护 json 本身。
-		// 非 ENOENT 失败（EACCES/EPERM）不静默：明文副本滞留须提示（rolling-review-r1 #2）。
+		// 注入与 source 的非同一事务竞态（原已知边界 #1）整类消失；#173 后 guard 保护 plain json + age 密文 + 身份密钥。
+		// 非 ENOENT 失败（EACCES/EPERM）不静默：明文副本滞留须提示，且 r3 #2 起临时纳入 guard 保护
+		//（fail closed 直到成功删除——下个 session 重试成功后解除）。
 		try {
 			await unlink(legacyEnvFile);
+			legacyEnvStale = false;
 		} catch (err) {
-			if ((err as NodeJS.ErrnoException).code !== "ENOENT")
-				warn(`secret-store: 遗留 env 文件 ${legacyEnvFile} 删除失败（${(err as Error).message}），明文副本滞留，请手动删除`);
+			if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+				legacyEnvStale = true;
+				warn(`secret-store: 遗留 env 文件 ${legacyEnvFile} 删除失败（${(err as Error).message}），明文副本滞留，已纳入读取保护，请手动删除`);
+			}
 		}
 		try {
 			const store = await reload(warn);
@@ -144,10 +177,16 @@ export default function secretStore(pi: ExtensionAPI) {
 		if (finding) return { block: true, reason: p1BlockReason(finding) };
 		if (touchesStore(cmd, cwd)) return { block: true, reason: GUARD_REASON };
 		if (cmd.includes(MARKER)) return undefined; // 已带前缀（嵌套/重放），不重复注入
-		// #172 明文回填（链路定型：P1 检测 → 回填 → prefix/注入）：已存值明文误写进命令 → 机械替换回 $NAME（无感修正非拦截）。
+		// #172 明文回填（链路定型：P1 检测 → 回填 → prefix/注入）：已存值明文误写进命令 → 机械替换回 $NAME。
+		// r3 #1：替换仅限裸 token；引号字符串/heredoc 数据位命中不改写 → block（三要素文案），防静默篡改数据语义。
 		// 反查源 = redactor 累积值（[4]：forget 后旧值仍回填）；替换出的 $NAME 交由下方注入路径重新验证（未存名静默跳过）。
 		const filled = redactor.backfill(cmd);
-		if (filled !== cmd) event.input.command = cmd = filled;
+		if (filled.dataHits.length > 0)
+			return {
+				block: true,
+				reason: `secret-store: 已存凭证明文出现在引号字符串或 heredoc 数据位置（凭证：${filled.dataHits.join("、")}）。该位置属数据语义（JSON/heredoc 等），自动回填会篡改命令数据，已拦截不改写。请改用 ${filled.dataHits.map((n) => `$${n}`).join("、")} 形式引用（bash 展开为值），或调用 secret_env 核对凭证名后调整命令结构。`,
+			};
+		if (filled.text !== cmd) event.input.command = cmd = filled.text;
 		// #170 选择性注入：先解析引用集，为空则零 I/O 直通（命令与无凭证库时逐字节一致，agent 无感）
 		const refs = referencedNames(cmd);
 		if (refs.size === 0) return undefined;
@@ -157,7 +196,7 @@ export default function secretStore(pi: ExtensionAPI) {
 			store = await reload();
 		} catch {
 			// [6] fail closed：存储不可读时引用的变量值未知（redactor 无法覆盖），跳过注入并拦截
-			return { block: true, reason: `secret-store: 存储不可读，凭证注入已停用，修复 ${storePath} 后重试` };
+			return { block: true, reason: `secret-store: 存储不可读，凭证注入已停用（检查 ${agentDir} 下的存储/密钥/age 安装后重试）` };
 		}
 		// 注入集 = 引用 ∩ store 已存名；只缩半径不防外显（echo $NAME 照常注入）；未存名静默跳过（P1 白名单语义）
 		const names = [...refs].filter((n) => Object.hasOwn(store, n));
@@ -205,7 +244,7 @@ export default function secretStore(pi: ExtensionAPI) {
 			name: Type.String({ description: "凭证名/环境变量名，如 HARBOR_PASSWORD、GITBLUE_TOKEN；留空列出全部" }),
 		}),
 		async execute(_id, params) {
-			const store = await loadStore(storePath);
+			const store = await (await getBackend()).load();
 			const query = params.name?.trim() ?? "";
 			// null 原型存储 + hasOwn 判存在（#126）：继承属性（toString 等）不得误报为凭证
 			const e = Object.hasOwn(store, query) ? store[query] : undefined;
@@ -232,7 +271,7 @@ export default function secretStore(pi: ExtensionAPI) {
 		promptSnippet: "需要凭证时先列这里有哪些已存凭证再决定问用户；列出后 bash 中直接 $NAME 引用（names only, never the values）",
 		parameters: Type.Object({}),
 		async execute() {
-			const store = await loadStore(storePath);
+			const store = await (await getBackend()).load();
 			const entries = Object.entries(store);
 			if (entries.length === 0) {
 				return say("存储为空。缺失的凭证可调用 secret_ensure 请用户录入。");
@@ -261,7 +300,7 @@ export default function secretStore(pi: ExtensionAPI) {
 			// [5] prompt 前校验名：名会原样进入 source 的 shell 赋值与 UI 文案，放宽即命令注入；保留名可劫持 shell 行为（#126）
 			const nameErr = nameProblem(params.name);
 			if (nameErr) return say(`非法凭证名 "${params.name}"：${nameErr}，未保存。`);
-			const store = await loadStore(storePath);
+			const store = await (await getBackend()).load();
 			const e = Object.hasOwn(store, params.name) ? store[params.name] : undefined;
 			if (e) return say(`凭证 ${params.name} 已存在（指纹 ${e.fingerprint}，更新于 ${e.updatedAt}），未重复录入。bash 中引用 $${params.name}。`);
 			if (ctx.mode !== "tui") throw new Error("secret_ensure 需要交互式 TUI 弹窗录入；非交互环境下请用户手动写入或改在 TUI 中运行。");
@@ -275,7 +314,7 @@ export default function secretStore(pi: ExtensionAPI) {
 							label: `${params.label}（将保存为 ${params.name}）`,
 							steps: params.instructions,
 							rows: [
-								["保存到", "~/.pi/agent/secret-store.json（0600），bash 中可用 $NAME"],
+								["保存到", "pi 凭证存储（0600，缺省 age 密文+独立身份密钥），bash 中可用 $NAME"],
 								["明文边界", "agent 与 session log 不会出现明文"],
 							],
 							footer: "Enter 确认保存 · Tab 反问 agent · Esc 取消",
@@ -298,8 +337,8 @@ export default function secretStore(pi: ExtensionAPI) {
 
 			const value = choice.value;
 			// [12] 开始时加载的快照可能已过期（对话框打开期间他 session 增删过凭证）：
-			// 锁内 reload → 只 merge 本条 → 原子写回 json，避免旧快照整体覆盖。
-			await updateStore(getAgentDir(), storePath, (current) => {
+			// 锁内 reload → 只 merge 本条 → 后端原子写回，避免旧快照整体覆盖。
+			await updateStore(agentDir, storePath, (current) => {
 				current[params.name] = { value, updatedAt: new Date().toISOString(), fingerprint: fingerprintOf(value) };
 				return current;
 			});
@@ -318,9 +357,9 @@ export default function secretStore(pi: ExtensionAPI) {
 						ctx.ui.notify("凭证 (未指定) 不存在", "warning");
 						return;
 					}
-					// [12] forget 同 ensure 协议：锁内 reload → 删单条 → 原子写回（不复活他 session 变更）
+					// [12] forget 同 ensure 协议：锁内 reload → 删单条 → 后端原子写回（不复活他 session 变更）
 					let deleted = false;
-					await updateStore(getAgentDir(), storePath, (store) => {
+					await updateStore(agentDir, storePath, (store) => {
 						if (!Object.hasOwn(store, name)) return undefined;
 						deleted = true;
 						const next = { ...store };
@@ -330,7 +369,7 @@ export default function secretStore(pi: ExtensionAPI) {
 					ctx.ui.notify(deleted ? `已删除 ${name}` : `凭证 ${name} 不存在`, deleted ? "info" : "warning");
 					return;
 				}
-				const store = await loadStore(storePath);
+				const store = await (await getBackend()).load();
 				const entries = Object.entries(store);
 				ctx.ui.notify(
 					entries.length === 0

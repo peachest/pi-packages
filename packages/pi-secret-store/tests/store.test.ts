@@ -117,9 +117,12 @@ describe("store：损坏存储容错（[13]：仅 ENOENT 视为空存储）", ()
 });
 
 describe("storePaths 路径集中管理 + schema（#171）", () => {
-	it("storePaths 返回 storePath 与 legacyEnvFile（rolling-review-r1 #3：路径统一管理）", () => {
+	it("storePaths 返回全部存储路径（plain 正典/age 密文/身份密钥/后端配置/legacy env，#173）", () => {
 		expect(storePaths("/agent/dir")).toEqual({
 			storePath: "/agent/dir/secret-store.json",
+			storePathAge: "/agent/dir/secret-store.json.age",
+			keyPath: "/agent/dir/secret-store.key",
+			confPath: "/agent/dir/secret-store.conf",
 			legacyEnvFile: "/agent/dir/secret-store.env",
 		});
 	});
@@ -131,6 +134,8 @@ describe("storePaths 路径集中管理 + schema（#171）", () => {
 		});
 		const store = await loadStore(h.storePath);
 		expect(store.A_TOKEN.allowedPrefix).toEqual([]); // 读：缺省 []
+		// r3 #5：显式构造新条目对象（不共享解析中间对象引用），键集固定
+		expect(store.A_TOKEN).toEqual({ value: "a-value-1234", updatedAt: "t", fingerprint: "aaaa1111", allowedPrefix: [] });
 		await h.commands.get("secret-store").handler("forget B_TOKEN", toolCtx(h)); // 写：不报错
 		const disk = JSON.parse(await readFile(h.storePath, "utf8"));
 		expect(disk.secrets.A_TOKEN.allowedPrefix).toEqual([]); // 落盘缺省字段
