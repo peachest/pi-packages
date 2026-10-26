@@ -24,8 +24,16 @@ repo="$PWD"
 linker="$repo/scripts/link-pi-packages.sh"
 [ -x "$linker" ] || exit 0
 
+# 只 link settings 实际引用的包——bash-guards（kendex 形态）、库包等非安装包不进 pi npm 区
+installed=$(python3 -c "
+import json
+d = json.load(open('$HOME/.pi/agent/settings.json'))
+print('
+'.join(p['source'] if isinstance(p, dict) else p for p in d.get('packages', [])))
+")
 for pkg in $pkgs; do
     full="$repo/packages/$pkg"
+    echo "$installed" | grep -q "packages/$pkg"" || continue
     name=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['name'])" "$full/package.json" 2>/dev/null) || continue
     target="$HOME/.pi/agent/npm/node_modules/$name"
     if [ -L "$target" ] && [ "$(readlink "$target")" = "$full" ]; then
