@@ -43,14 +43,14 @@ func (g *GitHubBackend) ghJSON(v any, args ...string) error {
 }
 
 // ensureLabel creates label if missing (idempotent). gh does NOT auto-create
-// labels on issue create/edit, unlike GitLab.
+// labels on issue create/edit, unlike GitLab. Only the "already exists" race
+// is benign — auth/network/repo errors must surface (ocr finding H2).
 func (g *GitHubBackend) ensureLabel(name string) error {
 	_, err := g.gh("label", "create", name, "-R", g.repo)
-	if err == nil {
+	if err == nil || strings.Contains(err.Error(), "already exists") {
 		return nil
 	}
-	// gh errors with "already exists" when the label is present — that's fine.
-	return nil
+	return errors.Wrapf(err, "creating label %q", name)
 }
 
 type ghLabel struct{ Name string }
@@ -114,6 +114,9 @@ func (g *GitHubBackend) ListMaps() ([]MapSummary, error) {
 	var labels []ghLabel
 	if err := g.ghJSON(&labels, "label", "list", "-R", g.repo, "--json", "name", "--limit", "1000"); err != nil {
 		return nil, err
+	}
+	if len(labels) >= 1000 {
+		return nil, errors.Wrapf(ErrInvalidInput, "label list hit the 1000-result ceiling — too many labels for map discovery")
 	}
 	var maps []MapSummary
 	for _, l := range labels {
@@ -186,6 +189,12 @@ func (g *GitHubBackend) ListTickets(mapSlug string, filter ListFilter) ([]Ticket
 	if err := g.ghJSON(&issues, args...); err != nil {
 		return nil, err
 	}
+	if len(issues) >= 1000 {
+		// gh --limit maxes at 1000 with no continuation; report rather than
+		// silently truncating (frontier/blocker decisions on partial data).
+		return nil, errors.Wrapf(ErrInvalidInput,
+			"issue list hit the 1000-result ceiling for map %q — narrow the map or archive old issues", mapSlug)
+	}
 	var tickets []TicketSummary
 	for _, issue := range issues {
 		t := ghIssueToSummary(issue, mapSlug)
@@ -234,9 +243,22 @@ func (g *GitHubBackend) SetStatus(mapSlug, ticketID, status string) error {
 	}
 	id := remoteID(ticketID)
 
-	// Local-only preconditions (reviewed-at before claim, idempotent-claim
-	// guard) have no GitHub equivalent; claimed is modeled as a label.
+	cur, err := g.GetTicket(mapSlug, id)
+	if err != nil {
+		return err
+	}
+
+	// Claim guards mirror the local contract (status.go): claiming a
+	// resolved ticket is ErrAlreadyResolved; re-claim is idempotent-err
+	// (ErrAlreadyClaimed). Without this, a closed issue silently ends up
+	// with a claimed label — dirty state (ocr M6).
 	if status == "claimed" {
+		if cur.Status == "resolved" {
+			return errors.Wrapf(ErrAlreadyResolved, "issue #%s is already resolved — reopen it first", id)
+		}
+		if cur.Status == "claimed" {
+			return errors.Wrapf(ErrAlreadyClaimed, "issue #%s is already claimed", id)
+		}
 		if err := g.ensureLabel("status/claimed"); err != nil {
 			return err
 		}
@@ -244,10 +266,6 @@ func (g *GitHubBackend) SetStatus(mapSlug, ticketID, status string) error {
 		return err
 	}
 
-	cur, err := g.GetTicket(mapSlug, id)
-	if err != nil {
-		return err
-	}
 	if status == "resolved" {
 		if cur.Status == "resolved" {
 			return nil // idempotent, mirrors local
@@ -317,7 +335,7 @@ func (g *GitHubBackend) Frontier(mapSlug string) ([]TicketSummary, error) {
 }
 
 func (g *GitHubBackend) CloseVerify(opts CloseVerifyOpts) (CloseVerifyReport, error) {
-	src, err := g.closeVerifySource(opts.Ref)
+	src, err := g.closeVerifySource(opts.Ref, opts.Apply)
 	if err != nil {
 		return CloseVerifyReport{}, err
 	}
@@ -328,22 +346,32 @@ func (g *GitHubBackend) CloseVerify(opts CloseVerifyOpts) (CloseVerifyReport, er
 // the PR body plus all commit messages (headline+body), or the single commit
 // message for a SHA. The full commit sweep is the point — the platform only
 // auto-closes from the default-branch merge and takes refs piecemeal.
-func (g *GitHubBackend) closeVerifySource(ref string) (closeSource, error) {
+//
+// apply gates the merged check: --apply closes tickets, and only a merged PR
+// is closure evidence. An unmerged/closed PR's "Closes #n" must never force
+// tickets shut, so apply with a non-merged PR is rejected; dry-run is
+// unrestricted (ocr findings H4/H5).
+func (g *GitHubBackend) closeVerifySource(ref string, apply bool) (closeSource, error) {
 	if isIssueNumber(ref) {
 		var pr struct {
-			Number  int    `json:"number"`
-			Title   string `json:"title"`
-			State   string `json:"state"`
-			URL     string `json:"url"`
-			Body    string `json:"body"`
-			Commits []struct {
+			Number   int    `json:"number"`
+			Title    string `json:"title"`
+			State    string `json:"state"`
+			MergedAt string `json:"mergedAt"`
+			URL      string `json:"url"`
+			Body     string `json:"body"`
+			Commits  []struct {
 				MessageHeadline string `json:"messageHeadline"`
 				MessageBody     string `json:"messageBody"`
 			} `json:"commits"`
 		}
 		if err := g.ghJSON(&pr, "pr", "view", ref, "-R", g.repo,
-			"--json", "number,title,state,url,body,commits"); err != nil {
+			"--json", "number,title,state,mergedAt,url,body,commits"); err != nil {
 			return closeSource{}, err
+		}
+		if apply && pr.State != "MERGED" {
+			return closeSource{}, errors.Wrapf(ErrInvalidInput,
+				"PR #%d is %q, not merged — --apply refuses to close tickets from an unmerged PR (dry-run is still available)", pr.Number, strings.ToLower(pr.State))
 		}
 		src := closeSource{
 			Source: fmt.Sprintf("pr #%d", pr.Number),

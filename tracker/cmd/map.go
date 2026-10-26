@@ -119,6 +119,13 @@ func newMapListCmd() *cobra.Command {
 		Short: "List all maps with progress",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// Milestone filtering is a local-markdown concept (remote maps have
+			// no milestone field); guard before any remote round-trip.
+			if milestone != "" {
+				if err := requireLocal(cmd); err != nil {
+					return err
+				}
+			}
 			backend, err := resolveBackend(cmd)
 			if err != nil {
 				return err
@@ -129,12 +136,7 @@ func newMapListCmd() *cobra.Command {
 				return err
 			}
 
-			// Milestone filtering is a local-markdown concept (remote maps have
-			// no milestone field).
 			if milestone != "" {
-				if err := requireLocal(cmd); err != nil {
-					return err
-				}
 				maps = tracker.FilterMapsByMilestone(maps, milestone)
 			}
 

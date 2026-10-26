@@ -43,3 +43,63 @@ Used by `/wayfinder`. The **map** is a single issue with **child** issues as tic
 - **Frontier query**: list the map's open children (`gh issue list --state open`, scoped to the map's sub-issues / task list), drop any with an open blocker (`issue_dependencies_summary.blocked_by > 0`, or an open issue in the `Blocked by` line) or an assignee; first in map order wins.
 - **Claim**: `gh issue edit <n> --add-assignee @me` — the session's first write.
 - **Resolve**: `gh issue comment <n> --body "<answer>"`, then `gh issue close <n>`, then append a context pointer (gist + link) to the map's Decisions-so-far.
+## Issue tracker CLI (`tracker`)
+
+The repo ships a dedicated CLI, `tracker/` (Go), that abstracts ticket storage
+behind backends. It supersedes the raw `gh` recipes above for wayfinder-style
+work; those recipes remain valid fallbacks.
+
+```bash
+go build -o ~/tmp/tracker ./tracker   # from repo root; no install step yet
+```
+
+### Backends
+
+```bash
+tracker --backend local  ...                          # default: .scratch/ markdown (original behavior, unchanged)
+tracker --backend github  --repo owner/name ...       # GitHub issues via gh CLI
+tracker --backend gitlab  --repo group/project --gitlab-host <host> ...   # self-hosted GitLab via glab api
+```
+
+Mapping (why tickets don't look 1:1 with issues): `map/type/triage` → labels;
+`claimed` → open + `status/claimed` label; `blocked_by` → `Blocked by: #n`
+marker line in the issue body; comments → platform comments. Canonical
+mapping rationale: `tracker/tracker/backend.go` header comment.
+
+### Operations
+
+```bash
+tracker ticket create --map <slug> --title "..." --type task [--triage ready-for-agent] [--blocked-by 1,2]
+tracker ticket list   --map <slug> [--status open] [--type task] [--triage-null]
+tracker ticket view   --map <slug> --id <n>          # body + comments as JSON
+tracker ticket comment --map <slug> --id <n> --body "..."
+tracker ticket status --map <slug> --id <n> --set claimed|resolved|open
+tracker ticket triage --map <slug> --id <n> --set ready-for-agent
+tracker ticket blocking --map <slug> --id <n> --by 1,2
+tracker query frontier --map <slug>                  # open + unblocked + untriaged/ready-for-agent
+```
+
+### close-verify (merge closure gap)
+
+Closing patterns (Closes/Fixes/Resolves #n) only auto-close issues when the
+merge lands on the default branch — non-default-branch merges, merge commits
+with multiple refs, and squash merges silently drop some. `close-verify`
+re-scans the PR/MR description **and every commit message**, checks each
+referenced ticket's state, and with `--apply` closes the missed ones
+(comment records the merge source):
+
+```bash
+tracker --backend github --repo owner/name ticket close-verify --ref <PR-number|merge-SHA>          # dry-run (default)
+tracker --backend github --repo owner/name ticket close-verify --ref 123 --apply                    # only a MERGED PR/MR is accepted for --apply
+```
+
+Dry-run is always safe; `--apply` refuses non-merged PRs/MRs. After any
+non-default-branch merge, run close-verify dry-run, review the list, then
+apply.
+
+### Tests
+
+```bash
+go test ./...                                   # unit (fake runners, hermetic)
+go test -tags=integration ./tracker/itest       # real-instance; see tracker/itest/README.md
+```

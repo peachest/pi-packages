@@ -1,6 +1,7 @@
 package tracker
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"strconv"
@@ -54,6 +55,81 @@ func (gl *GitLabBackend) apiJSON(v any, endpoint string, extraArgs ...string) er
 		return errors.Wrapf(err, "parsing glab output: %s", endpoint)
 	}
 	return nil
+}
+
+// apiJSONAll fetches every page of a list endpoint, following the
+// x-next-page header. Without it, results stop at the first page (100
+// items) and silently truncate — ListMaps misses maps, frontier/blocker
+// decisions run on incomplete data (ocr M3). Pages are joined and decoded
+// once; non-array output fails loudly at the outer unmarshal.
+func (gl *GitLabBackend) apiJSONAll(v any, endpoint string) error {
+	var pages [][]byte
+	url := endpoint
+	for url != "" && len(pages) < 100 { // hard cap: 10k items
+		stdout, stderr, err := gl.runCapture(url)
+		if err != nil {
+			return errors.Wrapf(err, "glab api %s: %s", url, strings.TrimSpace(stderr))
+		}
+		pages = append(pages, stdout)
+		if n := nextPage(stderr); n != "" {
+			// x-next-page is a page NUMBER; append as the page param.
+			sep := "?"
+			if strings.Contains(endpoint, "?") {
+				sep = "&"
+			}
+			url = endpoint + sep + "page=" + n
+		} else {
+			url = ""
+		}
+	}
+	joined := make([]byte, 0, 2)
+	joined = append(joined, '[')
+	for i, el := range pages {
+		if i > 0 {
+			joined = append(joined, ',')
+		}
+		joined = append(joined, trimArray(el)...) // every page is an array
+	}
+	joined = append(joined, ']')
+	return json.Unmarshal(joined, v)
+}
+
+// trimArray strips the enclosing brackets of a JSON array page.
+func trimArray(b []byte) []byte {
+	b = bytes.TrimSpace(b)
+	if len(b) >= 2 && b[0] == '[' && b[len(b)-1] == ']' {
+		return b[1 : len(b)-1]
+	}
+	return b
+}
+
+// runCapture runs one glab api page, returning stdout plus the stderr text
+// (glab api prints the x-next-page pagination header there as diagnostics).
+func (gl *GitLabBackend) runCapture(endpoint string) (stdout []byte, stderrText string, err error) {
+	out, stderr, err := AsStderrRunner(gl.run).RunStderr(gl.env(), "glab", "api", endpoint)
+	if err != nil {
+		return out, stderr, errors.Wrapf(err, "glab api %s", endpoint)
+	}
+	return out, stderr, nil
+}
+
+// nextPage extracts the x-next-page value from glab api's stderr line
+// "x-next-page: 2" (glab prints response headers as diagnostics when
+// stderr is a TTY — with hooks below we capture them regardless).
+func nextPage(stderr string) string {
+	for _, line := range strings.Split(stderr, "\n") {
+		idx := strings.Index(line, ":")
+		if idx <= 0 {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(line[:idx]), "x-next-page") {
+			v := strings.TrimSpace(line[idx+1:])
+			if v != "" {
+				return v
+			}
+		}
+	}
+	return ""
 }
 
 func (gl *GitLabBackend) enc() string { return strings.ReplaceAll(gl.repo, "/", "%2F") }
@@ -123,7 +199,7 @@ type glLabel struct {
 
 func (gl *GitLabBackend) ListMaps() ([]MapSummary, error) {
 	var labels []glLabel
-	if err := gl.apiJSON(&labels, gl.projectEndpoint("labels?per_page=100")); err != nil {
+	if err := gl.apiJSONAll(&labels, gl.projectEndpoint("labels?per_page=100")); err != nil {
 		return nil, err
 	}
 	var maps []MapSummary
@@ -179,7 +255,7 @@ func (gl *GitLabBackend) ListTickets(mapSlug string, filter ListFilter) ([]Ticke
 		endpoint += ",type/" + filter.Type
 	}
 	var issues []glIssue
-	if err := gl.apiJSON(&issues, endpoint); err != nil {
+	if err := gl.apiJSONAll(&issues, endpoint); err != nil {
 		return nil, err
 	}
 	var tickets []TicketSummary
@@ -206,7 +282,7 @@ func (gl *GitLabBackend) GetTicket(mapSlug, ticketID string) (TicketDetail, erro
 		return TicketDetail{}, err
 	}
 	var notes []glNote
-	if err := gl.apiJSON(&notes, gl.projectEndpoint(fmt.Sprintf("issues/%s/notes?per_page=100&sort=asc", remoteID(ticketID)))); err != nil {
+	if err := gl.apiJSONAll(&notes, gl.projectEndpoint(fmt.Sprintf("issues/%s/notes?per_page=100&sort=asc", remoteID(ticketID)))); err != nil {
 		return TicketDetail{}, err
 	}
 	detail := TicketDetail{TicketSummary: glIssueToSummary(issue, mapSlug)}
@@ -236,27 +312,36 @@ func (gl *GitLabBackend) SetStatus(mapSlug, ticketID, status string) error {
 	}
 	id := remoteID(ticketID)
 
+	cur, err := gl.GetTicket(mapSlug, id)
+	if err != nil {
+		return err
+	}
+
+	// Claim guards mirror the local contract (status.go), same as GitHub (ocr M7).
 	if status == "claimed" {
+		if cur.Status == "resolved" {
+			return errors.Wrapf(ErrAlreadyResolved, "issue #%s is already resolved — reopen it first", id)
+		}
+		if cur.Status == "claimed" {
+			return errors.Wrapf(ErrAlreadyClaimed, "issue #%s is already claimed", id)
+		}
 		_, err := gl.api(gl.projectEndpoint("issues/"+id),
 			"-X", "PUT", "-f", "add_labels=status/claimed")
 		return err
 	}
 
-	cur, err := gl.GetTicket(mapSlug, id)
-	if err != nil {
-		return err
-	}
 	if status == "resolved" {
 		if cur.Status == "resolved" {
 			return nil
 		}
-		// Clean up the claimed label so a resolved issue doesn't carry it.
+		// Single atomic PUT: GitLab accepts state_event and remove_labels in
+		// one request, avoiding a half-done transition when step 1 of 2 fails
+		// (ocr M2). GitHub has no equivalent and stays two-step.
+		args := []string{"-X", "PUT", "-f", "state_event=close"}
 		if cur.Status == "claimed" {
-			if _, err := gl.api(gl.projectEndpoint("issues/"+id), "-X", "PUT", "-f", "remove_labels=status/claimed"); err != nil {
-				return err
-			}
+			args = append(args, "-f", "remove_labels=status/claimed")
 		}
-		_, err := gl.api(gl.projectEndpoint("issues/"+id), "-X", "PUT", "-f", "state_event=close")
+		_, err := gl.api(gl.projectEndpoint("issues/"+id), args...)
 		return err
 	}
 	// status == "open"
@@ -311,14 +396,14 @@ func (gl *GitLabBackend) Frontier(mapSlug string) ([]TicketSummary, error) {
 }
 
 func (gl *GitLabBackend) CloseVerify(opts CloseVerifyOpts) (CloseVerifyReport, error) {
-	src, err := gl.closeVerifySource(opts.Ref)
+	src, err := gl.closeVerifySource(opts.Ref, opts.Apply)
 	if err != nil {
 		return CloseVerifyReport{}, err
 	}
 	return runCloseVerify(gl, "", src, opts)
 }
 
-func (gl *GitLabBackend) closeVerifySource(ref string) (closeSource, error) {
+func (gl *GitLabBackend) closeVerifySource(ref string, apply bool) (closeSource, error) {
 	if isIssueNumber(ref) {
 		var mr struct {
 			IID         int    `json:"iid"`
@@ -329,6 +414,11 @@ func (gl *GitLabBackend) closeVerifySource(ref string) (closeSource, error) {
 		}
 		if err := gl.apiJSON(&mr, gl.projectEndpoint("merge_requests/"+ref)); err != nil {
 			return closeSource{}, err
+		}
+		// --apply closes tickets; only a merged MR is closure evidence (H4/H5).
+		if apply && mr.State != "merged" {
+			return closeSource{}, errors.Wrapf(ErrInvalidInput,
+				"MR !%d is %q, not merged — --apply refuses to close tickets from an unmerged MR (dry-run is still available)", mr.IID, mr.State)
 		}
 		var commits []struct {
 			Message string `json:"message"`

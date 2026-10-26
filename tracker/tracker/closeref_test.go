@@ -26,6 +26,13 @@ func TestParseClosingRefs(t *testing.T) {
 		{"no false positive on closing", "closing #1 is not a keyword", nil},
 		{"ref not adjacent", "fixes later #1", nil},
 		{"zero padded", "Closes #007", []string{"7"}},
+		{"negated: does not close", "This does not close #5", nil},
+		{"negated: won't fix", "won't fix #7", nil},
+		{"negated: doesn't resolve", "doesn't resolve #3", nil},
+		{"negated: will not close", "we will not close #8", nil},
+		{"negated mid-text", "We decided not to close #9 today", nil},
+		{"negation elsewhere is fine", "not related, but closes #6", []string{"6"}},
+		{"overflow ref skipped", "Closes #99999999999999999999999", nil},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

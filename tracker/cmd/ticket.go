@@ -278,10 +278,14 @@ func newTicketStatusCmd() *cobra.Command {
 				return err
 			}
 
+			// claimed_at/resolved_at are part of the original CLI output
+			// contract (route.md); keep them for backward compatibility (ocr M5).
 			return outputJSON(cmd, map[string]any{
-				"id":     detail.ID,
-				"map":    mapSlug,
-				"status": detail.Status,
+				"id":          detail.ID,
+				"map":         mapSlug,
+				"status":      detail.Status,
+				"claimed_at":  detail.ClaimedAt,
+				"resolved_at": detail.ResolvedAt,
 			})
 		},
 	}

@@ -122,8 +122,9 @@ func TestGitHubSetStatusResolvedCloses(t *testing.T) {
 
 func TestGitHubSetStatusClaimedAddsLabel(t *testing.T) {
 	r := &fakeRunner{responses: map[string]string{
-		"gh label create status/claimed -R o/r":             "",
-		"gh issue edit 5 -R o/r --add-label status/claimed": "",
+		"gh issue view 5 -R o/r --json number,title,state,labels,body,createdAt,url,comments": singleIssueJSON(5, "OPEN", []string{"map/way"}, ""),
+		"gh label create status/claimed -R o/r":                                               "",
+		"gh issue edit 5 -R o/r --add-label status/claimed":                                   "",
 	}}
 	b := NewGitHubBackend(r, "o/r")
 	if err := b.SetStatus("way", "5", "claimed"); err != nil {
@@ -132,10 +133,6 @@ func TestGitHubSetStatusClaimedAddsLabel(t *testing.T) {
 	joined := strings.Join(r.calls, "\n")
 	if !strings.Contains(joined, "--add-label status/claimed") {
 		t.Errorf("expected add-label status/claimed:\n%s", joined)
-	}
-	// claimed must NOT require a state fetch (label-only, no GetTicket)
-	if strings.Contains(joined, "issue view") {
-		t.Errorf("claimed should not fetch the issue:\n%s", joined)
 	}
 }
 
@@ -159,7 +156,7 @@ func TestGitHubFrontierUsesSharedFilter(t *testing.T) {
 }
 
 func TestGitHubCloseVerifyDryRun(t *testing.T) {
-	prJSON := `{"number":9,"title":"feat","state":"MERGED","url":"https://github.com/o/r/pull/9","body":"Closes #1, #2","commits":[
+	prJSON := `{"number":9,"title":"feat","state":"MERGED","mergedAt":"2026-10-20T00:00:00Z","url":"https://github.com/o/r/pull/9","body":"Closes #1, #2","commits":[
 		{"oid":"a1","messageHeadline":"part","messageBody":"fixes #3"},
 		{"oid":"a2","messageHeadline":"no refs here","messageBody":"just text"}
 	]}`
@@ -167,7 +164,7 @@ func TestGitHubCloseVerifyDryRun(t *testing.T) {
 		return singleIssueJSON(n, state, []string{"map/way"}, "")
 	}
 	r := &fakeRunner{responses: map[string]string{
-		"gh pr view 9 -R o/r --json number,title,state,url,body,commits":                      prJSON,
+		"gh pr view 9 -R o/r --json number,title,state,mergedAt,url,body,commits":             prJSON,
 		"gh issue view 1 -R o/r --json number,title,state,labels,body,createdAt,url,comments": issue(1, "CLOSED"),
 		"gh issue view 2 -R o/r --json number,title,state,labels,body,createdAt,url,comments": issue(2, "OPEN"),
 		"gh issue view 3 -R o/r --json number,title,state,labels,body,createdAt,url,comments": issue(3, "OPEN"),
@@ -198,9 +195,9 @@ func TestGitHubCloseVerifyDryRun(t *testing.T) {
 }
 
 func TestGitHubCloseVerifyApply(t *testing.T) {
-	prJSON := `{"number":9,"title":"feat","state":"MERGED","url":"https://github.com/o/r/pull/9","body":"Closes #2","commits":[]}`
+	prJSON := `{"number":9,"title":"feat","state":"MERGED","mergedAt":"2026-10-20T00:00:00Z","url":"https://github.com/o/r/pull/9","body":"Closes #2","commits":[]}`
 	r := &fakeRunner{responses: map[string]string{
-		"gh pr view 9 -R o/r --json number,title,state,url,body,commits":                                                                      prJSON,
+		"gh pr view 9 -R o/r --json number,title,state,mergedAt,url,body,commits":                                                             prJSON,
 		"gh issue view 2 -R o/r --json number,title,state,labels,body,createdAt,url,comments":                                                 singleIssueJSON(2, "OPEN", []string{"map/way"}, ""),
 		"gh issue comment 2 -R o/r --body Closed by pr #9 (https://github.com/o/r/pull/9). Verified automatically by `tracker close-verify`.": "",
 		"gh issue close 2 -R o/r": "",
@@ -263,5 +260,32 @@ func TestBuildBodyWithBlockers(t *testing.T) {
 	}
 	if got := buildBodyWithBlockers("", nil); got != "" {
 		t.Errorf("got %q", got)
+	}
+}
+
+func TestGitHubCloseVerifyApplyRefusesUnmergedPR(t *testing.T) {
+	prJSON := `{"number":9,"title":"wip","state":"OPEN","mergedAt":null,"url":"https://github.com/o/r/pull/9","body":"Closes #2","commits":[]}`
+	r := &fakeRunner{responses: map[string]string{
+		"gh pr view 9 -R o/r --json number,title,state,mergedAt,url,body,commits":             prJSON,
+		"gh issue view 2 -R o/r --json number,title,state,labels,body,createdAt,url,comments": singleIssueJSON(2, "OPEN", []string{}, ""),
+	}}
+	b := NewGitHubBackend(r, "o/r")
+
+	// apply + unmerged → refused, no writes
+	_, err := b.CloseVerify(CloseVerifyOpts{Ref: "9", Apply: true})
+	if !isErr(err, ErrInvalidInput) {
+		t.Fatalf("want ErrInvalidInput, got %v", err)
+	}
+	if strings.Contains(strings.Join(r.calls, "\n"), "issue close") {
+		t.Errorf("refused run must not write")
+	}
+
+	// dry-run + unmerged → allowed, read-only report
+	report, err := b.CloseVerify(CloseVerifyOpts{Ref: "9"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Refs) != 1 || report.Refs[0].Issue != "2" {
+		t.Errorf("dry-run refs = %+v", report.Refs)
 	}
 }

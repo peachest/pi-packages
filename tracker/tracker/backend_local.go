@@ -85,7 +85,9 @@ func (l *LocalBackend) GetTicket(mapSlug, ticketID string) (TicketDetail, error)
 				Path:      path,
 				CreatedAt: fm.CreatedAt,
 			},
-			Body: extractBody(data),
+			Body:       extractBody(data),
+			ClaimedAt:  fm.ClaimedAt,
+			ResolvedAt: fm.ResolvedAt,
 		}
 		return nil
 	})

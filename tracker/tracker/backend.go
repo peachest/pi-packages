@@ -60,6 +60,10 @@ type TicketDetail struct {
 	TicketSummary
 	Comments []TicketComment `json:"comments"`
 	Body     string          `json:"body"`
+	// Local-only lifecycle timestamps (route.md CLI output contract; remote
+	// hosting platforms have no equivalent fields — nil there).
+	ClaimedAt  *time.Time `json:"claimed_at"`
+	ResolvedAt *time.Time `json:"resolved_at"`
 }
 
 // CloseVerifyOpts configures a close-verify run.
@@ -217,11 +221,15 @@ func runCloseVerify(b Backend, mapSlug string, src closeSource, opts CloseVerify
 
 		if opts.Apply && err == nil && !cr.Closed {
 			note := fmt.Sprintf("Closed by %s (%s). Verified automatically by `tracker close-verify`.", src.Source, src.URL)
-			if err := b.AddComment(mapSlug, ref, note); err != nil {
-				return CloseVerifyReport{}, errors.Wrapf(err, "commenting on issue #%s", ref)
-			}
+			// Close FIRST, then comment: if commenting fails after a successful
+			// close, the ticket is closed with no note — recoverable by reading
+			// the report. The reverse order leaves an open ticket wearing a
+			// "Closed by" note, a lie on the record (ocr M4).
 			if err := b.SetStatus(mapSlug, ref, "resolved"); err != nil {
 				return CloseVerifyReport{}, errors.Wrapf(err, "closing issue #%s", ref)
+			}
+			if err := b.AddComment(mapSlug, ref, note); err != nil {
+				return CloseVerifyReport{}, errors.Wrapf(err, "closing issue #%s succeeded but adding the close-note failed — ticket is closed, note missing", ref)
 			}
 			cr.State = "resolved"
 			cr.Closed = true
