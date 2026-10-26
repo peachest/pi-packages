@@ -9,6 +9,7 @@ import {
   computeProxyEnvPath,
   diffProxyUrl,
   dispatcherPathFromMain,
+  findDispatcherUpward,
 } from "./proxy";
 
 // ═══ mergeNoProxyLists ═══
@@ -147,6 +148,26 @@ describe("dispatcherPathFromMain", () => {
     // Only asserts the derivation math; real cross-platform handling is not required.
     const main = "/p/dist/index.js";
     expect(dispatcherPathFromMain(main)).toBe("/p/dist/core/http-dispatcher.js");
+  });
+});
+
+// ═══ findDispatcherUpward ═══
+
+describe("findDispatcherUpward", () => {
+  it("finds dist/core/http-dispatcher.js at an ancestor of the start dir", () => {
+    // Simulate pkgRoot/dist/bundle/ (cli.js dir) with dispatcher at pkgRoot.
+    const pkgRoot = mkdtempSync(join(tmpdir(), "pi-pkg-"));
+    mkdirSync(join(pkgRoot, "dist", "core"), { recursive: true });
+    mkdirSync(join(pkgRoot, "dist", "bundle"), { recursive: true });
+    const dispatcher = join(pkgRoot, "dist", "core", "http-dispatcher.js");
+    writeFileSync(dispatcher, "x");
+    const startDir = join(pkgRoot, "dist", "bundle");
+    expect(findDispatcherUpward(startDir)).toBe(dispatcher);
+  });
+
+  it("returns undefined when no ancestor contains the dispatcher", () => {
+    const startDir = mkdtempSync(join(tmpdir(), "pi-empty-"));
+    expect(findDispatcherUpward(startDir)).toBeUndefined();
   });
 });
 
