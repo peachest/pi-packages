@@ -61,13 +61,16 @@ const singleQuotedStoredName = (cmd: string, stored: readonly string[]): string 
 	return undefined;
 };
 
-/** 展开式引用名（r8 #3）：${NAME:-def}/${NAME:=d}/${NAME:+a}/${NAME:?msg}/${NAME:0:3} 等参数展开形态
- *  （${NAME} 后紧跟非 } 的操作符）——r1 #1 语义下不注入真值，但命中已存名时命令会以空值/默认值照常执行
- *  （sudo（无 -E）/env -i 等清环境内层同样取不到），与单引号 r5 #2 同类缺口 → fail closed block。
- *  ${NAME} 纯花括号形态不在此列（正常注入路径）；未存名不拦（r1 #1 白名单语义）。 */
+/** 展开式引用名（r8 #3，r9 #1 收紧判定）：${NAME:-def}/${NAME:=d}/${NAME:+a}/${NAME:?msg}/${NAME-d}/${NAME=x}/
+ *  ${NAME+a}/${NAME?m}/${NAME#pat}/${NAME%pat}/${NAME/pat/rep} 等【明确的参数展开操作符】形态——${NAME} 后
+ *  紧跟 :-/:=/:+/:? 或 - = + ? # % / 之一才算。r1 #1 语义下不注入真值，但命中已存名时命令会以空值/默认值
+ *  照常执行（sudo（无 -E）/env -i 等清环境内层同样取不到），与单引号 r5 #2 同类缺口 → fail closed block。
+ *  r9 #1：旧正则 [^}] 会回溯截断名字（${TOKEN} → m[1]=TOKE 命中截断前缀存名 → 纯花括号误 block；
+ *  ${TOKEN}/config 等纯展开+字面后缀同样被波及）——收紧后纯 ${NAME} 花括号与字面后缀均不匹配（正常注入路径）。
+ *  未存名不拦（r1 #1 白名单语义）。shortcut：${NAME:0:3} 子串展开（冒号后接数字）不在此列，与字面后缀同视为放行。 */
 const expandedRefNames = (cmd: string): Set<string> => {
 	const names = new Set<string>();
-	for (const m of cmd.matchAll(/\$\{([A-Za-z_][A-Za-z0-9_]*)[^}]/g)) names.add(m[1]);
+	for (const m of cmd.matchAll(/\$\{([A-Za-z_][A-Za-z0-9_]*)(?::?[-+=?#%/])/g)) names.add(m[1]);
 	return names;
 };
 

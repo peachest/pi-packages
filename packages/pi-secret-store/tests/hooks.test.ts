@@ -384,6 +384,31 @@ describe("tool_call：展开式引用命中已存名 block（r8 #3）", () => {
 		expect(event.input.command).toContain("export HARBOR_PASSWORD='harbor-secret-value'");
 	});
 
+	it("r9 #1：纯展开+字面后缀（${NAME}/config、${NAME}-suffix）不判展开式——照常注入不 block", async () => {
+		const h = await setupHarness(SEED);
+		const { event, result } = await runToolCall(h, 'echo "${HARBOR_PASSWORD}/config" "${HARBOR_PASSWORD}-suffix"');
+		expect(result).toBeUndefined(); // 旧正则 [^}] 把 } 后的字面后缀误判为展开操作符 → 误 block（红）
+		expect(event.input.command).toContain("export HARBOR_PASSWORD='harbor-secret-value'");
+	});
+
+	it("r9 #1：纯 ${NAME} 花括号不因旧正则回溯截断误判展开式（存名与截断前缀名并存）", async () => {
+		const h = await setupHarness({
+			...SEED,
+			HARBOR_PASSWOR: { value: "prefix-value-9999", updatedAt: "t", fingerprint: "fp0000pw99" }, // HARBOR_PASSWORD 截去末字符
+		});
+		const { event, result } = await runToolCall(h, 'echo "${HARBOR_PASSWORD}"');
+		// 旧正则 [^}] 回溯：${HARBOR_PASSWORD} → m[1]=HARBOR_PASSWOR（截断）命中已存名 → 纯花括号注入路径被误 block（红）
+		expect(result).toBeUndefined();
+		expect(event.input.command).toContain("export HARBOR_PASSWORD='harbor-secret-value'");
+	});
+
+	it("r9 #1 回归锁：${NAME:-def} 操作符形态仍判展开式 block（r8 #3 语义在收紧后保持）", async () => {
+		const h = await setupHarness(SEED);
+		const { result } = await runToolCall(h, 'echo "${HARBOR_PASSWORD:=d}"');
+		expect(result?.block).toBe(true);
+		expect(result?.reason).toContain("HARBOR_PASSWORD");
+	});
+
 	it("展开式引用未存名不拦（r1 #1 白名单语义）：命令逐字节原样", async () => {
 		const h = await setupHarness(SEED);
 		const cmd = 'echo "${MISSING_VAR:-d}"';
@@ -532,6 +557,16 @@ describe("tool_call：回填边界与数据形态（rolling-review-r3 #1）", ()
 		const btRes = await runToolCall(h, bt);
 		expect(btRes.result?.block).toBe(true);
 		expect(btRes.event.input.command).toBe(bt);
+	});
+
+	it("r9 #4：$() 内嵌双引号含 ) —— 双引号内的 ) 不误减深度，其后替换体明文仍判数据位 block", async () => {
+		const h = await setupHarness(SEED_A);
+		await h.handlers.session_start[0]({ reason: "new" }, { hasUI: false });
+		const cmd = 'curl $(echo "a)b" a-token-value-1)';
+		const { result, event } = await runToolCall(h, cmd);
+		expect(result?.block).toBe(true); // 旧实现：引号内 ) 误减深度 → 其后命中沦为裸 token 被机械改写（红）
+		expect(result?.reason).toContain("A_TOKEN");
+		expect(event.input.command).toBe(cmd); // 阻断不改写
 	});
 
 	it("heredoc 结束后的命令位命中 → 正常裸 token 回填（heredoc 不吞后续命令）", async () => {

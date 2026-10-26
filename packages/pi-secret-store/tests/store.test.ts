@@ -6,9 +6,12 @@
 import { readFile, stat, readdir, writeFile } from "node:fs/promises";
 import { afterEach, describe, expect, it } from "vitest";
 import { loadStore, storePaths, updateStore } from "../index.ts";
+import { withStoreLock } from "../lib/store.ts";
 import { cleanupEnv, runExact, setupHarness, toolCtx } from "./helpers.ts";
 
 afterEach(cleanupEnv);
+
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 describe("store：json 保存（/secret-store forget → updateStore）", () => {
 	it("forget 后 json 重写为 0600、无 .tmp/.lock 残留（tmp+rename 原子性）", async () => {
@@ -234,5 +237,23 @@ describe("storePaths 命名不变式（r7 #4）", () => {
 			const p = storePaths(dir);
 			expect(p.storePathAge.startsWith(p.storePath)).toBe(true);
 		}
+	});
+});
+
+describe("plain 锁基准（r9 #2）", () => {
+	it("updateStore 锁基准 = 正典路径（withStoreLock 统一追加 .lock）：持正确口径锁可挡住 updateStore，磁盘无双 .lock", async () => {
+		const h = await setupHarness({
+			A_TOKEN: { value: "a-value-1234", updatedAt: "t", fingerprint: "aaaa1111" },
+		});
+		let release!: () => void;
+		const gate = new Promise<void>((r) => (release = r));
+		const holder = withStoreLock(h.storePath, () => gate); // 持有正确口径（storePath + .lock）的锁
+		const upd = updateStore(h.agentDir, h.storePath, () => undefined);
+		// 旧实现 plainBackend.lockPath 自带 .lock → withStoreLock 再追加 → 锁在 .lock.lock，holder 挡不住（红）
+		await expect(Promise.race([upd.then(() => "resolved"), sleep(300).then(() => "pending")])).resolves.toBe("pending");
+		await expect(stat(`${h.storePath}.lock`)).resolves.toBeTruthy(); // 锁文件单一 .lock
+		await expect(stat(`${h.storePath}.lock.lock`)).rejects.toThrow(/ENOENT/); // 不出现 .lock.lock（与 age r7 #1 口径一致）
+		release();
+		await Promise.all([holder, upd]);
 	});
 });

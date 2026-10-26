@@ -104,7 +104,8 @@ export function commandContext(cmd: string): Uint8Array {
 			continue;
 		}
 		if (!inSingle && ch === "$" && cmd[i + 1] === "(") substDepth++;
-		else if (!inSingle && ch === ")" && substDepth > 0) substDepth--;
+		// r9 #4：双引号内的 ) 是字面量——递减与入栈同不看引号态会把 $(echo "a)b") 提前闭合，其后替换体漏标 IN_SUBST
+		else if (!inSingle && !inDouble && ch === ")" && substDepth > 0) substDepth--;
 		else if (!inSingle && ch === "`") backtickDepth = backtickDepth === 0 ? 1 : backtickDepth - 1;
 		if (inSingle || inDouble) flags[i] |= inSingle ? IN_QUOTE | IN_SINGLE : IN_QUOTE;
 		if (substDepth > 0 || backtickDepth > 0) flags[i] |= IN_SUBST;

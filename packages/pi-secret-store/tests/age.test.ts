@@ -384,3 +384,31 @@ describe("age 后端：真实加解密原语 round-trip（锦上添花的独立�
 			.toThrow(/no identity matched/);
 	});
 });
+
+describe("age 后端：外部工具输出上限（r9 #5）", () => {
+	it("超大 stdout 截断（1MB 上限）：迁移密文 ≤ 上限+一个 chunk，不再无界累积", async () => {
+		const fakeBin = await mkdtemp(join(tmpdir(), "age-spew-"));
+		// age --version exit 0（resolveAgeBin）；-r 忽略 stdin 吐 3MB；age-keygen 按 -o 落密钥文件（含 public key 注释行）
+		await writeFile(
+			join(fakeBin, "age"),
+			'#!/bin/sh\ncase "$1" in\n  --version) exit 0;;\n  -r) head -c 3000000 /dev/zero;;\n  *) exit 3;;\nesac\n',
+			{ mode: 0o755 },
+		);
+		await writeFile(
+			join(fakeBin, "age-keygen"),
+			'#!/bin/sh\nout=""\n[ "$1" = "-o" ] && out="$2"\nprintf "# public key: age1fake\\nAGE-SECRET-KEY-1FAKE0000\\n" > "$out"\n',
+			{ mode: 0o755 },
+		);
+		process.env.PI_SECRET_STORE_AGE_BIN = join(fakeBin, "age");
+		try {
+			const h = await setupHarness(SEED, undefined, "age");
+			await start(h); // 迁移：ensureIdentity → encryptToFile（age -r）→ 密文 = 截断后的 stdout
+			const cipher = await readFile(ageFile(h));
+			expect(cipher.length).toBeGreaterThan(0);
+			expect(cipher.length).toBeLessThan(2_000_000); // 无上限时为 3MB（红）
+		} finally {
+			delete process.env.PI_SECRET_STORE_AGE_BIN;
+			await rm(fakeBin, { recursive: true, force: true });
+		}
+	}, 10_000);
+});

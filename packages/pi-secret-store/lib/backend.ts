@@ -30,7 +30,9 @@ const serialize = (store: Store): string => `${JSON.stringify({ secrets: store }
 // ---------------------------------------------------------------- plain ----
 
 const plainBackend = (storePath: string): StoreBackend => ({
-	lockPath: `${storePath}.lock`,
+	// r9 #2：基准 = storePath 正典路径（withStoreLock 统一追加 .lock）——旧值 `${storePath}.lock` 会锁成
+	// .lock.lock，与 age 口径（r7 #1：锁基准 = 不带 .lock 的正典路径）不一致，跨路径锁不互斥。
+	lockPath: storePath,
 	async load(onWarning) {
 		return loadStore(storePath, onWarning);
 	},
@@ -83,6 +85,9 @@ interface RunResult {
  *  r8 #5：外部工具调用超时（缺省 30s，PI_SECRET_STORE_TIMEOUT_MS 可调，测试缩短用）——age/shred/keygen 挂起
  *  否则 tool_call 永久阻塞且存储锁被持到 stale 抢占。超时 SIGKILL 子进程并 reject（文案含工具名）。 */
 const RUN_TIMEOUT_MS = 30_000;
+/** r9 #5：单流收集上限（stdout/stderr 各 1MB）——超时 SIGKILL 后 data 监听器仍可能继续哺缓冲，
+ *  截断后停止 push；存储密文/报错均远小于此。shortcut：合法输出超 1MB 会被截断，出现时再上调。 */
+const MAX_CAPTURE_BYTES = 1 << 20;
 
 function runCapture(bin: string, args: string[], input?: string): Promise<RunResult> {
 	const timeoutMs = Number(process.env.PI_SECRET_STORE_TIMEOUT_MS) || RUN_TIMEOUT_MS;
@@ -90,11 +95,16 @@ function runCapture(bin: string, args: string[], input?: string): Promise<RunRes
 		const child = spawn(bin, args, { stdio: ["pipe", "pipe", "pipe"] });
 		const chunks: Buffer[] = [];
 		let stderr = "";
+		let captured = 0; // stdout 累计字节
+		let capturedErr = 0; // stderr 累计字节
 		let settled = false;
 		const timer = setTimeout(() => {
 			if (settled) return;
 			settled = true;
 			child.kill("SIGKILL");
+			// r9 #5：超时路径移除 data 监听器——kill 后到 close 之间的残留输出不再累积
+			child.stdout.removeAllListeners("data");
+			child.stderr.removeAllListeners("data");
 			reject(
 				new Error(
 					`secret-store: 外部工具 ${bin} 执行超时（${timeoutMs}ms），已强制终止子进程。如反复出现，请检查该工具是否挂起（如等待交互输入）；可用 PI_SECRET_STORE_TIMEOUT_MS 调整超时`,
@@ -107,8 +117,16 @@ function runCapture(bin: string, args: string[], input?: string): Promise<RunRes
 			clearTimeout(timer);
 			fn();
 		};
-		child.stdout.on("data", (d: Buffer) => chunks.push(d));
-		child.stderr.on("data", (d: Buffer) => (stderr += d.toString("utf8")));
+		child.stdout.on("data", (d: Buffer) => {
+			if (captured >= MAX_CAPTURE_BYTES) return; // r9 #5：达上限后丢弃后续块
+			chunks.push(d);
+			captured += d.length;
+		});
+		child.stderr.on("data", (d: Buffer) => {
+			if (capturedErr >= MAX_CAPTURE_BYTES) return;
+			stderr += d.toString("utf8");
+			capturedErr += d.length;
+		});
 		child.on("error", (err) => finish(() => reject(err)));
 		child.on("close", (code) => finish(() => resolve({ code: code ?? -1, stdout: Buffer.concat(chunks), stderr })));
 		child.stdin.end(input ?? "");
@@ -117,7 +135,8 @@ function runCapture(bin: string, args: string[], input?: string): Promise<RunRes
 
 /** 身份密钥首次不存在 → 零交互 age-keygen 生成（0600，tmp+rename）。空存储首用的生成无锁：
  *  竞态双生成 last-wins 无害（此阶段尚无密文可解）；迁移路径的调用在存储锁内。 */
-async function ensureIdentity(keyPath: string): Promise<void> {
+/** r9 #3：身份密钥 0600 收紧失败不再静默吞——能读到密钥的进程即等同绕过全部加密，非 ENOENT 失败显式告警。 */
+async function ensureIdentity(keyPath: string, onWarning?: (msg: string) => void): Promise<void> {
 	try {
 		await stat(keyPath);
 		return;
@@ -129,7 +148,12 @@ async function ensureIdentity(keyPath: string): Promise<void> {
 		const tmp = `${keyPath}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
 		const r = await runCapture(keygen, ["-o", tmp]);
 		if (r.code !== 0) throw new Error(`age-keygen exit ${r.code}：${r.stderr.trim()}`);
-		await chmod(tmp, 0o600).catch(() => {});
+		await chmod(tmp, 0o600).catch((err) => {
+			if ((err as NodeJS.ErrnoException).code !== "ENOENT")
+				onWarning?.(
+					`secret-store: 身份密钥 ${keyPath} 收紧 0600 失败（${(err as Error).message}）：密钥可能以宽权限落盘，任何能读到该文件的进程都可解密全部存储，请手动 chmod 600 ${keyPath}`,
+				);
+		});
 		await rename(tmp, keyPath);
 	} catch (err) {
 		throw new Error(`secret-store: 身份密钥生成失败（${keyPath}）：${(err as Error).message}。${AGE_INSTALL_HINT}`, { cause: err });
@@ -251,7 +275,7 @@ const ageBackend = (plainPath: string, cipherPath: string, keyPath: string): Sto
 				// r7 #1：首次使用同样持锁（与 migrateLegacy 一致）——锁外 keygen 的 rename 与并发 persist 的
 				// ensureIdentity→encryptToFile 交错时覆盖密钥，已落盘密文永久不可解；updateStore 锁内 reload
 				// 到此分支由 withStoreLock 同链重入直通，不二次取锁。
-				await withStoreLock(cipherPath, () => ensureIdentity(keyPath));
+				await withStoreLock(cipherPath, () => ensureIdentity(keyPath, onWarning));
 				return Object.create(null) as Store;
 			}
 			return migrateLegacy(legacyRaw, plainPath, cipherPath, keyPath, onWarning);
@@ -284,7 +308,7 @@ async function migrateLegacy(
 ): Promise<Store> {
 	const store = parseStoreText(raw, plainPath, onWarning);
 	await withStoreLock(cipherPath, async () => {
-		await ensureIdentity(keyPath);
+		await ensureIdentity(keyPath, onWarning);
 		await encryptToFile(serialize(store), cipherPath, keyPath);
 		await shredFile(plainPath, onWarning);
 	});
