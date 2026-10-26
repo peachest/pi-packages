@@ -32,7 +32,7 @@ print(chr(10).join(p['source'] if isinstance(p, dict) else p for p in d.get('pac
 ")
 for pkg in $pkgs; do
     full="$repo/packages/$pkg"
-    echo "$installed" | grep -q "packages/$pkg"" || continue
+    echo "$installed" | grep -qF "packages/$pkg/" || continue
     name=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['name'])" "$full/package.json" 2>/dev/null) || continue
     target="$HOME/.pi/agent/npm/node_modules/$name"
     if [ -L "$target" ] && [ "$(readlink "$target")" = "$full" ]; then
