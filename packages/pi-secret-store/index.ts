@@ -321,7 +321,7 @@ export default function secretStore(pi: ExtensionAPI) {
 			};
 		// #171 allowedPrefix（r8 #4 改分段比对）：逐段取命令词（r2 #2 剥 sudo/env/赋值 token），任一段命中任一前缀
 		// → 该凭证放行（真消费凭证的段参与比对）；被引用且已存的限定凭证在所有段均不命中 → 不注入并 block 报错
-		// （fail closed：否则命令带着空变量照常执行）。三要素：凭证名/限定前缀/secret_ensure 重设指引 + 实际参与比对的命令词。
+		// （fail closed：否则命令带着空变量照常执行）。三要素：凭证名/限定前缀/forget+重录指引 + 实际参与比对的命令词。
 		const segWords = commandSegments(cmd).map(commandWord).filter(Boolean);
 		const mismatched = names.filter((n) => {
 			const prefixes = store[n].allowedPrefix ?? [];
@@ -333,8 +333,8 @@ export default function secretStore(pi: ExtensionAPI) {
 					// r6 #2：命令词解析不出（重定向/管道/纯赋值等形态）时 fail-closed 拦截不变，但单独文案指明
 					// 是“解析不出”而非“不命中”，避免空命令词引号排障误导
 					segWords.length === 0
-						? `凭证 ${n} 限定仅用于命令词命中 [${(store[n].allowedPrefix ?? []).join(",")}] 的命令，但无法从命令解析命令词，为避免空变量照常执行未注入。请调整命令结构使首词明确，或调用 secret_ensure 重设该凭证的限定`
-						: `凭证 ${n} 限定仅用于命令词命中 [${(store[n].allowedPrefix ?? []).join(",")}] 的命令，当前命令词 "${segWords.join("、")}" 不命中，未注入（如需变更限定请调用 secret_ensure 重设该凭证）`,
+						? `凭证 ${n} 限定仅用于命令词命中 [${(store[n].allowedPrefix ?? []).join(",")}] 的命令，但无法从命令解析命令词，为避免空变量照常执行未注入。请调整命令结构使首词明确；如需变更限定请先 /secret-store forget ${n} 删除后重新录入（需重输明文）`
+						: `凭证 ${n} 限定仅用于命令词命中 [${(store[n].allowedPrefix ?? []).join(",")}] 的命令，当前命令词 "${segWords.join("、")}" 不命中，未注入。如需变更限定请先 /secret-store forget ${n} 删除后重新录入（需重输明文）`,
 				)
 				.join("；");
 			return { block: true, reason: `secret-store: ${detail}` };
@@ -462,7 +462,6 @@ export default function secretStore(pi: ExtensionAPI) {
 			// 锁内 reload → 只 merge 本条 → 后端原子写回，避免旧快照整体覆盖。
 			await updateStore(
 				agentDir,
-				storePath,
 				(current) => {
 					current[params.name] = { value, updatedAt: new Date().toISOString(), fingerprint: fingerprintOf(value) };
 					return current;
@@ -488,7 +487,6 @@ export default function secretStore(pi: ExtensionAPI) {
 					let deleted = false;
 					await updateStore(
 						agentDir,
-						storePath,
 						(store) => {
 							if (!Object.hasOwn(store, name)) return undefined;
 							deleted = true;

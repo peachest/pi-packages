@@ -350,7 +350,6 @@ export async function createBackend(agentDir: string): Promise<StoreBackend> {
  */
 export async function updateStore(
 	agentDir: string,
-	storePath: string,
 	mutate: (store: Store) => Store | undefined,
 	backend?: Promise<StoreBackend>, // r4 #3：调用方传入 factory 缓存的实例——缺省每次新建会重读 conf，运行期 age↔plain 翻转会让同一存储被两套正典交叉写
 ): Promise<Store> {

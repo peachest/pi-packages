@@ -111,7 +111,7 @@ describe("tool_call：allowedPrefix 凭证限定（#171）", () => {
 		expect(event.input.command).toContain("export HARBOR_PASSWORD='harbor-secret-value'");
 	});
 
-	it("首词不命中 → 不注入 + block 报错三要素（凭证名/限定前缀/secret_ensure 指引）", async () => {
+	it("首词不命中 → 不注入 + block 报错三要素（凭证名/限定前缀/forget+重录指引）", async () => {
 		const h = await setupHarness(PREFIXED);
 		const cmd = "git push $HARBOR_PASSWORD";
 		const { event, result } = await runToolCall(h, cmd);
@@ -119,7 +119,7 @@ describe("tool_call：allowedPrefix 凭证限定（#171）", () => {
 		expect(result?.reason).toContain("HARBOR_PASSWORD");
 		expect(result?.reason).toContain("harbor");
 		expect(result?.reason).toContain("nerdctl");
-		expect(result?.reason).toContain("secret_ensure");
+		expect(result?.reason).toContain("/secret-store forget HARBOR_PASSWORD"); // 变更限定的实际路径：先 forget 再重录（ensure 对已存名不重录）
 		expect(event.input.command).toBe(cmd); // 命令未被注入改写
 	});
 
@@ -144,7 +144,7 @@ describe("tool_call：allowedPrefix 凭证限定（#171）", () => {
 		expect(result?.block).toBe(true); // fail closed 不变：空命令词不命中任何前缀
 		expect(result?.reason).toContain("HARBOR_PASSWORD");
 		expect(result?.reason).toContain("nerdctl");
-		expect(result?.reason).toContain("secret_ensure");
+		expect(result?.reason).toContain("/secret-store forget HARBOR_PASSWORD");
 		expect(result?.reason).toContain("无法从命令解析命令词");
 		expect(result?.reason).not.toContain('当前命令词 ""');
 	});
@@ -155,7 +155,7 @@ describe("tool_call：allowedPrefix 凭证限定（#171）", () => {
 		expect(result?.block).toBe(true);
 		expect(result?.reason).toContain("git");
 		expect(result?.reason).toContain("HARBOR_PASSWORD");
-		expect(result?.reason).toContain("secret_ensure");
+		expect(result?.reason).toContain("/secret-store forget HARBOR_PASSWORD");
 	});
 
 	it("bash 无 -c（脚本路径场景）→ 比对词就是 shell 名，保持 r2 行为", async () => {

@@ -7,7 +7,7 @@ import { chmod, readFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanupEnv, setupHarness, toolCtx, type Harness } from "./helpers.ts";
+import { cleanupEnv, hasRealAge, setupHarness, toolCtx, type Harness } from "./helpers.ts";
 
 vi.mock("node:fs/promises", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("node:fs/promises")>();
@@ -29,7 +29,9 @@ const ageFile = (h: Harness) => join(h.agentDir, "secret-store.json.age");
 const failNextChmod = (code: string) =>
 	vi.mocked(chmod).mockRejectedValueOnce(Object.assign(new Error(`${code}: injected`), { code }));
 
-describe("身份密钥 chmod 收紧失败告警（r9 #3，age 迁移路径）", () => {
+// 终审 P2 #3：本文件走 age 迁移路径（真实 age via resolveAgeBin 回退），同 age.test.ts 统一守卫：
+// 本机无 age 时 skip（requires local age binary at ~/.local/bin; install per README），不红。
+describe.skipIf(!hasRealAge)("身份密钥 chmod 收紧失败告警（r9 #3，age 迁移路径）", () => {
 	it("chmod 失败（EACCES，非 ENOENT）→ onWarning 显式告警（含风险与 chmod 600 指引），迁移不中断、密钥仍生成", async () => {
 		failNextChmod("EACCES");
 		const h = await setupHarness(SEED, undefined, "age");

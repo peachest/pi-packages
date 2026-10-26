@@ -39,13 +39,13 @@ describe("store：json 保存（/secret-store forget → updateStore）", () => 
 	it("updateStore 合并后整店校验：非法条目（坏名/NUL）拒绝且存储不动（[9]）", async () => {
 		const h = await setupHarness({ A_TOKEN: { value: "a-value-1234", updatedAt: "t", fingerprint: "aaaa1111" } });
 		await expect(
-			updateStore(h.agentDir, h.storePath, (s) => ({
+			updateStore(h.agentDir, (s) => ({
 				...s,
 				"BAD-NAME": { value: "some-long-value", updatedAt: "t", fingerprint: "f" },
 			})),
 		).rejects.toThrow(/BAD-NAME/);
 		await expect(
-			updateStore(h.agentDir, h.storePath, (s) => ({
+			updateStore(h.agentDir, (s) => ({
 				...s,
 				B_TOKEN: { value: "x\0y-long-value", updatedAt: "t", fingerprint: "f" },
 			})),
@@ -156,7 +156,7 @@ describe("storePaths 路径集中管理 + schema（#171）", () => {
 		await h.handlers.session_start[0]({ reason: "new" }, toolCtx(h));
 		expect(h.notifyLog.join("\n")).toMatch(/allowedPrefix/);
 		await expect(
-			updateStore(h.agentDir, h.storePath, (s) => ({
+			updateStore(h.agentDir, (s) => ({
 				...s,
 				B_TOKEN: { value: "b-value-5678", updatedAt: "t", fingerprint: "bbbb2222", allowedPrefix: [1] as unknown as string[] }, // 故意非法形状，tsc 需转义
 			})),
@@ -177,7 +177,7 @@ describe("storePaths 路径集中管理 + schema（#171）", () => {
 		await h.handlers.session_start[0]({ reason: "new" }, toolCtx(h));
 		expect(h.notifyLog.join("\n")).toMatch(/allowedPrefix/); // 手改 JSON 绕过入口同样被读路径拦下
 		await expect(
-			updateStore(h.agentDir, h.storePath, (s) => ({
+			updateStore(h.agentDir, (s) => ({
 				...s,
 				B_TOKEN: { value: "b-value-5678", updatedAt: "t", fingerprint: "bbbb2222", allowedPrefix: [" harbor"] },
 			})),
@@ -201,7 +201,7 @@ describe("保留名黑名单与空存储形态（#126）", () => {
 	it("updateStore 拒绝保留 shell 变量名（PATH），零文件落地", async () => {
 		const h = await setupHarness({ A_TOKEN: { value: "a-value-1234", updatedAt: "t", fingerprint: "aaaa1111" } });
 		await expect(
-			updateStore(h.agentDir, h.storePath, (s) => ({
+			updateStore(h.agentDir, (s) => ({
 				...s,
 				PATH: { value: "some-long-value", updatedAt: "t", fingerprint: "f" },
 			})),
@@ -248,7 +248,7 @@ describe("plain 锁基准（r9 #2）", () => {
 		let release!: () => void;
 		const gate = new Promise<void>((r) => (release = r));
 		const holder = withStoreLock(h.storePath, () => gate); // 持有正确口径（storePath + .lock）的锁
-		const upd = updateStore(h.agentDir, h.storePath, () => undefined);
+		const upd = updateStore(h.agentDir, () => undefined);
 		// 旧实现 plainBackend.lockPath 自带 .lock → withStoreLock 再追加 → 锁在 .lock.lock，holder 挡不住（红）
 		await expect(Promise.race([upd.then(() => "resolved"), sleep(300).then(() => "pending")])).resolves.toBe("pending");
 		await expect(stat(`${h.storePath}.lock`)).resolves.toBeTruthy(); // 锁文件单一 .lock

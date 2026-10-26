@@ -2,12 +2,24 @@
  * 测试 harness：fake pi（捕获 registerTool/registerCommand/事件 handler）+
  * PI_CODING_AGENT_DIR 指向 tmp 沙箱（store 路径在工厂调用时读取 env，见 index.ts）。
  */
+import { accessSync, constants } from "node:fs";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type Store } from "../index.ts";
 
 export type AnyHandler = (event: any, ctx: any) => any;
+
+/** 终审 P2 #3：本机真实 age 可执行性探测（~/.local/bin/age）。依赖真实 age 的 describe（直调或 shim 包装真实二进制）
+ *  统一用 describe.skipIf(!hasRealAge) 守卫；skip 原因：requires local age binary at ~/.local/bin; install per README。 */
+export const hasRealAge = (() => {
+	try {
+		accessSync(join(process.env.HOME ?? "/nonexistent", ".local/bin/age"), constants.X_OK);
+		return true;
+	} catch {
+		return false;
+	}
+})();
 
 export interface Harness {
 	agentDir: string;

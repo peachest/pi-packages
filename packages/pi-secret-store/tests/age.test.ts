@@ -12,9 +12,13 @@ import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import { createBackend } from "../lib/backend.ts";
 import { withStoreLock } from "../lib/store.ts";
-import { assertAgeBackend, cleanupEnv, runExact, runToolCall, setupHarness, toolCtx, toolResultEvent, type Harness } from "./helpers.ts";
+import { assertAgeBackend, cleanupEnv, hasRealAge, runExact, runToolCall, setupHarness, toolCtx, toolResultEvent, type Harness } from "./helpers.ts";
 
 const run = promisify(execFile);
+
+// 终审 P2 #3：依赖本机真实 age 的 describe 共 8 个（直调或 shim 包装真实 age——终审报告"其余全走 fake bin"系误判，
+// 实测未装 age 机器 16/23 红），统一 hasRealAge 守卫（helpers.ts，探测 ~/.local/bin/age 可执行性）：缺失即 describe 级
+// skip（requires local age binary at ~/.local/bin; install per README），自包含 fake bin 测试（超时/输出上限等）不受影响。
 
 afterEach(cleanupEnv);
 
@@ -30,7 +34,7 @@ const keyFile = (h: Harness) => join(h.agentDir, "secret-store.key");
 
 const start = async (h: Harness) => h.handlers.session_start[0]({ reason: "new" }, toolCtx(h));
 
-describe("age 后端：遗留明文自动迁移（D7=a）", () => {
+describe.skipIf(!hasRealAge)("age 后端：遗留明文自动迁移（D7=a）", () => {
 	it("首次运行：明文 store 加密转为 .age、shred 删除原文件、身份密钥自动生成 0600，明文不进上下文", async () => {
 		const h = await setupHarness(SEED, undefined, "age");
 		await assertAgeBackend(h); // r7 #7 防呆：确保跑在声明的 age 后端下
@@ -103,7 +107,7 @@ describe("age 后端：遗留明文自动迁移（D7=a）", () => {
 	});
 });
 
-describe("age 后端：解密装载 round-trip（行为与 plain 一致）", () => {
+describe.skipIf(!hasRealAge)("age 后端：解密装载 round-trip（行为与 plain 一致）", () => {
 	it("迁移后 secret_query/注入/脱敏全走解密内存快照", async () => {
 		const h = await setupHarness(SEED, undefined, "age");
 		await start(h);
@@ -135,7 +139,7 @@ describe("age 后端：解密装载 round-trip（行为与 plain 一致）", () 
 	});
 });
 
-describe("age 后端：错误路径显式报错（不静默降级）", () => {
+describe.skipIf(!hasRealAge)("age 后端：错误路径显式报错（不静默降级）", () => {
 	it("错钥（身份密钥与密文不匹配）→ session_start 告警 + 注入 fail closed，密文不被销毁", async () => {
 		const h = await setupHarness(SEED, undefined, "age");
 		await start(h);
@@ -175,7 +179,7 @@ describe("age 后端：错误路径显式报错（不静默降级）", () => {
 	});
 });
 
-describe("age 后端：配置选择（conf 文件）", () => {
+describe.skipIf(!hasRealAge)("age 后端：配置选择（conf 文件）", () => {
 	it("空存储首次使用 → 身份密钥零交互生成（0600），不创建密文", async () => {
 		const h = await setupHarness(undefined, undefined, "age");
 		await assertAgeBackend(h); // r7 #7 防呆
@@ -202,7 +206,7 @@ describe("age 后端：配置选择（conf 文件）", () => {
 	});
 });
 
-describe("age 后端：r4 findings 收口", () => {
+describe.skipIf(!hasRealAge)("age 后端：r4 findings 收口", () => {
 	it("r4 #1：密文存在但身份密钥丢失 → persist 显式拒绝（不生成新钥覆盖旧密文），文案含恢复指引", async () => {
 		const h = await setupHarness(SEED, undefined, "age");
 		await start(h);
@@ -259,7 +263,7 @@ describe("age 后端：r4 findings 收口", () => {
 	});
 });
 
-describe("age 后端：首次使用路径持锁（r7 #1 跨 session 密钥竞态）", () => {
+describe.skipIf(!hasRealAge)("age 后端：首次使用路径持锁（r7 #1 跨 session 密钥竞态）", () => {
 	const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 	it("并发 session 持锁期间，首次使用 load 阻塞等待：不锁外生成密钥（与 persist 临界区串行）", async () => {
@@ -324,7 +328,7 @@ describe("age 后端：外部工具调用超时（r8 #5）", () => {
 	}, 10_000);
 });
 
-describe("age 后端：persist 防覆盖校验复用 load 解密结果（r7 #6；r8 #1 改密文内容指纹）", () => {
+describe.skipIf(!hasRealAge)("age 后端：persist 防覆盖校验复用 load 解密结果（r7 #6；r8 #1 改密文内容指纹）", () => {
 	it("密文未变时 persist 不重跑 age -d；同精度窗口内同 size 重写密文（mtime 复位）后仍触发重验并拒绝写入", async () => {
 		const realBin = join(process.env.HOME ?? "/nonexistent", ".local", "bin");
 		const fakeBin = await mkdtemp(join(tmpdir(), "age-log-"));
@@ -366,7 +370,7 @@ describe("age 后端：persist 防覆盖校验复用 load 解密结果（r7 #6�
 	});
 });
 
-describe("age 后端：真实加解密原语 round-trip（锦上添花的独立验证）", () => {
+describe.skipIf(!hasRealAge)("age 后端：真实加解密原语 round-trip（锦上添花的独立验证）", () => {
 	it("age -r 加密 → age -d -i 解密逐字节还原；错钥明确报错", async () => {
 		const dir = await mkdtemp(join(tmpdir(), "age-rt-"));
 		const age = join(process.env.HOME ?? "/nonexistent", ".local/bin/age");
