@@ -103,6 +103,8 @@ export class Redactor {
 	private values = new Set<string>();
 	/** 值变体 → 凭证名（#172 回填反查）：与 values 同套变体注册；同值多名取最长名（值唯一性由 store 保证，防御性处理）。 */
 	private names = new Map<string, string>();
+	/** JSON 转义变体集（r4 #5）：与原始值形态区分——裸位命中不回填（字面 \n 等非原值形态，替换会篡改字面数据）。 */
+	private escapedVariants = new Set<string>();
 	/** 已注册值的单遍交替正则缓存（r3 #4）：热路径不再逐次排序+转义+join+编译，add/clear 时脏标记失效。 */
 	private alternationCache: RegExp | null = null;
 
@@ -119,6 +121,7 @@ export class Redactor {
 			if (jsonEscaped !== base && jsonEscaped.length >= MIN_REDACT_LENGTH) {
 				this.values.add(jsonEscaped);
 				this.rememberName(jsonEscaped, name);
+				this.escapedVariants.add(jsonEscaped);
 			}
 		}
 		if (normalized.includes("\n")) {
@@ -139,6 +142,7 @@ export class Redactor {
 	clear(): void {
 		this.values.clear();
 		this.names.clear();
+		this.escapedVariants.clear();
 		this.alternationCache = null;
 	}
 
@@ -155,7 +159,7 @@ export class Redactor {
 
 	/** #172 回填（r3 #1 收紧）：已注册值明文仅在其为「裸 token」（前后均为非词字符、不在引号字符串/heredoc 体等
 	 *  数据位）时机械替换为 `$凭证名`；数据位命中不改写，经 dataHits 交调用方 block（静默改写会篡改 JSON
-	 *  payload/heredoc 等数据语义）。无名值命中原样保留。 */
+	 *  payload/heredoc 等数据语义）。无名值命中原样保留；JSON 转义变体命中仅数据位走阻断，裸位原样保留（r4 #5）。 */
 	backfill(text: string): { text: string; dataHits: string[] } {
 		const dataHits: string[] = [];
 		if (this.names.size === 0) return { text, dataHits };
@@ -177,6 +181,7 @@ export class Redactor {
 				if (inData && !dataHits.includes(name)) dataHits.push(name);
 				continue; // 非裸 token：原样保留在尾部切片
 			}
+			if (this.escapedVariants.has(m[0])) continue; // r4 #5：转义变体裸位命中（如字面 \n）非原值形态，回填会篡改字面数据
 			out += text.slice(last, start) + `$${name}`;
 			last = end;
 		}

@@ -49,16 +49,30 @@ const referencedNames = (cmd: string): Set<string> => {
 
 const fingerprintOf = (v: string) => createHash("sha256").update(v).digest("hex").slice(0, 10);
 
+/** 遗留 env 删除失败状态（r3 #2 引入，r4 #6 提升到模块级）：同进程多 extension 实例共享——
+ *  实例 B 须感知实例 A 的删除失败（fail closed 不因实例切换漏拦），持续到任一实例下次删除成功。 */
+let legacyEnvStale = false;
+
 /** 前缀比对用命令词（r2 #2 / r3 #3）：剥掉 sudo/env/nohup、VAR=value 赋值 token（括号已在切分正则里作废）后取第一个真命令词——
  *  `sudo nerdctl`/`env nerdctl`/`VAR=x nerdctl` 的首词不是命令本身，不剥离则限定凭证被误 block（fail closed 伤可用性）。
  *  sh/bash 族 wrapper 的 -c/-lc 载荷递归向后取词：`sh -c "nerdctl …"` 的真命令词是 nerdctl 不是 sh（r3 #3）；
  *  无 -c 的脚本路径场景（bash deploy.sh）比对词就是 shell 名，保持 r2 行为。 */
 const SHELL_WRAPPERS = new Set(["sh", "bash", "zsh", "dash", "ksh"]);
+// r4 #4：wrapper 已知选项 token 不是命令词——此前 `sudo -E nerdctl` 的比对词是 "-E"，allowedPrefix 合法命令被 fail-closed 误 block。
+// 带独立参数的选项（-u/-g/-k/-s）连同参数一起跳过。shortcut：仅覆盖常见形态，`sudo -u1000` 等紧贴拼写仍误判，出现时再扩表。
+const WRAPPER_OPTIONS = new Set(["-E", "--preserve-env", "-i", "--ignore-environment", "--preserve-status"]);
+const WRAPPER_OPTIONS_WITH_ARG = new Set(["-u", "-g", "-k", "-s"]);
+const isWrapperDuration = (t: string): boolean => /^\d+(?:\.\d+)?[smhd]?$/.test(t); // timeout 的时长参数（10 / 10s / 1.5m）
 const commandWord = (cmd: string): string => {
 	const toks = cmd.split(/[\s'"|&;()]+/);
 	for (let i = 0; i < toks.length; i++) {
 		const tok = toks[i];
-		if (!tok || tok === "sudo" || tok === "env" || tok === "nohup" || /^[A-Za-z_][A-Za-z0-9_]*=/.test(tok)) continue;
+		if (!tok || tok === "sudo" || tok === "env" || tok === "nohup" || tok === "timeout" || /^[A-Za-z_][A-Za-z0-9_]*=/.test(tok)) continue;
+		if (WRAPPER_OPTIONS.has(tok) || isWrapperDuration(tok) || tok.startsWith("--preserve-env=") || tok.startsWith("--kill-after=")) continue;
+		if (WRAPPER_OPTIONS_WITH_ARG.has(tok)) {
+			i++; // 选项的独立参数（sudo -u alice / env -u NAME / timeout -k 5）同样不是命令词
+			continue;
+		}
 		if (SHELL_WRAPPERS.has(tok)) {
 			if (/^-[A-Za-z]*c/.test(toks[i + 1] ?? "")) {
 				i++; // -c/-lc 载荷：继续向后取真命令词
@@ -107,8 +121,7 @@ export default function secretStore(pi: ExtensionAPI) {
 
 	// [7] 解析比对：~ 展开 + cwd 归一，~/..、./、引号包裹、--opt=path 等拼写不再绕过字面子串判断。
 	// #173 后保护面 = plain 正典 json + age 密文 + 身份密钥（读密钥 = 绕过全部加密）；
-	// r3 #2：遗留 env 删除失败期间 fail-closed 纳入保护（滞留明文副本），成功删除即解除。
-	let legacyEnvStale = false;
+	// r3 #2：遗留 env 删除失败期间 fail-closed 纳入保护（滞留明文副本），成功删除即解除（状态模块级共享，r4 #6）。
 	const isProtectedPath = (cwd: string, raw: string): boolean => {
 		const expanded = raw.startsWith("~") ? join(homedir(), raw.slice(1)) : raw;
 		const resolved = resolve(cwd, expanded);
@@ -338,10 +351,15 @@ export default function secretStore(pi: ExtensionAPI) {
 			const value = choice.value;
 			// [12] 开始时加载的快照可能已过期（对话框打开期间他 session 增删过凭证）：
 			// 锁内 reload → 只 merge 本条 → 后端原子写回，避免旧快照整体覆盖。
-			await updateStore(agentDir, storePath, (current) => {
-				current[params.name] = { value, updatedAt: new Date().toISOString(), fingerprint: fingerprintOf(value) };
-				return current;
-			});
+			await updateStore(
+				agentDir,
+				storePath,
+				(current) => {
+					current[params.name] = { value, updatedAt: new Date().toISOString(), fingerprint: fingerprintOf(value) };
+					return current;
+				},
+				getBackend(), // r4 #3：与读路径同源缓存，conf 运行期翻转不产生双正典交叉写
+			);
 			redactor.add(value, params.name);
 			return say(`凭证 ${params.name} 已保存（指纹 ${fingerprintOf(value)}）。此后 bash 中直接引用 $${params.name}；明文不可见、不可读。`);
 		},
@@ -359,13 +377,18 @@ export default function secretStore(pi: ExtensionAPI) {
 					}
 					// [12] forget 同 ensure 协议：锁内 reload → 删单条 → 后端原子写回（不复活他 session 变更）
 					let deleted = false;
-					await updateStore(agentDir, storePath, (store) => {
-						if (!Object.hasOwn(store, name)) return undefined;
-						deleted = true;
-						const next = { ...store };
-						delete next[name];
-						return next;
-					});
+					await updateStore(
+						agentDir,
+						storePath,
+						(store) => {
+							if (!Object.hasOwn(store, name)) return undefined;
+							deleted = true;
+							const next = { ...store };
+							delete next[name];
+							return next;
+						},
+						getBackend(), // r4 #3：与读路径同源缓存，conf 运行期翻转不产生双正典交叉写
+					);
 					ctx.ui.notify(deleted ? `已删除 ${name}` : `凭证 ${name} 不存在`, deleted ? "info" : "warning");
 					return;
 				}

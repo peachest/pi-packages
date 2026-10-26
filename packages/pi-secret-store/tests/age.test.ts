@@ -5,11 +5,12 @@
  * plain 显式配置回归 + conf 非法值 fail closed。
  */
 import { execFile } from "node:child_process";
-import { copyFile, mkdtemp, readFile, readdir, stat, writeFile } from "node:fs/promises";
+import { chmod, copyFile, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
+import { createBackend } from "../lib/backend.ts";
 import { cleanupEnv, runExact, runToolCall, setupHarness, toolCtx, toolResultEvent, type Harness } from "./helpers.ts";
 
 const run = promisify(execFile);
@@ -154,6 +155,52 @@ describe("age 后端：配置选择（conf 文件）", () => {
 		await start(h);
 		expect(h.notifyLog.join("\n")).toMatch(/非法/);
 		await expect(stat(ageFile(h))).rejects.toThrow(/ENOENT/);
+	});
+});
+
+describe("age 后端：r4 findings 收口", () => {
+	it("r4 #1：密文存在但身份密钥丢失 → persist 显式拒绝（不生成新钥覆盖旧密文），文案含恢复指引", async () => {
+		const h = await setupHarness(SEED, undefined, "age");
+		await start(h);
+		const cipherBefore = await readFile(ageFile(h), "utf8");
+		await rm(keyFile(h));
+		const backend = await createBackend(h.agentDir);
+		await expect(backend.persist(SEED)).rejects.toThrow(/请勿删除两者/);
+		// 旧密文逐字节保留、新钥未被生成
+		await expect(readFile(ageFile(h), "utf8")).resolves.toBe(cipherBefore);
+		await expect(stat(keyFile(h))).rejects.toThrow(/ENOENT/);
+	});
+
+	it("r4 #7：删 keyFile 后触发命令写路径（forget）→ 拒绝写入且旧密文原样保留", async () => {
+		const h = await setupHarness(SEED, undefined, "age");
+		await start(h);
+		const cipherBefore = await readFile(ageFile(h), "utf8");
+		await rm(keyFile(h));
+		await h.commands.get("secret-store").handler("forget HARBOR_PASSWORD", toolCtx(h));
+		expect(h.notifyLog.join("\n")).toMatch(/解密失败/);
+		expect(h.notifyLog.join("\n")).toContain("请勿删除两者");
+		await expect(readFile(ageFile(h), "utf8")).resolves.toBe(cipherBefore);
+		await expect(stat(keyFile(h))).rejects.toThrow(/ENOENT/);
+	});
+
+	it("r4 #2：shred 兜底覆写失败 → 上抛保留原文件（不允许未覆写即删除的静默降级）", async () => {
+		if (typeof process.getuid === "function" && process.getuid() === 0) return; // root 无视权限位，无法构造覆写失败
+		const h = await setupHarness(SEED, undefined, "age");
+		const raw = await readFile(h.storePath, "utf8");
+		await chmod(h.storePath, 0o400); // 原明文只读 → shred 与覆写兜底都 EACCES
+		await start(h);
+		expect(h.notifyLog.join("\n")).toMatch(/存储不可读/); // 迁移失败显式报错，不呈现成功
+		await expect(readFile(h.storePath, "utf8")).resolves.toBe(raw); // 原文件保留
+	});
+
+	it("r4 #3：conf 运行期翻转 age→plain → 写路径仍走已缓存后端（无双正典交叉写）", async () => {
+		const h = await setupHarness(SEED_TWO, undefined, "age");
+		await start(h); // 首次读 conf=age 并缓存
+		await writeFile(join(h.agentDir, "secret-store.conf"), "backend = plain\n", { mode: 0o600 });
+		await h.commands.get("secret-store").handler("forget B_TOKEN", toolCtx(h));
+		const q = await runExact(h, "secret_query", { name: "B_TOKEN" });
+		expect(q.content[0].text).toContain("不存在"); // 写入须落在同一正典：密文里 B 已删
+		await expect(stat(h.storePath)).rejects.toThrow(/ENOENT/); // 明文正典不被创建
 	});
 });
 

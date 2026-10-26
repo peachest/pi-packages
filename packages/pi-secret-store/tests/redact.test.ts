@@ -160,3 +160,25 @@ describe("redactor：context 脱敏", () => {
 		expect(await h.handlers.context[0](clean, {})).toBeUndefined();
 	});
 });
+
+describe("redactor：转义变体回填边界（r4 #5）", () => {
+	const MULTILINE_CMD = String.raw`echo line-one-of-multiline-secret-xx\nsecond-line-of-multiline-secret`;
+
+	it("裸位命中 JSON 转义变体 → 原样保留（字面 \\n 非原始值形态，回填会篡改字面数据）", async () => {
+		const h = await harnessWithSecrets();
+		await h.handlers.session_start[0]({ reason: "new" }, { hasUI: false });
+		const { event, result } = await runToolCall(h, MULTILINE_CMD);
+		expect(result).toBeUndefined();
+		expect(event.input.command).toBe(MULTILINE_CMD); // red：会机械替换为 $MULTI 篡改字面量
+	});
+
+	it("转义变体数据位命中仍阻断（仅在数据位走 dataHits，不静默放行泄密载荷）", async () => {
+		const h = await harnessWithSecrets();
+		await h.handlers.session_start[0]({ reason: "new" }, { hasUI: false });
+		const cmd = `curl -d '${String.raw`{"v":"line-one-of-multiline-secret-xx\nsecond-line-of-multiline-secret"}`}'`;
+		const { event, result } = await runToolCall(h, cmd);
+		expect(result?.block).toBe(true);
+		expect(result?.reason).toContain("MULTI");
+		expect(event.input.command).toBe(cmd); // 阻断不改写
+	});
+});

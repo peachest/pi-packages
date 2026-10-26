@@ -162,7 +162,8 @@ async function shredFile(path: string): Promise<void> {
 	} catch {
 		// shred 不在 PATH：走覆写兜底
 	}
-	await writeFile(path, randomBytes(Math.max(64, (await stat(path)).size))).catch(() => {});
+	// 覆写失败上抛（r4 #2）：不允许"未覆写即删除"的静默降级——保留原文件交手动处理
+	await writeFile(path, randomBytes(Math.max(64, (await stat(path)).size)));
 	await unlink(path);
 }
 
@@ -197,6 +198,16 @@ const ageBackend = (plainPath: string, cipherPath: string, keyPath: string): Sto
 		return migrateLegacy(legacyRaw, plainPath, cipherPath, keyPath, onWarning);
 	},
 	async persist(store) {
+		// 防覆盖（r4 #1）：密文已存在但解不开（身份密钥丢失/被换）→ 显式拒绝写入——否则 ensureIdentity 会
+		// 生成新钥覆盖出与旧密文无关的新密文，旧凭证不可恢复丢失且无感知。报错文案与 load 恢复指引一致。
+		let hasCipher = false;
+		try {
+			await stat(cipherPath);
+			hasCipher = true;
+		} catch (err) {
+			if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+		}
+		if (hasCipher) await decryptStoreText(cipherPath, keyPath);
 		await ensureIdentity(keyPath);
 		await encryptToFile(serialize(store), cipherPath, keyPath);
 	},
@@ -257,15 +268,16 @@ export async function updateStore(
 	agentDir: string,
 	storePath: string,
 	mutate: (store: Store) => Store | undefined,
+	backend?: Promise<StoreBackend>, // r4 #3：调用方传入 factory 缓存的实例——缺省每次新建会重读 conf，运行期 age↔plain 翻转会让同一存储被两套正典交叉写
 ): Promise<Store> {
 	await mkdir(agentDir, { recursive: true });
-	const backend = await createBackend(agentDir);
-	return withStoreLock(backend.lockPath, async () => {
-		const store = await backend.load();
+	const b = await (backend ?? createBackend(agentDir));
+	return withStoreLock(b.lockPath, async () => {
+		const store = await b.load();
 		const next = mutate(store);
 		if (next === undefined) return store;
 		validateStore(next); // [9] 任一条目非法 → 整体拒绝，零文件落地
-		await backend.persist(next);
+		await b.persist(next);
 		return next;
 	});
 }

@@ -7,7 +7,8 @@
  * fail closed（[6]）、redactor 累积（[4]）。
  */
 import { execFile } from "node:child_process";
-import { chmod, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
@@ -189,6 +190,26 @@ describe("tool_call：allowedPrefix 凭证限定（#171）", () => {
 			expect(result).toBeUndefined();
 			expect(event.input.command).toContain("export HARBOR_PASSWORD='harbor-secret-value'");
 		}
+	});
+
+	it("wrapper 选项 token 不是命令词（r4 #4）：sudo -E / env -i / timeout 10 后取真命令词比对", async () => {
+		const h = await setupHarness(PREFIXED);
+		for (const cmd of [
+			"sudo -E nerdctl login $HARBOR_PASSWORD",
+			"env -i nerdctl login $HARBOR_PASSWORD",
+			"timeout 10 nerdctl login $HARBOR_PASSWORD",
+		]) {
+			const { event, result } = await runToolCall(h, cmd);
+			expect(result).toBeUndefined();
+			expect(event.input.command).toContain("export HARBOR_PASSWORD='harbor-secret-value'");
+		}
+	});
+
+	it("选项跳过不放松 fail closed：sudo -E 后真命令词不命中仍 block（r4 #4）", async () => {
+		const h = await setupHarness(PREFIXED);
+		const { result } = await runToolCall(h, "sudo -E git push $HARBOR_PASSWORD");
+		expect(result?.block).toBe(true);
+		expect(result?.reason).toContain('当前命令词 "git"');
 	});
 
 	it("block 报错点名实际参与比对的命令词（r2 #2）：sudo git push → 比对词是 git 而非 sudo", async () => {
@@ -388,6 +409,31 @@ describe("session_start：env 文件退役（#170）", () => {
 		await expect(stat(legacy)).rejects.toThrow(/ENOENT/);
 		const after = await runToolCall(h, `cat ${legacy}`);
 		expect(after.result).toBeUndefined();
+	});
+
+	it("删除失败状态跨实例共享（r4 #6 模块级）：实例 B 未跑 session_start 也受 guard 保护，删除成功后解除", async () => {
+		if (typeof process.getuid === "function" && process.getuid() === 0) return; // root 无视权限位，无法构造 EACCES
+		const agentDir = await mkdtemp(join(tmpdir(), "pi-secret-store-r4-6-"));
+		const legacy = join(agentDir, "secret-store.env");
+		await writeFile(legacy, "A_TOKEN='legacy-value'\n", { mode: 0o600 });
+		const hA = await setupHarness(undefined, agentDir);
+		await chmod(agentDir, 0o500); // 目录不可写 → 实例 A unlink EACCES
+		try {
+			await hA.handlers.session_start[0]({ reason: "new" }, { hasUI: true, ui: { notify: (msg: string) => hA.notifyLog.push(msg) } });
+		} finally {
+			await chmod(agentDir, 0o700);
+		}
+		expect(hA.notifyLog.join("\n")).toMatch(/secret-store\.env/);
+		// 实例 B：同 agentDir 新 factory 实例，不跑 session_start——实例级状态则感知不到 A 的删除失败
+		const hB = await setupHarness(undefined, agentDir);
+		const catB = await runToolCall(hB, `cat ${legacy}`);
+		expect(catB.result?.block).toBe(true);
+		// 下次删除成功 → 解除（持续到任一实例下次删除成功）
+		await hB.handlers.session_start[0]({ reason: "new" }, { hasUI: false });
+		await expect(stat(legacy)).rejects.toThrow(/ENOENT/);
+		const catB2 = await runToolCall(hB, `cat ${legacy}`);
+		expect(catB2.result).toBeUndefined();
+		await rm(agentDir, { recursive: true, force: true });
 	});
 });
 
