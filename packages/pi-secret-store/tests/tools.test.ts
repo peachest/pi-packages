@@ -135,6 +135,34 @@ describe("secret_ensure", () => {
 	});
 });
 
+describe("allowedPrefix 呈现（#171）", () => {
+	const PREFIXED_SEED = {
+		HARBOR_PASSWORD: { value: "harbor-secret-value", updatedAt: "2026-10-20T00:00:00.000Z", fingerprint: "fp1234567890", allowedPrefix: ["harbor", "nerdctl"] },
+	};
+
+	it("secret_query 精确命中呈现 allowedPrefix，永不含值", async () => {
+		const h = await setupHarness(PREFIXED_SEED);
+		const out = await runExact(h, "secret_query", { name: "HARBOR_PASSWORD" });
+		const text = out.content[0].text;
+		expect(text).toContain("allowedPrefix: harbor,nerdctl");
+		expect(text).not.toContain("harbor-secret-value");
+	});
+
+	it("无限定凭证的呈现不含 allowedPrefix 字样（向后兼容）", async () => {
+		const h = await setupHarness(SEED);
+		const out = await runExact(h, "secret_query", { name: "HARBOR_PASSWORD" });
+		expect(out.content[0].text).not.toContain("allowedPrefix");
+	});
+
+	it("/secret-store list 呈现限定信息，不含值", async () => {
+		const h = await setupHarness(PREFIXED_SEED);
+		await h.commands.get("secret-store").handler("", toolCtx(h));
+		const joined = h.notifyLog.join("\n");
+		expect(joined).toContain("allowedPrefix: harbor,nerdctl");
+		expect(joined).not.toContain("harbor-secret-value");
+	});
+});
+
 describe("secret_ensure：录入前校验", () => {
 	it("非法名（shell 元字符/连字符/数字开头/空格/空串）→ 错误文案，prompt 前拒绝不弹窗（[5]）", async () => {
 		const h = await setupHarness();

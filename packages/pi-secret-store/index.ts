@@ -1,8 +1,11 @@
 /**
  * pi-secret-store：双层语义扩展——供给正道（secret_ensure 掩码录入 / secret_query 存在性查询 /
  * secret_env 变量名清单）+ 泄漏执法（P1 凭证检测，迁自 bash-guards.sh P1 段）。
- * 外加 bash 选择性注入（解析命令 $NAME/${NAME} 引用，只 export 被引用且已存的变量）与 tool_result/context 双层脱敏。
- * 明文边界：agent 与 session log 均无明文——存储 0600、agent 只见存在性/指纹、输出经 Redactor。
+ * 外加 bash 选择性注入（解析命令 $NAME/${NAME} 引用，只 export 被引用且已存的变量；per-凭证
+ * allowedPrefix 首词限定，#171）与 tool_result/context 双层脱敏。
+ * 明文边界：明文不进 session log 与上下文——session log 落盘的是 mutate 前原始 command（已实跑验证），
+ * mutate 后含明文的 command 文本仅存在于单次执行进程内；存储 0600、agent 只见存在性/指纹、输出经 Redactor。
+ * 窄缝：bash 工具若未来在报错时回显完整命令，注入前缀可能进 tool_result（当前不回显，理论路径）。
  */
 import { createHash } from "node:crypto";
 import { unlink } from "node:fs/promises";
@@ -15,7 +18,7 @@ import { Redactor, MIN_REDACT_LENGTH } from "./lib/redact.ts";
 import { dialogOptions, SecretInput, type DialogResult } from "./lib/secret-input.ts";
 import { loadStore, nameProblem, shellQuote, storePaths, updateStore, type Store } from "./lib/store.ts";
 // 测试走入口边界（packages/README.md 四规则）：re-export lib/store 的被测符号
-export { loadStore, updateStore };
+export { loadStore, storePaths, updateStore };
 
 const MARKER = "__PI_SECRET_STORE__";
 
@@ -31,15 +34,20 @@ const isSubsequence = (needle: string, haystack: string): boolean => {
 	return i === needle.length;
 };
 
-/** 命令文本中的 $NAME/${NAME} 引用名（宽松花括号：${NAME:-def} 等展开式也算引用；去重。
- *  文本级扫描：单引号内的 $NAME 同样计入——单引号不展开，多注入只是环境多一个未用变量，无行为影响）。 */
+/** 命令文本中的 $NAME/${NAME} 引用名（仅裸名与纯 ${NAME} 花括号形态计入；${NAME:-def} 等展开式不计——
+ *  命令不消费真实值时不注入真值，缩注入半径，rolling-review-r1 #1。文本级扫描：单引号内的 $NAME 同样
+ *  计入——单引号不展开，多注入只是环境多一个未用变量，无行为影响）。 */
 const referencedNames = (cmd: string): Set<string> => {
 	const names = new Set<string>();
-	for (const m of cmd.matchAll(/\$(?:\{([A-Za-z_][A-Za-z0-9_]*)|([A-Za-z_][A-Za-z0-9_]*))/g)) names.add(m[1] ?? m[2]);
+	for (const m of cmd.matchAll(/\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))/g)) names.add(m[1] ?? m[2]);
 	return names;
 };
 
 const fingerprintOf = (v: string) => createHash("sha256").update(v).digest("hex").slice(0, 10);
+
+/** 凭证限定呈现（#171，存在性层面，永不含值）：`allowedPrefix: a,b`，无限定时空串。 */
+const prefixTag = (e: { allowedPrefix?: string[] }): string =>
+	e.allowedPrefix?.length ? ` · allowedPrefix: ${e.allowedPrefix.join(",")}` : "";
 
 // AgentToolResult.details 为必填（类型面）；工具返回都是纯文本，details 恒 undefined。
 const say = (text: string): AgentToolResult<undefined> => ({ content: [{ type: "text", text }], details: undefined });
@@ -56,8 +64,7 @@ export const valueProblem = (v: string): string | undefined =>
 
 export default function secretStore(pi: ExtensionAPI) {
 	// 工厂调用时读 env（测试沙箱靠 PI_CODING_AGENT_DIR 定向）
-	const { storePath } = storePaths(getAgentDir());
-	const legacyEnvFile = join(getAgentDir(), "secret-store.env"); // v1 遗留 env 文件，session_start 退役删除
+	const { storePath, legacyEnvFile } = storePaths(getAgentDir());
 	const redactor = new Redactor();
 
 	async function reload(onWarning?: (msg: string) => void): Promise<Store> {
@@ -89,7 +96,13 @@ export default function secretStore(pi: ExtensionAPI) {
 		};
 		// #170 env 文件退役：v1 遗留文件删除（派生数据，可安全移除），此后不再生成——
 		// 注入与 source 的非同一事务竞态（原已知边界 #1）整类消失，store guard 只剩保护 json 本身。
-		await unlink(legacyEnvFile).catch(() => {});
+		// 非 ENOENT 失败（EACCES/EPERM）不静默：明文副本滞留须提示（rolling-review-r1 #2）。
+		try {
+			await unlink(legacyEnvFile);
+		} catch (err) {
+			if ((err as NodeJS.ErrnoException).code !== "ENOENT")
+				warn(`secret-store: 遗留 env 文件 ${legacyEnvFile} 删除失败（${(err as Error).message}），明文副本滞留，请手动删除`);
+		}
 		try {
 			const store = await reload(warn);
 			if (ctx.hasUI && Object.keys(store).length > 0)
@@ -133,6 +146,22 @@ export default function secretStore(pi: ExtensionAPI) {
 		// 注入集 = 引用 ∩ store 已存名；只缩半径不防外显（echo $NAME 照常注入）；未存名静默跳过（P1 白名单语义）
 		const names = [...refs].filter((n) => Object.hasOwn(store, n));
 		if (names.length === 0) return undefined;
+		// #171 allowedPrefix：命令首词命中任一前缀才注入该凭证；不命中 → 不注入并 block 报错（fail closed：
+		// 否则命令带着空变量照常执行）。三要素：凭证名/限定前缀/secret_ensure 重设指引。无限定的凭证不受影响。
+		const firstWord = cmd.split(/[\s'"|&;()]+/).filter(Boolean)[0] ?? "";
+		const mismatched = names.filter((n) => {
+			const prefixes = store[n].allowedPrefix ?? [];
+			return prefixes.length > 0 && !prefixes.some((p) => firstWord.startsWith(p));
+		});
+		if (mismatched.length > 0) {
+			const detail = mismatched
+				.map(
+					(n) =>
+						`凭证 ${n} 限定仅用于首词命中 [${(store[n].allowedPrefix ?? []).join(",")}] 的命令，当前命令首词 "${firstWord}" 不命中，未注入（如需变更限定请调用 secret_ensure 重设该凭证）`,
+				)
+				.join("；");
+			return { block: true, reason: `secret-store: ${detail}` };
+		}
 		// [11] 逐变量单引号字面量：值含 $/反引号/引号/换行等特殊字符时 bash 仍逐字节还原，不构成注入面
 		const assignments = names.map((n) => `${n}=${shellQuote(store[n].value)}`).join(" ");
 		event.input.command = `: ${MARKER}; export ${assignments}; ${cmd}`;
@@ -165,7 +194,7 @@ export default function secretStore(pi: ExtensionAPI) {
 			// null 原型存储 + hasOwn 判存在（#126）：继承属性（toString 等）不得误报为凭证
 			const e = Object.hasOwn(store, query) ? store[query] : undefined;
 			if (e) {
-				return say(`凭证 ${query} 存在（指纹 ${e.fingerprint}，更新于 ${e.updatedAt}）。在 bash 中直接引用 $${query} 即可，不要尝试读取明文。`);
+				return say(`凭证 ${query} 存在（指纹 ${e.fingerprint}，更新于 ${e.updatedAt}${prefixTag(e)}）。在 bash 中直接引用 $${query} 即可，不要尝试读取明文。`);
 			}
 			// 模糊匹配：查询串为名字的子序列（大小写不敏感）；空查询 = 全量清单
 			const q = query.toLowerCase();
@@ -174,7 +203,7 @@ export default function secretStore(pi: ExtensionAPI) {
 				const known = Object.keys(store).join(", ") || "（空）";
 				return say(`凭证 ${query || "（未指定）"} 不存在（含模糊匹配）。已存储的凭证名：${known}。缺失时可调用 secret_ensure 请用户录入。`);
 			}
-			const list = hits.map((n) => `${n} — ${store[n].fingerprint} (${store[n].updatedAt})`).join("\n");
+			const list = hits.map((n) => `${n} — ${store[n].fingerprint} (${store[n].updatedAt})${prefixTag(store[n])}`).join("\n");
 			return say(`匹配到 ${hits.length} 个凭证（仅名称+指纹+更新时间，不含值；bash 中引用 $NAME 勿写明文）：\n${list}`);
 		},
 	});
@@ -288,7 +317,9 @@ export default function secretStore(pi: ExtensionAPI) {
 				const store = await loadStore(storePath);
 				const entries = Object.entries(store);
 				ctx.ui.notify(
-					entries.length === 0 ? "存储为空" : entries.map(([n, e]) => `${n} — ${e.fingerprint} (${e.updatedAt})`).join("\n"),
+					entries.length === 0
+						? "存储为空"
+						: entries.map(([n, e]) => `${n} — ${e.fingerprint} (${e.updatedAt})${prefixTag(e)}`).join("\n"),
 					"info",
 				);
 			} catch (err) {

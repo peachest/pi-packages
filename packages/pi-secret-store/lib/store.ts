@@ -1,7 +1,7 @@
 /**
  * 持久化存储：~/.pi/agent/secret-store.json（0600、唯一 tmp+rename 原子写、跨进程更新锁）。
- * env 文件侧已随 #170 选择性注入移除（注入改走内存 store 快照）。
- * 移植自 ~/tmp/secret-store-proto/index.ts loadStore/saveStore。
+ * env 文件侧已随 #170 选择性注入移除（注入改走内存 store 快照），legacyEnvFile 仅为退役删除而保留路径。
+ * 移植自 ~/tmp/secret-store-proto/index.ts 的 loadStore。
  */
 import { randomBytes } from "node:crypto";
 import { chmod, mkdir, open, readFile, rename, stat, unlink, writeFile, type FileHandle } from "node:fs/promises";
@@ -12,11 +12,14 @@ export interface StoreEntry {
 	value: string;
 	updatedAt: string;
 	fingerprint: string;
+	/** 命令首词前缀限定（#171）：非空时首词命中任一前缀才注入；缺省/[] = 任意命令可用。 */
+	allowedPrefix?: string[];
 }
 export type Store = Record<string, StoreEntry>;
 
 export const storePaths = (agentDir: string) => ({
 	storePath: join(agentDir, "secret-store.json"),
+	legacyEnvFile: join(agentDir, "secret-store.env"), // v1 遗留 env 文件，session_start 退役删除（rolling-review-r1 #3）
 });
 
 /** 合法凭证名 = bash 变量名（[5]）：env 行的赋值目标，放宽即命令注入/语法错误。 */
@@ -32,14 +35,17 @@ export function nameProblem(name: string): string | undefined {
 	return undefined;
 }
 
-/** [5]/[7]/[13] 条目形状校验：名字合法、value 是字符串、不含 NUL、达到脱敏阈值（Redactor 短于 4 字符会静默忽略）。 */
+/** [5]/[7]/[13] 条目形状校验：名字合法、value 是字符串、不含 NUL、达到脱敏阈值（Redactor 短于 4 字符会静默忽略）、
+ *  allowedPrefix（若给出）是字符串数组（#171）。 */
 function entryProblem(name: string, entry: unknown): string | undefined {
 	const nameErr = nameProblem(name);
 	if (nameErr) return nameErr;
 	if (typeof entry !== "object" || entry === null || typeof (entry as StoreEntry).value !== "string") return "value 非字符串";
-	const { value } = entry as StoreEntry;
+	const { value, allowedPrefix } = entry as StoreEntry;
 	if (value.includes("\0")) return "value 含 NUL 字符";
 	if (value.length < MIN_REDACT_LENGTH) return `value 短于 ${MIN_REDACT_LENGTH} 字符，无法可靠脱敏`;
+	if (allowedPrefix !== undefined && (!Array.isArray(allowedPrefix) || allowedPrefix.some((p) => typeof p !== "string")))
+		return "allowedPrefix 必须是字符串数组";
 	return undefined;
 }
 
@@ -80,7 +86,11 @@ export async function loadStore(storePath: string, onWarning?: (msg: string) => 
 	for (const [name, entry] of Object.entries(secrets)) {
 		const problem = entryProblem(name, entry);
 		if (problem) onWarning?.(`secret-store: 忽略条目 ${name}：${problem}`);
-		else out[name] = entry as StoreEntry;
+		else {
+			const e = entry as StoreEntry;
+			e.allowedPrefix ??= []; // 旧条目缺省 []（#171 schema 迁移，读写不报错）
+			out[name] = e;
+		}
 	}
 	return out;
 }
@@ -159,23 +169,6 @@ async function stageTmp(path: string, content: string): Promise<string> {
 		await unlink(tmp).catch(() => {});
 		throw err;
 	}
-}
-
-/** 唯一 tmp + rename 原子替换，0600；失败清理 tmp（[11]：共享 .tmp 名并发写互踩）。 */
-async function atomicWrite(path: string, content: string): Promise<void> {
-	const tmp = await stageTmp(path, content);
-	try {
-		await rename(tmp, path);
-		await chmod(path, 0o600).catch(() => {});
-	} catch (err) {
-		await unlink(tmp).catch(() => {});
-		throw err;
-	}
-}
-
-export async function saveStore(agentDir: string, storePath: string, store: Store): Promise<void> {
-	await mkdir(agentDir, { recursive: true });
-	await atomicWrite(storePath, JSON.stringify({ secrets: store }, null, 2) + "\n");
 }
 
 /** bash 单引号字面量：'…' 内一切字符（含 $、反引号、真实换行）皆字面；' 自身以 '\'' 表达（[4]）。[11] 注入前缀逐变量引用同款。 */

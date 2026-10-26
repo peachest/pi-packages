@@ -5,7 +5,7 @@
  */
 import { readFile, stat, readdir, writeFile } from "node:fs/promises";
 import { afterEach, describe, expect, it } from "vitest";
-import { loadStore, updateStore } from "../index.ts";
+import { loadStore, storePaths, updateStore } from "../index.ts";
 import { cleanupEnv, runExact, setupHarness, toolCtx } from "./helpers.ts";
 
 afterEach(cleanupEnv);
@@ -113,6 +113,53 @@ describe("store：损坏存储容错（[13]：仅 ENOENT 视为空存储）", ()
 		const { runToolCall } = await import("./helpers.ts");
 		const { event } = await runToolCall(h, "cat /dev/null");
 		expect(event.input.command).toBe("cat /dev/null"); // 空存储 + 无引用：直通不报错（#170）
+	});
+});
+
+describe("storePaths 路径集中管理 + schema（#171）", () => {
+	it("storePaths 返回 storePath 与 legacyEnvFile（rolling-review-r1 #3：路径统一管理）", () => {
+		expect(storePaths("/agent/dir")).toEqual({
+			storePath: "/agent/dir/secret-store.json",
+			legacyEnvFile: "/agent/dir/secret-store.env",
+		});
+	});
+
+	it("旧条目无 allowedPrefix → loadStore 缺省 []，写回不报错且落盘缺省字段（schema 迁移）", async () => {
+		const h = await setupHarness({
+			A_TOKEN: { value: "a-value-1234", updatedAt: "t", fingerprint: "aaaa1111" },
+			B_TOKEN: { value: "b-value-5678", updatedAt: "t", fingerprint: "bbbb2222" },
+		});
+		const store = await loadStore(h.storePath);
+		expect(store.A_TOKEN.allowedPrefix).toEqual([]); // 读：缺省 []
+		await h.commands.get("secret-store").handler("forget B_TOKEN", toolCtx(h)); // 写：不报错
+		const disk = JSON.parse(await readFile(h.storePath, "utf8"));
+		expect(disk.secrets.A_TOKEN.allowedPrefix).toEqual([]); // 落盘缺省字段
+	});
+
+	it("allowedPrefix 形状非法（非字符串数组）→ 读跳过告警，写拒绝零落地", async () => {
+		const h = await setupHarness();
+		await writeFile(
+			h.storePath,
+			JSON.stringify({
+				secrets: { A_TOKEN: { value: "a-value-1234", updatedAt: "t", fingerprint: "aaaa1111", allowedPrefix: "harbor" } },
+			}),
+			{ mode: 0o600 },
+		);
+		await h.handlers.session_start[0]({ reason: "new" }, toolCtx(h));
+		expect(h.notifyLog.join("\n")).toMatch(/allowedPrefix/);
+		await expect(
+			updateStore(h.agentDir, h.storePath, (s) => ({
+				...s,
+				B_TOKEN: { value: "b-value-5678", updatedAt: "t", fingerprint: "bbbb2222", allowedPrefix: [1] as unknown as string[] }, // 故意非法形状，tsc 需转义
+			})),
+		).rejects.toThrow(/allowedPrefix/);
+		const disk = JSON.parse(await readFile(h.storePath, "utf8"));
+		expect(Object.keys(disk.secrets)).toEqual(["A_TOKEN"]); // 零文件落地
+	});
+
+	it("saveStore 死代码已删除：入口面无 save 路径导出，唯一写路径是 updateStore（rolling-review-r1 #4）", async () => {
+		const mod = await import("../index.ts");
+		expect(Object.keys(mod).filter((k) => /save/i.test(k))).toEqual([]);
 	});
 });
 

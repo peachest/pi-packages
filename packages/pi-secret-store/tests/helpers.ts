@@ -23,7 +23,7 @@ let savedAgentDir: string | undefined;
 
 /** 创建沙箱 agentDir，可选预置 secret-store.json（0600 语义由实现保证，fixture 只灌数据）；agentDir 可覆盖（[11] 特殊字符目录）。 */
 export async function setupHarness(
-	store?: Record<string, { value: string; updatedAt: string; fingerprint: string }>,
+	store?: Record<string, { value: string; updatedAt: string; fingerprint: string; allowedPrefix?: string[] }>,
 	agentDirOverride?: string,
 ): Promise<Harness> {
 	const agentDir = agentDirOverride ?? (await mkdtemp(join(tmpdir(), "pi-secret-store-test-")));
