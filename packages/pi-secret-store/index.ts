@@ -17,7 +17,7 @@ import { Type } from "typebox";
 import { getAgentDir, type ExtensionAPI, type AgentToolResult } from "@earendil-works/pi-coding-agent";
 import { createBackend, updateStore, type StoreBackend } from "./lib/backend.ts";
 import { detectTokens, p1BlockReason } from "./lib/credentials.ts";
-import { Redactor, MIN_REDACT_LENGTH } from "./lib/redact.ts";
+import { Redactor, MIN_REDACT_LENGTH, commandContext, IN_SINGLE } from "./lib/redact.ts";
 import { dialogOptions, SecretInput, type DialogResult } from "./lib/secret-input.ts";
 import { nameProblem, shellQuote, storePaths, type Store } from "./lib/store.ts";
 // 测试走入口边界（packages/README.md 四规则）：re-export lib 的被测符号
@@ -47,16 +47,15 @@ const referencedNames = (cmd: string): Set<string> => {
 	return names;
 };
 
-/** 单引号内的已存名引用（r5 #2）：' 切分取奇数段 = 单引号内文本（bash 单引号无转义，'\'' 拼接下近似成立；
- *  双引号内嵌字面 ' 的误伤方向是 fail closed）。单引号不展开，注入值只存在于 bash 工具进程环境——
- *  sudo（无 -E）/env -i 等清环境 wrapper 的内层 shell 展开时取到空值，命令带空变量照常执行。命中返回第一个名。 */
+/** 单引号内的已存名引用（r5 #2）：与 redact commandContext 同源逐字符扫描（r6 #5，近似 split 删除——
+ *  '\'' 拼接段（5 引号 6 段）在奇数段切分下落偶数段被漏拦，双引号内撇号则被误拦）。单引号不展开，
+ *  注入值只存在于 bash 工具进程环境——sudo（无 -E）/env -i 等清环境 wrapper 的内层 shell 展开时取到空值，
+ *  命令带空变量照常执行。命中返回第一个名。 */
 const singleQuotedStoredName = (cmd: string, stored: readonly string[]): string | undefined => {
-	const parts = cmd.split("'");
-	for (let i = 1; i < parts.length; i += 2) {
-		for (const m of parts[i].matchAll(/\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))/g)) {
-			const n = m[1] ?? m[2];
-			if (stored.includes(n)) return n;
-		}
+	const ctx = commandContext(cmd);
+	for (const m of cmd.matchAll(/\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))/g)) {
+		const n = m[1] ?? m[2];
+		if (stored.includes(n) && (ctx[m.index] & IN_SINGLE) !== 0) return n;
 	}
 	return undefined;
 };
@@ -128,7 +127,7 @@ export const valueProblem = (v: string): string | undefined =>
 export default function secretStore(pi: ExtensionAPI) {
 	// 工厂调用时读 env（测试沙箱靠 PI_CODING_AGENT_DIR 定向）
 	const agentDir = getAgentDir();
-	const { storePath, storePathAge, keyPath, legacyEnvFile } = storePaths(agentDir);
+	const { storePath, storePathAge, keyPath, confPath, legacyEnvFile } = storePaths(agentDir);
 	const redactor = new Redactor();
 	// 后端选择（#173）：conf 文件读一次缓存（每 factory 实例一份，测试沙箱隔离）；首次使用惰性创建
 	let backendPromise: Promise<StoreBackend> | undefined;
@@ -143,7 +142,8 @@ export default function secretStore(pi: ExtensionAPI) {
 	}
 
 	// [7] 解析比对：~ 展开 + cwd 归一，~/..、./、引号包裹、--opt=path 等拼写不再绕过字面子串判断。
-	// #173 后保护面 = plain 正典 json + age 密文 + 身份密钥（读密钥 = 绕过全部加密）；
+	// #173 后保护面 = plain 正典 json + age 密文 + 身份密钥（读密钥 = 绕过全部加密）+ conf（r6 #1：改写 conf
+	// 可把后端切到 plain 写回明文正典，绕过“缺省不落明文”边界）；
 	// r3 #2：遗留 env 删除失败期间 fail-closed 纳入保护（滞留明文副本），成功删除即解除（状态模块级共享，r4 #6）。
 	const isProtectedPath = (cwd: string, raw: string): boolean => {
 		const expanded = raw.startsWith("~") ? join(homedir(), raw.slice(1)) : raw;
@@ -152,14 +152,17 @@ export default function secretStore(pi: ExtensionAPI) {
 			resolved === storePath ||
 			resolved === storePathAge ||
 			resolved === keyPath ||
+			resolved === confPath ||
 			(legacyEnvStale && resolved === legacyEnvFile)
 		);
 	};
 
 	/** 命令串 → 路径 token（空白/引号/shell 结构符切分，--opt= 前缀剥离）逐个解析比对；含空格/引号/$变量拼写的路径
-	 *  token 化会切碎、逐 token resolve 不中——受保护路径全量字面子串兜底（r5 #1；storePathAge 恒含 storePath 子串，随之覆盖）。 */
+	 *  token 化会切碎、逐 token resolve 不中——受保护路径全量字面子串兜底（r5 #1；storePathAge 恒含 storePath 子串，
+	 *  随之覆盖；confPath 与 storePath 无包含关系，须单列——r6 #1）。 */
 	const touchesStore = (s: string, cwd: string): boolean => {
-		if (s.includes(storePath) || s.includes(keyPath) || (legacyEnvStale && s.includes(legacyEnvFile))) return true;
+		if (s.includes(storePath) || s.includes(keyPath) || s.includes(confPath) || (legacyEnvStale && s.includes(legacyEnvFile)))
+			return true;
 		return s
 			.split(/[\s'"|&;()]+/)
 			.map((tok) => tok.replace(/^--[A-Za-z0-9][A-Za-z0-9-]*=/, ""))
@@ -254,9 +257,12 @@ export default function secretStore(pi: ExtensionAPI) {
 		});
 		if (mismatched.length > 0) {
 			const detail = mismatched
-				.map(
-					(n) =>
-						`凭证 ${n} 限定仅用于命令词命中 [${(store[n].allowedPrefix ?? []).join(",")}] 的命令，当前命令词 "${word}" 不命中，未注入（如需变更限定请调用 secret_ensure 重设该凭证）`,
+				.map((n) =>
+					// r6 #2：命令词解析不出（重定向/管道/纯赋值等形态）时 fail-closed 拦截不变，但单独文案指明
+					// 是“解析不出”而非“不命中”，避免空命令词引号排障误导
+					word === ""
+						? `凭证 ${n} 限定仅用于命令词命中 [${(store[n].allowedPrefix ?? []).join(",")}] 的命令，但无法从命令解析命令词，为避免空变量照常执行未注入。请调整命令结构使首词明确，或调用 secret_ensure 重设该凭证的限定`
+						: `凭证 ${n} 限定仅用于命令词命中 [${(store[n].allowedPrefix ?? []).join(",")}] 的命令，当前命令词 "${word}" 不命中，未注入（如需变更限定请调用 secret_ensure 重设该凭证）`,
 				)
 				.join("；");
 			return { block: true, reason: `secret-store: ${detail}` };

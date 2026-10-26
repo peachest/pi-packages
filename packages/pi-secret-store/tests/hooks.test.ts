@@ -138,6 +138,17 @@ describe("tool_call：allowedPrefix 凭证限定（#171）", () => {
 		}
 	});
 
+	it("命令词解析不出（仅 wrapper/赋值形态）→ 单独文案（r6 #2）：报无法解析，不再出现空命令词引号", async () => {
+		const h = await setupHarness(PREFIXED);
+		const { result } = await runToolCall(h, "env HARBOR_PASSWORD=$HARBOR_PASSWORD");
+		expect(result?.block).toBe(true); // fail closed 不变：空命令词不命中任何前缀
+		expect(result?.reason).toContain("HARBOR_PASSWORD");
+		expect(result?.reason).toContain("nerdctl");
+		expect(result?.reason).toContain("secret_ensure");
+		expect(result?.reason).toContain("无法从命令解析命令词");
+		expect(result?.reason).not.toContain('当前命令词 ""');
+	});
+
 	it("wrapper 不命中仍 block，报错点名真命令词而非 wrapper（r3 #3）", async () => {
 		const h = await setupHarness(PREFIXED);
 		const { result } = await runToolCall(h, `sh -c "git push $HARBOR_PASSWORD"`);
@@ -266,6 +277,21 @@ describe("tool_call：单引号内已注入名引用 block（r5 #2）", () => {
 	it("双引号形态照常注入（外层展开，注入值对内层可达）：bash -c \"echo $NAME\" 不拦", async () => {
 		const h = await setupHarness(SEED);
 		const { event, result } = await runToolCall(h, 'bash -c "echo $HARBOR_PASSWORD"');
+		expect(result).toBeUndefined();
+		expect(event.input.command).toContain("export HARBOR_PASSWORD='harbor-secret-value'");
+	});
+
+	it("r6 #5：'\\'' 拼接形态与 redact commandContext 同源判定——拼接段内的已存名引用仍 block", async () => {
+		const h = await setupHarness(SEED);
+		// 'echo ok'\''$NAME' ≡ echo ok'$NAME'：'\'' 拼接后的段仍在单引号内
+		const { result } = await runToolCall(h, "sudo sh -c 'echo ok'\\''$HARBOR_PASSWORD'");
+		expect(result?.block).toBe(true);
+		expect(result?.reason).toContain("HARBOR_PASSWORD");
+	});
+
+	it("r6 #5：双引号内撇号不再误判单引号（近似 split 删除）——\"it's $NAME\" 照常注入", async () => {
+		const h = await setupHarness(SEED);
+		const { event, result } = await runToolCall(h, `bash -c "echo it's $HARBOR_PASSWORD"`);
 		expect(result).toBeUndefined();
 		expect(event.input.command).toContain("export HARBOR_PASSWORD='harbor-secret-value'");
 	});
@@ -518,6 +544,17 @@ describe("tool_call：存储 guard（拦读存储文件本身）", () => {
 		const age = await runToolCall(h, `cat "${join(h.agentDir, "secret-store.json.age")}"`);
 		expect(age.result?.block).toBe(true);
 		await rm(base, { recursive: true, force: true });
+	});
+
+	it("confPath（secret-store.conf）纳入保护面（r6 #1）：bash 改写后端配置被拦，相对路径形态同拦", async () => {
+		// conf 被改写可把后端切到 plain 写回明文正典（绕过“缺省不落明文”边界），与密文/密钥同受保护
+		const h = await setupHarness();
+		await h.handlers.session_start[0]({ reason: "new" }, { hasUI: false });
+		const abs = await runToolCall(h, `echo "backend = plain" > ${h.agentDir}/secret-store.conf`);
+		expect(abs.result?.block).toBe(true);
+		expect(abs.result?.reason).toContain("secret_query");
+		const rel = await runToolCall(h, "sed -i 's/age/plain/' ./secret-store.conf", "bash", { cwd: h.agentDir });
+		expect(rel.result?.block).toBe(true);
 	});
 
 	it("read/grep 类文件工具的 path 指向存储文件 → block（文案同，[7]）", async () => {

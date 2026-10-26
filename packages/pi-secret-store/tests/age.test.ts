@@ -68,6 +68,25 @@ describe("age 后端：遗留明文自动迁移（D7=a）", () => {
 		expect(h.notifyLog.join("\n")).not.toContain("harbor-secret-value"); // 明文不进通知面
 	});
 
+	it("r6 #3：shred 失败后目标已被并发删除（兜底 stat ENOENT）→ 按已消失视为成功，迁移照常完成", async () => {
+		// fake shred：先删除目标再 exit 1——复现 shred 失败 + 兕底 stat 前目标已消失的竞态（stat 抛错路径）
+		const h = await setupHarness(SEED, undefined, "age");
+		const fakeBin = await mkdtemp(join(tmpdir(), "fake-shred-"));
+		await writeFile(join(fakeBin, "shred"), '#!/bin/sh\nrm -f "$2"\nexit 1\n', { mode: 0o755 });
+		const savedPath = process.env.PATH;
+		process.env.PATH = `${fakeBin}:${savedPath}`;
+		try {
+			await start(h);
+		} finally {
+			process.env.PATH = savedPath;
+			await rm(fakeBin, { recursive: true, force: true });
+		}
+		expect(h.notifyLog.join("\n")).toMatch(/1 个凭证已就绪/); // 迁移未因竞态中断
+		expect(h.notifyLog.join("\n")).toMatch(/shred 执行失败/); // 销毁强度降级照常告知
+		await expect(stat(h.storePath)).rejects.toThrow(/ENOENT/); // 目标保持已删除
+		await expect(stat(ageFile(h))).resolves.toBeDefined(); // 密文已落盘
+	});
+
 	it("损坏的遗留明文 → 显式报错，原文件不动、不产生密文（防覆盖语义与 [13] 一致）", async () => {
 		const h = await setupHarness(SEED, undefined, "age");
 		await writeFile(h.storePath, "{not json", { mode: 0o600 });

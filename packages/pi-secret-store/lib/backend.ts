@@ -52,6 +52,7 @@ const AGE_INSTALL_HINT =
 	"age 与 age-keygen 放入 ~/.local/bin（或用系统包管理器安装），验证命令：~/.local/bin/age --version。" +
 	"也可经 PI_SECRET_STORE_AGE_BIN 指定 age 二进制路径。当前无法读写存储，凭证功能停用（不降级明文）。";
 
+// r6 #4：解析成功后进程内固化，整个进程生命周期不再重试——运行期安装 age 不生效，需重启 pi session。
 let ageBinCache: string | undefined;
 
 /** age 二进制解析：PI_SECRET_STORE_AGE_BIN 优先（仅定向，不回退）→ PATH → ~/.local/bin。 */
@@ -168,8 +169,18 @@ async function shredFile(path: string, onWarning?: (msg: string) => void): Promi
 	} catch {
 		// shred 不在 PATH（command not found）：静默走覆写兜底
 	}
-	// 覆写失败上抛（r4 #2）：不允许"未覆写即删除"的静默降级——保留原文件交手动处理
-	await writeFile(path, randomBytes(Math.max(64, (await stat(path)).size)));
+	// 覆写失败上抛（r4 #2）：不允许"未覆写即删除"的静默降级——保留原文件交手动处理。
+	// r6 #3：shred 失败到兑底之间目标可能已被并发删除——stat 包 try/catch，ENOENT 按"已消失视为成功"返回
+	// （与顶部 stat 语义一致），其他错误照旧上抛；writeFile 为 'w' 截断重写（非原地覆写），
+	// 随机串长度 = max(64, 原大小) ≥ 原文件，全文件单次随机覆写后删除。
+	let size = 64;
+	try {
+		size = Math.max(64, (await stat(path)).size);
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code === "ENOENT") return;
+		throw err;
+	}
+	await writeFile(path, randomBytes(size));
 	await unlink(path);
 }
 

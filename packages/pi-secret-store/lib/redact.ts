@@ -8,14 +8,16 @@ export const MIN_REDACT_LENGTH = 4;
 /** Lines of a multi-line secret this long are redacted on their own too. */
 const MIN_LINE_LENGTH = 16;
 
-/** 命令文本逐字符上下文位（r3 #1 回填数据位判定）：1 = 引号字符串内（含定界符），2 = heredoc 体。 */
+/** 命令文本逐字符上下文位（r3 #1 回填数据位判定）：1 = 引号字符串内（含定界符），2 = heredoc 体，
+ *  4 = 单引号字符串内（r6 #5：单引号不展开，$NAME 引用拦截判定用，与回填的“任意引号=数据位”区分）。 */
 const IN_QUOTE = 1;
 const IN_HEREDOC = 2;
+export const IN_SINGLE = 4;
 
 /** bash 命令文本的引号/heredoc 上下文扫描（r3 #1）：单引号无转义、双引号支持 \ 转义；
  *  `<<`/`<<-`（定界符可带引号）开启 heredoc 体至独占终止行，`<<<`（here-string）不视为 heredoc。
  *  守卫级近似：够判定"明文是否处在数据位"，不追求完整 shell 解析。 */
-function commandContext(cmd: string): Uint8Array {
+export function commandContext(cmd: string): Uint8Array {
 	const flags = new Uint8Array(cmd.length);
 	let inSingle = false;
 	let inDouble = false;
@@ -76,7 +78,7 @@ function commandContext(cmd: string): Uint8Array {
 		}
 		if (!inDouble && ch === "'") {
 			inSingle = !inSingle;
-			flags[i] |= IN_QUOTE;
+			flags[i] |= IN_QUOTE | IN_SINGLE;
 			i++;
 			continue;
 		}
@@ -93,7 +95,7 @@ function commandContext(cmd: string): Uint8Array {
 			i += 2;
 			continue;
 		}
-		if (inSingle || inDouble) flags[i] |= IN_QUOTE;
+		if (inSingle || inDouble) flags[i] |= inSingle ? IN_QUOTE | IN_SINGLE : IN_QUOTE;
 		i++;
 	}
 	return flags;
