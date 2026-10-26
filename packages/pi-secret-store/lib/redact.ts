@@ -12,8 +12,8 @@ const MIN_LINE_LENGTH = 16;
  *  4 = 单引号字符串内（r6 #5：单引号不展开，$NAME 引用拦截判定用，与回填的“任意引号=数据位”区分），
  *  8 = 命令替换体内（r7 #2：反引号与 $()，替换结果参与内层命令展开/再求值，属数据语义）。 */
 const IN_QUOTE = 1;
-const IN_HEREDOC = 2;
-const IN_SUBST = 8;
+export const IN_HEREDOC = 2;
+export const IN_SUBST = 8;
 export const IN_SINGLE = 4;
 /** r8 #4：段切分"数据位"掩码（index.ts commandSegments 用）——引号字符串/heredoc 体/命令替换体内的
  *  |&&; 不是命令段边界。与 commandContext 同源（位语义变更须同步检查，r6 #5 先例）。 */
@@ -22,7 +22,16 @@ export const DATA_MASK = IN_QUOTE | IN_HEREDOC | IN_SUBST;
 /** bash 命令文本的引号/heredoc/命令替换上下文扫描（r3 #1；r7 #2 增命令替换位）：单引号无转义、双引号支持 \ 转义；
  *  `<<`/`<<-`（定界符可带引号）开启 heredoc 体至独占终止行，`<<<`（here-string）不视为 heredoc；
  *  反引号与 $() 命令替换体标记 IN_SUBST（单引号内不展开属字面量，不跟踪）。
- *  守卫级近似：够判定"明文是否处在数据位"，不追求完整 shell 解析。 */
+ *  守卫级近似：够判定“明文是否处在数据位”，不追求完整 shell 解析。
+ *  已知不支持/近似形态清单（review-high #4 固化，r7 #2/r9 #4 汇总；行为由 redact.test.ts 锁定防漂移）：
+ *  - heredoc 体与命令替换交叠（$(cat <<EOF … EOF …)）：体内容仅标 IN_HEREDOC，$() 深度不跨 heredoc 跟踪，
+ *    终止行与收尾 ) 落裸位；
+ *  - 替换体内 case：`case x in a)` 的 pattern ) 会提前闭合 substDepth，其后替换体落裸位；
+ *    `$(echo "a)b")` 的内层引号翻转（引号单层非嵌套）后同款提前闭合——r9 #4 仅保住双引号仍开启位置的 )；
+ *  - process substitution <( )> 不跟踪：体内 | ; 被当命令段边界（commandSegments 切分漂移）；
+ *  - 算术 $(( ))：内层 ( 不加深度，收尾 )) 落裸位。
+ *  漂移双向影响三个消费方（backfill 数据位判定 / singleQuotedStoredName / commandSegments 切分）：
+ *  漏标会致回填改写数据语义，多标会让该拦的不拦。 */
 export function commandContext(cmd: string): Uint8Array {
 	const flags = new Uint8Array(cmd.length);
 	let inSingle = false;
