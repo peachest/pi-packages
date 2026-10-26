@@ -1,14 +1,14 @@
 # pi-herdr-ask-bridge
 
-让 Herdr 在 agent 调用 `ask_user_question` 时显示独立的 **blocked** 图标，区别于普通 agent loop 的 working 状态。
+让 Herdr 在 agent 调用 `ask_user` 时显示独立的 **blocked** 图标，区别于普通 agent loop 的 working 状态。
 
 ## 问题
 
-当 pi agent 调用 `ask_user_question` 等待用户回答时，Herdr 面板图标仍然是 "working"——和一个正在跑 agent loop 的 session 完全相同，用户没有任何视觉提示知道 agent 正在等自己输入。
+当 pi agent 调用 `ask_user` 等待用户回答时，Herdr 面板图标仍然是 "working"——和一个正在跑 agent loop 的 session 完全相同，用户没有任何视觉提示知道 agent 正在等自己输入。
 
 ## 根因
 
-`ask_user_question`（来自 `@juicesharp/rpiv-ask-user-question`）**已经**在问卷显示/关闭时 emit `rpiv:ask-user:blocked` 事件：
+`ask_user`（来自 `@juicesharp/rpiv-ask-user-question`）**已经**在问卷显示/关闭时 emit `rpiv:ask-user:blocked` 事件：
 
 ```ts
 emitAskUserBlockedEvent(pi, true);   // 问卷打开
@@ -40,7 +40,7 @@ pi install ./packages/pi-herdr-ask-bridge
 
 ## 依赖
 
-- `@juicesharp/rpiv-ask-user-question`（`ask_user_question` 工具的提供者，需已安装）
+- `@juicesharp/rpiv-ask-user-question`（`ask_user` 工具的提供者，需已安装）
 - Herdr（`herdr integration install pi`，需已安装）
 
 两者缺一时扩展无害：没有 rpiv 事件则桥不做任何事；没有 herdr 则 `herdr:blocked` emit 无监听者。

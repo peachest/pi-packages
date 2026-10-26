@@ -1,14 +1,14 @@
 # pi-herdr-ask-bridge
 
-将 `ask_user_question` 的 blocked 信号桥接到 Herdr，使 pane 图标在 agent 等待用户回答时切换为 blocked 态。
+将 `ask_user` 的 blocked 信号桥接到 Herdr，使 pane 图标在 agent 等待用户回答时切换为 blocked 态。
 
 ## Domain
 
-**Event bridging** — pi 扩展间通过共享的 `pi.events` 总线通信。`@juicesharp/rpiv-ask-user-question` emit `rpiv:ask-user:blocked`；Herdr 的 pi 集成（`herdr-agent-state.ts`）监听 `herdr:blocked`。两者命名空间不同，没有默认桥接。
+**Event bridging** — pi 扩展间通过共享的 `pi.events` 总线通信。`pi-ask-question`（vendor 自 rpiv-ask-user-question，2026-10-26 起 main 正典）emit `rpiv:ask-user:blocked`；Herdr 的 pi 集成（`herdr-agent-state.ts`）监听 `herdr:blocked`。两者命名空间不同，没有默认桥接。
 
 ## Why
 
-用户观察：agent 调用 `ask_user_question` 时，Herdr pane 图标不变（仍是 working），无法和普通 agent loop 区分。根因不在 Herdr 侧（Herdr 已有 blocked glyph），也不在 rpiv 侧（rpiv 已 emit blocked 事件），而在两者之间缺一座桥。
+用户观察：agent 调用 `ask_user` 时，Herdr pane 图标不变（仍是 working），无法和普通 agent loop 区分。根因不在 Herdr 侧（Herdr 已有 blocked glyph），也不在提问工具侧（工具已 emit blocked 事件），而在两者之间缺一座桥。
 
 ## Vocabulary
 
