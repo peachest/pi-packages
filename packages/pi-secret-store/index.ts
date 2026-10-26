@@ -143,7 +143,7 @@ export default function secretStore(pi: ExtensionAPI) {
 		label: "Secret Query",
 		description:
 			"查询持久化凭证：给 name 精确命中返回存在性详情（指纹+更新时间，永不含明文）；未命中则按子序列模糊匹配返回候选名单；name 留空返回全部清单。如需在 bash 中使用已存在的凭证，直接引用 $变量名（与凭证名一致），无需本工具返回值。",
-		promptSnippet: "Check whether a stored credential exists (existence only, never the value)",
+		promptSnippet: "需要密码/API key/登录凭证/token 时先查这里再考虑问用户（existence only, never the value）",
 		parameters: Type.Object({
 			name: Type.String({ description: "凭证名/环境变量名，如 HARBOR_PASSWORD、GITBLUE_TOKEN；留空列出全部" }),
 		}),
@@ -172,7 +172,7 @@ export default function secretStore(pi: ExtensionAPI) {
 		label: "Secret Env",
 		description:
 			"列出全部已存凭证的变量名清单（名称+指纹+更新时间，不含值）。使用时在 bash 中直接引用 $NAME，勿写明文——明文写入命令会被 P1 凭证检测拦截。",
-		promptSnippet: "List all stored credential variable names (names only, never the values)",
+		promptSnippet: "需要凭证时先列这里有哪些已存凭证再决定问用户；列出后 bash 中直接 $NAME 引用（names only, never the values）",
 		parameters: Type.Object({}),
 		async execute() {
 			const store = await loadStore(storePath);
@@ -190,7 +190,7 @@ export default function secretStore(pi: ExtensionAPI) {
 		label: "Secret Ensure",
 		description:
 			"确保某凭证已持久化：已存在则直接返回存在性；缺失则弹出掩码对话框让用户输入（agent 提供 label 与获取步骤指引），输入后持久化并可在 bash 中以 $NAME 引用。用户按 Tab 可反问 agent。全程 agent 与 session log 均无明文。",
-		promptSnippet: "Ensure a credential is stored; missing ones prompt the user via a masked dialog",
+		promptSnippet: "缺凭证时先 ensure 录入再继续任务，不要明文问用户要密码（masked dialog，session log 无明文）",
 		promptGuidelines: [
 			"用户语言写 label 与 instructions：精确到页面/菜单/字段，让用户无需追问即可输入。",
 			"工具返回 question 时先回答用户的问题，再重新调用。",
