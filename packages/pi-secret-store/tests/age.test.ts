@@ -11,6 +11,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import { createBackend } from "../lib/backend.ts";
+import { updateStore } from "../index.ts";
 import { withStoreLock } from "../lib/store.ts";
 import { assertAgeBackend, cleanupEnv, hasRealAge, runExact, runToolCall, setupHarness, toolCtx, toolResultEvent, type Harness } from "./helpers.ts";
 
@@ -350,6 +351,33 @@ describe("age 后端：外部工具调用超时（r8 #5）", () => {
 			await rm(fakeBin, { recursive: true, force: true });
 		}
 	}, 10_000);
+});
+
+describe("runCapture stdin EPIPE（review-high #3）", () => {
+	it("age 子进程提前退出不读 stdin → runCapture 走 reject（exit code 路径），不因 EPIPE 未捕获异常崩溃", async () => {
+		const fakeBin = await mkdtemp(join(tmpdir(), "age-epipe-"));
+		// age 立即退出不读 stdin；age-keygen 写入最小身份密钥文件（recipientOf 从 # public key 注释行取公钥）
+		await writeFile(join(fakeBin, "age"), "#!/bin/sh\nexit 3\n", { mode: 0o755 });
+		await writeFile(join(fakeBin, "age-keygen"), '#!/bin/sh\nprintf "# public key: age1fakefakefakefakefakefakefakefakefakefakefakefakefake\n" > "$2"\n', {
+			mode: 0o755,
+		});
+		process.env.PI_SECRET_STORE_AGE_BIN = join(fakeBin, "age");
+		try {
+			const h = await setupHarness(undefined, undefined, "age");
+			await assertAgeBackend(h);
+			// 大明文（数十倍管道缓冲）确保 stdin 写入跨越多个事件循环 tick，子进程先行退出后仍有写入在途
+			const big = "x".repeat(2_000_000);
+			await expect(
+				updateStore(h.agentDir, (s) => {
+					s.BIG_TOKEN = { value: big, updatedAt: "t", fingerprint: "fp0000bb33" };
+					return s;
+				}),
+			).rejects.toThrow(/age 加密失败/); // close code 3 → 正常 reject，而非未捕获 EPIPE
+		} finally {
+			delete process.env.PI_SECRET_STORE_AGE_BIN;
+			await rm(fakeBin, { recursive: true, force: true });
+		}
+	}, 15_000);
 });
 
 describe.skipIf(!hasRealAge)("age 后端：persist 防覆盖校验复用 load 解密结果（r7 #6；r8 #1 改密文内容指纹）", () => {

@@ -129,6 +129,9 @@ function runCapture(bin: string, args: string[], input?: string): Promise<RunRes
 		});
 		child.on("error", (err) => finish(() => reject(err)));
 		child.on("close", (code) => finish(() => resolve({ code: code ?? -1, stdout: Buffer.concat(chunks), stderr })));
+		// review-high #3：子进程提前退出（错钥/坏参数快速失败、timeout SIGKILL）时 stdin 读端已关，
+		// 在途写入触发 EPIPE——无监听会成未捕获异常崩掉扩展进程；吞掉，结果以 close/stderr 为准。
+		child.stdin.on("error", () => {});
 		child.stdin.end(input ?? "");
 	});
 }
