@@ -28,8 +28,7 @@ linker="$repo/scripts/link-pi-packages.sh"
 installed=$(python3 -c "
 import json
 d = json.load(open('$HOME/.pi/agent/settings.json'))
-print('
-'.join(p['source'] if isinstance(p, dict) else p for p in d.get('packages', [])))
+print(chr(10).join(p['source'] if isinstance(p, dict) else p for p in d.get('packages', [])))
 ")
 for pkg in $pkgs; do
     full="$repo/packages/$pkg"
@@ -39,9 +38,9 @@ for pkg in $pkgs; do
     if [ -L "$target" ] && [ "$(readlink "$target")" = "$full" ]; then
         continue  # 链接已正确：源码零拷贝直载，无需任何动作
     fi
-    echo "post-commit: relinking package '$name' (changed in HEAD)..." >&2
+    echo "post-commit: relinking package ${name} (changed in HEAD)..." >&2
     mkdir -p "$(dirname "$target")"
-    ln -sfn "$full" "$target" || echo "post-commit: WARN relink failed for '$name'" >&2
+    ln -sfn "$full" "$target" || echo "post-commit: WARN relink failed for ${name}" >&2
 done
 
 # 顺带 prune 死链（worktree 删除类 drift，代价为一次目录遍历）
