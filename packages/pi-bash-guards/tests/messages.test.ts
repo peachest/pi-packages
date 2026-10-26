@@ -3,8 +3,8 @@
  *
  * Every block message must carry the three elements (reason + correct
  * replacement command + example) — "the model must not have to guess"
- * upgraded from convention to CI invariant. Each of the 15 verdict messages
- * (12 table entries; no-verify/G1/P6 hold two templates each) is rendered
+ * upgraded from convention to CI invariant. Each of the 16 verdict messages
+ * (13 table entries; no-verify/G1/P6 hold two templates each) is rendered
  * through the engine's own render_message and asserted to contain its
  * recommended-command token.
  */
@@ -41,12 +41,13 @@ const CASES: Array<[string, Record<string, unknown>, string]> = [
 	["P3", { spec: "2h", seconds: 7200 }, "subscribe"],
 	["P6", { kind: "inline", inline: "stranger@x.y", platform: "github", expected: "dev@personal.example" }, "Commit with the matching identity"],
 	["P6", { kind: "email", email: "stranger@x.y", platform: "github", expected: "dev@personal.example", suggest: "dev@personal.example" }, "git config user.email dev@personal.example"],
+	["KB", {}, "rg -l"],
 ];
 
 const PYENV = { ...process.env, PYTHONDONTWRITEBYTECODE: "1" }; // no __pycache__ in scripts/
 
 describe("bash-guards message three-element contract (spec #142)", () => {
-	it("renders all 15 verdict messages with their recommended-command token", () => {
+	it("renders all 16 verdict messages with their recommended-command token", () => {
 		const out = execFileSync(
 			"python3",
 			["-c", RENDERER, GUARD, JSON.stringify(CASES.map(([msg, params]) => ({ msg, params })))],
@@ -70,12 +71,12 @@ print(json.dumps([{ "id": r["id"], "scope": r["scope"], "hasMatcher": callable(r
 			{ encoding: "utf8", env: PYENV },
 		);
 		const rules: Array<{ id: string; scope: string; hasMatcher: boolean; msg: boolean }> = JSON.parse(out);
-		expect(rules).toHaveLength(12);
+		expect(rules).toHaveLength(13); // 12 + KB (#166)
 		for (const r of rules) {
 			expect(r.scope === "global" || r.scope === "projects", `${r.id} scope`).toBe(true);
 			expect(r.hasMatcher, `${r.id} matcher`).toBe(true);
 			expect(r.msg, `${r.id} message template`).toBe(true);
 		}
-		expect(rules.filter((r) => r.scope === "projects").map((r) => r.id)).toEqual(["P2", "P3", "P6"]);
+		expect(rules.filter((r) => r.scope === "projects").map((r) => r.id)).toEqual(["P2", "P3", "P6", "KB"]);
 	});
 });

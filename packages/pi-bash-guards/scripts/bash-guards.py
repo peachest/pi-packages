@@ -44,12 +44,12 @@
 # with that reason; exit 0 allows; unreadable payload → exit 0 (fail-open).
 
 import io
-import json, os, re, shlex, subprocess, sys
+import hashlib, json, os, re, shlex, subprocess, sys, time
 
 # ═══ PARSER ═══
 
 def parse_payload(stream):
-    # stdin JSON → (cmd, code, in_projects); None when unreadable (fail-open:
+    # stdin JSON → (cmd, code, in_projects, transcript); None when unreadable (fail-open:
     # never block on our own parsing bug).
     try:
         payload = json.loads(stream.read())
@@ -73,7 +73,7 @@ def parse_payload(stream):
     if "__PI_SECRET_STORE__" in cmd:
         cmd = re.sub(r"^:\s*__PI_SECRET_STORE__\s*;.*?\bfi\s*;\s*", "", cmd, count=1, flags=re.S)
         code = [l.strip() for l in cmd.split("\n") if l.strip() and not l.strip().startswith("#")]
-    return cmd, code, in_projects
+    return cmd, code, in_projects, transcript
 
 def _cmd_strip(s):
     # Shared command-position prefix normalization (docker matcher and the
@@ -595,6 +595,67 @@ def _match_p6(ctx):
     return None
 
 # Order IS behavior: entries run in this sequence, first hit wins.
+# ═══ KB GATE ═══
+# KB. Knowledge-base-first gate (2026-10-26): cluster/service probing in a
+# session that never touched the diagnosis vault is blocked once, with the
+# vault search as the route back. Evidence: doc-consumption audit
+# 2026-10-16 (1164 sessions/8 repos) — wiki touches were 61% external-force
+# driven, spontaneous wiki reads 2 cases; diagnostic work re-derived known
+# root causes already in ~/ops. Narrow triggers only (cluster runtime
+# probing — kubectl/crictl/journalctl/dmesg/nvidia-smi; helm/nerdctl are
+# deploy/mgmt-heavy and stay ungated). The gate opens for the whole session
+# once ANY command touches ~/ops or llmops-wiki (reading the index, running
+# the diag-search rg, writing a diagnosis — all qualify). Weak read signal:
+# every gate decision appends a monthly jsonl read log under
+# ~/.pi/agent/kendex/state/kb/ — future doc-consumption audits read it
+# instead of mining session JSONL.
+KB_TRIGGER = re.compile(r"^(kubectl|crictl|journalctl|dmesg|nvidia-smi)\b")
+KB_TOUCH = re.compile(r"(~/ops|\$HOME/ops|/mnt/disk1/hyx/ops)\b|llmops-wiki")
+
+def _kb_session_key(transcript):
+    # Per-session identity from the transcript path; no transcript -> None
+    # (fail open — cannot track, never block).
+    return hashlib.sha1(transcript.encode()).hexdigest()[:16] if transcript else None
+
+def _kb_log(session, kind, cmd):
+    # Monthly read log; a logging failure must never block (fail open).
+    try:
+        d = os.path.expanduser("~/.pi/agent/kendex/state/kb")
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, time.strftime("readlog-%Y%m.jsonl")), "a") as f:
+            f.write(json.dumps({"ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                                "session": session, "kind": kind,
+                                "cmd": cmd[:200]}, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+
+def _match_kb(ctx):
+    session = _kb_session_key(ctx.get("transcript", ""))
+    if session is None:
+        return None
+    flag = os.path.expanduser(f"~/.pi/agent/kendex/state/kb/flag-{session}")
+    if KB_TOUCH.search(ctx["cmd"]):
+        # Touching the KB is itself the satisfying action: open the gate.
+        try:
+            os.makedirs(os.path.dirname(flag), exist_ok=True)
+            open(flag, "w").close()
+        except OSError:
+            pass
+        _kb_log(session, "satisfy", ctx["cmd"])
+        return None
+    for seg in segments(ctx["cmd"]):
+        s = _cmd_strip(seg.strip())
+        if not KB_TRIGGER.match(s):
+            continue
+        if os.path.exists(flag):
+            _kb_log(session, "pass", s)
+        else:
+            _kb_log(session, "block", s)
+            return {"cmd": s}
+        break
+    return None
+
+
 RULES = [
     # 1. whole command is a bare cd (mining: 49 calls/38 sessions)
     {"id": "bare-cd", "scope": "global", "matcher": _match_bare_cd, "message": "bare-cd"},
@@ -621,6 +682,8 @@ RULES = [
     {"id": "P3", "scope": "projects", "matcher": _match_p3, "message": "P3"},
     # P6. commit identity (two messages)
     {"id": "P6", "scope": "projects", "matcher": _match_p6, "message": "P6"},
+    # KB. knowledge-base-first gate: cluster probing requires the vault read
+    {"id": "KB", "scope": "projects", "matcher": _match_kb, "message": "KB"},
 ]
 
 # ═══ MESSAGES ═══
@@ -734,6 +797,14 @@ MESSAGES = {
     "no-verify": lambda p: MESSAGES["no-verify-commit"] if p["sub"] == "commit" else MESSAGES["no-verify-push"],
     "G1": lambda p: MESSAGES["G1-var"].format(dest=p["dest"]) if p["kind"] == "var" else MESSAGES["G1-dest"],
     "P6": lambda p: MESSAGES["P6-inline"].format(**p) if p["kind"] == "inline" else MESSAGES["P6-email"].format(**p),
+    "KB": "KB gate: cluster/service probing in a session that has not read the "
+          "diagnosis vault (doc-consumption audit 2026-10-16: diagnostic "
+          "sessions routinely re-derived root causes already in ~/ops). Run "
+          "the vault search first — `rg -l 'labels:.*<component>' ~/ops/*.md`, "
+          "then a symptom-keyword pass `rg -il -e '<kw1>' -e '<kw2>' ~/ops/*.md` "
+          "(/skill:diag-search Step 2), or read `~/ops/index.md`. Any command "
+          "touching ~/ops or ~/projects/llmops-wiki opens this gate for the "
+          "rest of the session.",
 }
 
 # ═══ VERDICT ═══
@@ -841,8 +912,9 @@ def main():
     parsed = parse_payload(io.StringIO(raw))
     if parsed is None:
         return 0
-    cmd, code, in_projects = parsed
-    ctx = {"cmd": cmd, "code": code, "in_projects": in_projects, "cwd": os.getcwd()}
+    cmd, code, in_projects, transcript = parsed
+    ctx = {"cmd": cmd, "code": code, "in_projects": in_projects, "cwd": os.getcwd(),
+           "transcript": transcript}
     for rule in RULES:
         if rule["scope"] == "projects" and not ctx["in_projects"]:
             continue
