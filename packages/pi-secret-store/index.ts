@@ -112,6 +112,9 @@ const commandWord = (cmd: string): string => {
 	for (let i = 0; i < toks.length; i++) {
 		const tok = toks[i];
 		if (!tok || tok === "nohup" || /^[A-Za-z_][A-Za-z0-9_]*=/.test(tok)) continue;
+		// review-high #1：2>&1 被 |&;() 切分后的孤立纯数字残段不是命令词，不参与比对/不进报错文案；
+		// 非尾位裸数字首词仍按命令词比对（r5 #4：`10 serve` 的命令词是 10）
+		if (/^\d+$/.test(tok) && !toks.slice(i + 1).some(Boolean)) continue;
 		if (tok === "sudo" || tok === "env") {
 			wrapper = tok;
 			continue;
@@ -319,13 +322,21 @@ export default function secretStore(pi: ExtensionAPI) {
 				block: true,
 				reason: `secret-store: 凭证 ${quoted} 以 $${quoted} 形式出现在命令的单引号内：单引号不展开，sudo（无 -E）/env -i 等清环境的内层 shell 会取到空值照常执行。请改写为双引号 "$${quoted}"（外层展开后传入），或调整命令结构后直接引用 $${quoted}。`,
 			};
-		// #171 allowedPrefix（r8 #4 改分段比对）：逐段取命令词（r2 #2 剥 sudo/env/赋值 token），任一段命中任一前缀
-		// → 该凭证放行（真消费凭证的段参与比对）；被引用且已存的限定凭证在所有段均不命中 → 不注入并 block 报错
-		// （fail closed：否则命令带着空变量照常执行）。三要素：凭证名/限定前缀/forget+重录指引 + 实际参与比对的命令词。
-		const segWords = commandSegments(cmd).map(commandWord).filter(Boolean);
+		// #171 allowedPrefix（review-high #1 改 per-credential 段比对）：凭证只与其 $NAME 引用所在段的命令词比对，
+		// 且每个引用段都必须命中（r2 #2 剥 sudo/env/赋值 token；无引用段的段不参与该凭证判定）——
+		// `echo $TOKEN | nerdctl ps`、`nerdctl ps; echo $TOKEN` 形态不得借不引用凭证的命中段放行 echo 段的消费；
+		// 引用段在管道后（消费段）命中仍放行（r8 #4 语义保持）。报错文案仍列全段命令词（r8 #4 口径）。
+		const segments = commandSegments(cmd);
+		const segWords = segments.map(commandWord).filter(Boolean);
 		const mismatched = names.filter((n) => {
 			const prefixes = store[n].allowedPrefix ?? [];
-			return prefixes.length > 0 && !segWords.some((w) => prefixes.some((p) => w.startsWith(p)));
+			if (prefixes.length === 0) return false;
+			return !segments
+				.filter((s) => referencedNames(s).has(n))
+				.every((s) => {
+					const w = commandWord(s);
+					return w !== "" && prefixes.some((p) => w.startsWith(p));
+				});
 		});
 		if (mismatched.length > 0) {
 			const detail = mismatched

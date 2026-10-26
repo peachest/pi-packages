@@ -309,6 +309,41 @@ describe("tool_call：allowedPrefix 凭证限定（#171）", () => {
 		expect(result?.block).toBe(true); // 单段命令词 git；naive 切分把引号内 harbor 当独立段会误放行
 		expect(result?.reason).toContain('当前命令词 "git"');
 	});
+
+	// review-high #1：凭证真正被消费的位置是 $NAME 所在段——不引用凭证的段命中前缀不构成放行
+	it("per-credential 段比对：引用段不命中、无引用段命中 → block（echo $TOKEN | nerdctl ps 管道绕过收口）", async () => {
+		const h = await setupHarness(PREFIXED);
+		const { event, result } = await runToolCall(h, "echo $HARBOR_PASSWORD | nerdctl ps");
+		expect(result?.block).toBe(true);
+		expect(result?.reason).toContain("HARBOR_PASSWORD");
+		expect(event.input.command).toBe("echo $HARBOR_PASSWORD | nerdctl ps"); // 未注入改写
+	});
+
+	it("per-credential 段比对：顺序拼接同款绕过收口（nerdctl ps; echo $TOKEN）", async () => {
+		const h = await setupHarness(PREFIXED);
+		const { result } = await runToolCall(h, "nerdctl ps; echo $HARBOR_PASSWORD");
+		expect(result?.block).toBe(true);
+		expect(result?.reason).toContain("HARBOR_PASSWORD");
+	});
+
+	it("per-credential 段比对：引用段在管道后（消费段）命中仍放行（r8 #4 语义保持）", async () => {
+		const h = await setupHarness(PREFIXED);
+		const { event, result } = await runToolCall(h, "unrelated | nerdctl login $HARBOR_PASSWORD");
+		expect(result).toBeUndefined();
+		expect(event.input.command).toContain("export HARBOR_PASSWORD='harbor-secret-value'");
+	});
+
+	it("2>&1 形态（review-high #1）：命中段的 2>&1 不影响放行；绕过形态的 2>&1 残段不产生伪命令词", async () => {
+		const h = await setupHarness(PREFIXED);
+		// 消费段命中 + 2>&1：放行不受 & 切分残段影响
+		const ok = await runToolCall(h, "nerdctl login $HARBOR_PASSWORD 2>&1");
+		expect(ok.result).toBeUndefined();
+		expect(ok.event.input.command).toContain("export HARBOR_PASSWORD='harbor-secret-value'");
+		// 绕过形态 + 2>&1：残段纯数字伪词不参与判定、不混入报错文案
+		const bad = await runToolCall(h, "echo $HARBOR_PASSWORD 2>&1 | nerdctl ps");
+		expect(bad.result?.block).toBe(true);
+		expect(bad.result?.reason).toContain('当前命令词 "echo、nerdctl"'); // 残段 "1" 已剔除
+	});
 });
 
 describe("tool_call：单引号内已注入名引用 block（r5 #2）", () => {
