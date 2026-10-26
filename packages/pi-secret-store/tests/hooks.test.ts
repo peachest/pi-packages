@@ -63,12 +63,12 @@ describe("tool_call：选择性注入（#170，原地 mutate）", () => {
 		expect(e2.input.command).toBe(`printf '%s' "$MISSING_TOKEN"`);
 	});
 
-	it("展开式形态不计入引用：${NAME:-def} 等不注入该名（rolling-review-r1 #1）", async () => {
+	it("展开式形态不计入引用（rolling-review-r1 #1）：未存名展开式零改动直通（r8 #3 后已存名走 block，见独立 describe）", async () => {
 		const h = await setupHarness({ A_TOKEN: { value: "a-token-value-1", updatedAt: "t", fingerprint: "fp0000aa11" } });
-		const cmd = 'echo "${A_TOKEN:-d}" "${A_TOKEN:=d}" "${A_TOKEN:+a}" "${A_TOKEN:?e}"';
+		const cmd = 'echo "${MISSING:-d}" "${MISSING:=d}" "${MISSING:+a}" "${MISSING:?e}"';
 		const { event, result } = await runToolCall(h, cmd);
 		expect(result).toBeUndefined();
-		expect(event.input.command).toBe(cmd); // 引用集为空：零 I/O 直通，逐字节一致
+		expect(event.input.command).toBe(cmd); // 不注入不拦截：命令逐字节一致
 	});
 
 	it("值含特殊字符：逐变量 shellQuote 不破坏命令，bash 实取逐字节还原（[4]/[11]）", async () => {
@@ -277,6 +277,38 @@ describe("tool_call：allowedPrefix 凭证限定（#171）", () => {
 		expect(result?.reason).toContain("HARBOR_PASSWORD");
 		expect(event.input.command).toBe(cmd);
 	});
+
+	it("管道分段（r8 #4）：消费段在管道后 → 任一段命中即放行（旧实现只比首段命令词，误 block）", async () => {
+		const h = await setupHarness(PREFIXED);
+		const { event, result } = await runToolCall(h, "unrelated | nerdctl login $HARBOR_PASSWORD");
+		expect(result).toBeUndefined();
+		expect(event.input.command).toContain("export HARBOR_PASSWORD='harbor-secret-value'");
+	});
+
+	it("&&/;/|| 链分段（r8 #4）：前置段不命中、后续段命中 → 放行", async () => {
+		const h = await setupHarness(PREFIXED);
+		for (const op of ["&&", ";", "||"]) {
+			const { event, result } = await runToolCall(h, `git status ${op} nerdctl login $HARBOR_PASSWORD`);
+			expect(result).toBeUndefined();
+			expect(event.input.command).toContain("export HARBOR_PASSWORD='harbor-secret-value'");
+		}
+	});
+
+	it("分段 fail closed（r8 #4）：所有段均不命中 → block，报错列出各段命令词", async () => {
+		const h = await setupHarness(PREFIXED);
+		const { result } = await runToolCall(h, "cat /etc/hosts | git push $HARBOR_PASSWORD");
+		expect(result?.block).toBe(true);
+		expect(result?.reason).toContain("HARBOR_PASSWORD");
+		expect(result?.reason).toContain("cat");
+		expect(result?.reason).toContain("git");
+	});
+
+	it("引号内的 | 不是段边界（r8 #4 同源扫描）：引号内伪造命中段不生效", async () => {
+		const h = await setupHarness(PREFIXED);
+		const { result } = await runToolCall(h, 'git push "msg | harbor" $HARBOR_PASSWORD');
+		expect(result?.block).toBe(true); // 单段命令词 git；naive 切分把引号内 harbor 当独立段会误放行
+		expect(result?.reason).toContain('当前命令词 "git"');
+	});
 });
 
 describe("tool_call：单引号内已注入名引用 block（r5 #2）", () => {
@@ -323,6 +355,48 @@ describe("tool_call：单引号内已注入名引用 block（r5 #2）", () => {
 		const { event, result } = await runToolCall(h, "sh -c 'echo $MISSING_NAME'");
 		expect(result).toBeUndefined();
 		expect(event.input.command).toBe("sh -c 'echo $MISSING_NAME'");
+	});
+});
+
+describe("tool_call：展开式引用命中已存名 block（r8 #3）", () => {
+	const SEED = { HARBOR_PASSWORD: { value: "harbor-secret-value", updatedAt: "t", fingerprint: "fp0000hh11" } };
+
+	it("${NAME:-def} 命中已存名 → block：展开式不注入真值（r1 #1），命令带空/默认值照常执行，与 r5 #2 同缺口 fail closed", async () => {
+		const h = await setupHarness(SEED);
+		const { result } = await runToolCall(h, 'echo "${HARBOR_PASSWORD:-default}"');
+		expect(result?.block).toBe(true);
+		expect(result?.reason).toContain("HARBOR_PASSWORD");
+		expect(result?.reason).toContain("展开式");
+		expect(result?.reason).toContain("$HARBOR_PASSWORD"); // 改写指引（与 r5 #2 同文案族）
+	});
+
+	it("${NAME:?msg} 命中已存名 → block（同文案族）", async () => {
+		const h = await setupHarness(SEED);
+		const { result } = await runToolCall(h, 'echo "${HARBOR_PASSWORD:?missing}"');
+		expect(result?.block).toBe(true);
+		expect(result?.reason).toContain("HARBOR_PASSWORD");
+	});
+
+	it("纯 ${NAME} 花括号形态仍照常注入（非展开式，不受 r8 #3 影响）", async () => {
+		const h = await setupHarness(SEED);
+		const { event, result } = await runToolCall(h, 'echo "${HARBOR_PASSWORD}"');
+		expect(result).toBeUndefined();
+		expect(event.input.command).toContain("export HARBOR_PASSWORD='harbor-secret-value'");
+	});
+
+	it("展开式引用未存名不拦（r1 #1 白名单语义）：命令逐字节原样", async () => {
+		const h = await setupHarness(SEED);
+		const cmd = 'echo "${MISSING_VAR:-d}"';
+		const { event, result } = await runToolCall(h, cmd);
+		expect(result).toBeUndefined();
+		expect(event.input.command).toBe(cmd);
+	});
+
+	it("混用：未存名展开式不影响已存名注入", async () => {
+		const h = await setupHarness(SEED);
+		const { event, result } = await runToolCall(h, 'echo "${MISSING_VAR:-d}" $HARBOR_PASSWORD');
+		expect(result).toBeUndefined();
+		expect(event.input.command).toContain("export HARBOR_PASSWORD='harbor-secret-value'");
 	});
 });
 

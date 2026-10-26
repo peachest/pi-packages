@@ -17,7 +17,7 @@ import { Type } from "typebox";
 import { getAgentDir, type ExtensionAPI, type AgentToolResult } from "@earendil-works/pi-coding-agent";
 import { createBackend, updateStore, type StoreBackend } from "./lib/backend.ts";
 import { detectTokens, p1BlockReason } from "./lib/credentials.ts";
-import { Redactor, MIN_REDACT_LENGTH, commandContext, IN_SINGLE } from "./lib/redact.ts";
+import { Redactor, MIN_REDACT_LENGTH, commandContext, DATA_MASK, IN_SINGLE } from "./lib/redact.ts";
 import { dialogOptions, SecretInput, type DialogResult } from "./lib/secret-input.ts";
 import { nameProblem, shellQuote, storePaths, type Store } from "./lib/store.ts";
 // 测试走入口边界（packages/README.md 四规则）：re-export lib 的被测符号
@@ -40,7 +40,8 @@ const isSubsequence = (needle: string, haystack: string): boolean => {
 
 /** 命令文本中的 $NAME/${NAME} 引用名（仅裸名与纯 ${NAME} 花括号形态计入；${NAME:-def} 等展开式不计——
  *  命令不消费真实值时不注入真值，缩注入半径，rolling-review-r1 #1。文本级扫描：单引号内的 $NAME 同样
- *  计入——不展开，但已存名的单引号引用会被拦截（r5 #2，见 singleQuotedStoredName）。 */
+ *  计入——不展开，但已存名的单引号引用会被拦截（r5 #2，见 singleQuotedStoredName）。
+ *  r8 #3：展开式形态由 expandedRefNames 单列——命中已存名时 block，未存名不拦。 */
 const referencedNames = (cmd: string): Set<string> => {
 	const names = new Set<string>();
 	for (const m of cmd.matchAll(/\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))/g)) names.add(m[1] ?? m[2]);
@@ -58,6 +59,16 @@ const singleQuotedStoredName = (cmd: string, stored: readonly string[]): string 
 		if (stored.includes(n) && (ctx[m.index] & IN_SINGLE) !== 0) return n;
 	}
 	return undefined;
+};
+
+/** 展开式引用名（r8 #3）：${NAME:-def}/${NAME:=d}/${NAME:+a}/${NAME:?msg}/${NAME:0:3} 等参数展开形态
+ *  （${NAME} 后紧跟非 } 的操作符）——r1 #1 语义下不注入真值，但命中已存名时命令会以空值/默认值照常执行
+ *  （sudo（无 -E）/env -i 等清环境内层同样取不到），与单引号 r5 #2 同类缺口 → fail closed block。
+ *  ${NAME} 纯花括号形态不在此列（正常注入路径）；未存名不拦（r1 #1 白名单语义）。 */
+const expandedRefNames = (cmd: string): Set<string> => {
+	const names = new Set<string>();
+	for (const m of cmd.matchAll(/\$\{([A-Za-z_][A-Za-z0-9_]*)[^}]/g)) names.add(m[1]);
+	return names;
 };
 
 const fingerprintOf = (v: string) => createHash("sha256").update(v).digest("hex").slice(0, 10);
@@ -121,6 +132,24 @@ const commandWord = (cmd: string): string => {
 		return tok;
 	}
 	return "";
+};
+
+/** r8 #4：按 |、||、&&、;、;; 切命令段——引号字符串/heredoc 体/命令替换内的这些字符不是段边界
+ *  （commandContext DATA_MASK 同源判定，r6 #5 先例）。&&/||/;; 在逐字符切分下产生空段，交由
+ *  commandWord（空串）+ 下游 filter 自然剔除。返回各段原文（交 commandWord 归一）。 */
+const commandSegments = (cmd: string): string[] => {
+	const ctx = commandContext(cmd);
+	const segs: string[] = [];
+	let start = 0;
+	for (let i = 0; i < cmd.length; i++) {
+		if ((ctx[i] & DATA_MASK) !== 0) continue;
+		if (cmd[i] === "|" || cmd[i] === ";" || cmd[i] === "&") {
+			segs.push(cmd.slice(start, i));
+			start = i + 1;
+		}
+	}
+	segs.push(cmd.slice(start));
+	return segs;
 };
 
 /** 凭证限定呈现（#171，存在性层面，永不含值）：`allowedPrefix: a,b`，无限定时空串。 */
@@ -249,9 +278,10 @@ export default function secretStore(pi: ExtensionAPI) {
 				reason: `secret-store: 已存凭证明文出现在引号字符串、heredoc 或命令替换数据位置（r7 #2；凭证：${filled.dataHits.join("、")}）。该位置属数据语义（JSON/heredoc/命令替换等），自动回填会篡改命令数据，已拦截不改写。请改用 ${filled.dataHits.map((n) => `$${n}`).join("、")} 形式引用（bash 展开为值），或调用 secret_env 核对凭证名后调整命令结构。`,
 			};
 		if (filled.text !== cmd) event.input.command = cmd = filled.text;
-		// #170 选择性注入：先解析引用集，为空则零 I/O 直通（命令与无凭证库时逐字节一致，agent 无感）
+		// #170 选择性注入：先解析引用集；无 $ 引用（裸/花括号/展开式皆无）才零 I/O 直通（命令与无凭证库时逐字节一致，agent 无感）
 		const refs = referencedNames(cmd);
-		if (refs.size === 0) return undefined;
+		const expanded = expandedRefNames(cmd);
+		if (refs.size === 0 && expanded.size === 0) return undefined;
 		// [8] 跨 session 一致：注入前重读 store，把即将注入的值同步注册进 redactor（累积不 clear）
 		let store: Store;
 		try {
@@ -260,31 +290,42 @@ export default function secretStore(pi: ExtensionAPI) {
 			// [6] fail closed：存储不可读时引用的变量值未知（redactor 无法覆盖），跳过注入并拦截
 			return { block: true, reason: `secret-store: 存储不可读，凭证注入已停用（检查 ${agentDir} 下的存储/密钥/age 安装后重试）` };
 		}
+		// r8 #3：展开式引用命中已存名 → block（不注入真值 r1 #1，命令带空/默认值照常执行，与 r5 #2 同文案族）
+		const expHit = [...expanded].find((n) => Object.hasOwn(store, n));
+		if (expHit)
+			return {
+				block: true,
+				reason: `secret-store: 凭证 ${expHit} 以 \${${expHit}...} 展开式形态（如 \${${expHit}:-def}/\${${expHit}:?msg}）出现在命令中：展开式引用不注入真实值（rolling-review-r1 #1），命令会以空值/默认值照常执行（sudo（无 -E）/env -i 等清环境内层同样取不到）。请改写为 "$${expHit}"（外层展开后传入）或直接引用 $${expHit}。`,
+			};
 		// 注入集 = 引用 ∩ store 已存名；只缩半径不防外显（echo $NAME 照常注入）；未存名静默跳过（P1 白名单语义）
 		const names = [...refs].filter((n) => Object.hasOwn(store, n));
 		if (names.length === 0) return undefined;
-		// r5 #2：已注入名出现在单引号内 → 延迟展开遇清环境 wrapper（sudo 无 -E/env -i）取空值照常执行，fail closed
+		// r5 #2：已注入名出现在单引号内 → 延迟展开遇清环境 wrapper（sudo 无 -E/env -i）取空值照常执行，fail closed。
+		// 契约（r8 #6）：下方判定依赖 redact.ts commandContext 的 IN_SINGLE 位（第 3 位）逐字符扫描语义，
+		// 含 r6 #5 的 '\'' 拼接近似切分（奇数段切分下拼接段落在单引号内）——commandContext 位定义或
+		// 单引号判定变更时，须同步检查 singleQuotedStoredName 与本调用处的拦截面是否一致。
 		const quoted = singleQuotedStoredName(cmd, names);
 		if (quoted)
 			return {
 				block: true,
 				reason: `secret-store: 凭证 ${quoted} 以 $${quoted} 形式出现在命令的单引号内：单引号不展开，sudo（无 -E）/env -i 等清环境的内层 shell 会取到空值照常执行。请改写为双引号 "$${quoted}"（外层展开后传入），或调整命令结构后直接引用 $${quoted}。`,
 			};
-		// #171 allowedPrefix：命令词（r2 #2 剥 sudo/env/赋值 token）命中任一前缀才注入该凭证；不命中 → 不注入并 block 报错（fail closed：
-		// 否则命令带着空变量照常执行）。三要素：凭证名/限定前缀/secret_ensure 重设指引 + 实际参与比对的命令词。无限定的凭证不受影响。
-		const word = commandWord(cmd);
+		// #171 allowedPrefix（r8 #4 改分段比对）：逐段取命令词（r2 #2 剥 sudo/env/赋值 token），任一段命中任一前缀
+		// → 该凭证放行（真消费凭证的段参与比对）；被引用且已存的限定凭证在所有段均不命中 → 不注入并 block 报错
+		// （fail closed：否则命令带着空变量照常执行）。三要素：凭证名/限定前缀/secret_ensure 重设指引 + 实际参与比对的命令词。
+		const segWords = commandSegments(cmd).map(commandWord).filter(Boolean);
 		const mismatched = names.filter((n) => {
 			const prefixes = store[n].allowedPrefix ?? [];
-			return prefixes.length > 0 && !prefixes.some((p) => word.startsWith(p));
+			return prefixes.length > 0 && !segWords.some((w) => prefixes.some((p) => w.startsWith(p)));
 		});
 		if (mismatched.length > 0) {
 			const detail = mismatched
 				.map((n) =>
 					// r6 #2：命令词解析不出（重定向/管道/纯赋值等形态）时 fail-closed 拦截不变，但单独文案指明
 					// 是“解析不出”而非“不命中”，避免空命令词引号排障误导
-					word === ""
+					segWords.length === 0
 						? `凭证 ${n} 限定仅用于命令词命中 [${(store[n].allowedPrefix ?? []).join(",")}] 的命令，但无法从命令解析命令词，为避免空变量照常执行未注入。请调整命令结构使首词明确，或调用 secret_ensure 重设该凭证的限定`
-						: `凭证 ${n} 限定仅用于命令词命中 [${(store[n].allowedPrefix ?? []).join(",")}] 的命令，当前命令词 "${word}" 不命中，未注入（如需变更限定请调用 secret_ensure 重设该凭证）`,
+						: `凭证 ${n} 限定仅用于命令词命中 [${(store[n].allowedPrefix ?? []).join(",")}] 的命令，当前命令词 "${segWords.join("、")}" 不命中，未注入（如需变更限定请调用 secret_ensure 重设该凭证）`,
 				)
 				.join("；");
 			return { block: true, reason: `secret-store: ${detail}` };

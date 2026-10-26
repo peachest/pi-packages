@@ -2,14 +2,15 @@
  * 存储后端接口化（#173）：磁盘正典可插拔。
  * - age（缺省）：密文 secret-store.json.age + 身份密钥 secret-store.key（0600，与密文分离）；解密装载进内存，
  *   写时 `age -r <pub>` 加密 tmp+rename 原子落盘；首次检测到遗留明文 secret-store.json → 自动加密迁移并
- *   shred 原文件（D7=a，全程扩展进程内存，agent 与上下文不经手明文）。
+ *   shred 原文件（D7=a，全程扩展进程内存，agent 与上下文不经手明文；shred 缺失/失败不兜底删除，
+ *   保留原文件并告警交手动处理，r8 #2）。
  * - plain：#170 现行为原样（明文 json 0600），仅显式配置才用——缺省降级明文不存在。
  * 选择：agentDir/secret-store.conf 的 `backend = age|plain`（缺省 age；非法值 fail closed 报错）。
  * age 走真实 CLI（PATH → ~/.local/bin；PI_SECRET_STORE_AGE_BIN 可定向，测试用），纯本地运算无网络；
  * age 缺失/解密失败/错钥/损坏密文一律显式报错（含安装指引），不静默降级、不清数据。
  */
 import { spawn } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { chmod, mkdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -78,16 +79,38 @@ interface RunResult {
 	stderr: string;
 }
 
-/** spawn 收集（stdout 按二进制收集——age 输出非 armor 的二进制密文，字符串化会损坏）；input 缺省立即关 stdin。 */
+/** spawn 收集（stdout 按二进制收集——age 输出非 armor 的二进制密文，字符串化会损坏）；input 缺省立即关 stdin。
+ *  r8 #5：外部工具调用超时（缺省 30s，PI_SECRET_STORE_TIMEOUT_MS 可调，测试缩短用）——age/shred/keygen 挂起
+ *  否则 tool_call 永久阻塞且存储锁被持到 stale 抢占。超时 SIGKILL 子进程并 reject（文案含工具名）。 */
+const RUN_TIMEOUT_MS = 30_000;
+
 function runCapture(bin: string, args: string[], input?: string): Promise<RunResult> {
+	const timeoutMs = Number(process.env.PI_SECRET_STORE_TIMEOUT_MS) || RUN_TIMEOUT_MS;
 	return new Promise((resolve, reject) => {
 		const child = spawn(bin, args, { stdio: ["pipe", "pipe", "pipe"] });
 		const chunks: Buffer[] = [];
 		let stderr = "";
+		let settled = false;
+		const timer = setTimeout(() => {
+			if (settled) return;
+			settled = true;
+			child.kill("SIGKILL");
+			reject(
+				new Error(
+					`secret-store: 外部工具 ${bin} 执行超时（${timeoutMs}ms），已强制终止子进程。如反复出现，请检查该工具是否挂起（如等待交互输入）；可用 PI_SECRET_STORE_TIMEOUT_MS 调整超时`,
+				),
+			);
+		}, timeoutMs);
+		const finish = (fn: () => void) => {
+			if (settled) return;
+			settled = true;
+			clearTimeout(timer);
+			fn();
+		};
 		child.stdout.on("data", (d: Buffer) => chunks.push(d));
 		child.stderr.on("data", (d: Buffer) => (stderr += d.toString("utf8")));
-		child.on("error", reject);
-		child.on("close", (code) => resolve({ code: code ?? -1, stdout: Buffer.concat(chunks), stderr }));
+		child.on("error", (err) => finish(() => reject(err)));
+		child.on("close", (code) => finish(() => resolve({ code: code ?? -1, stdout: Buffer.concat(chunks), stderr })));
 		child.stdin.end(input ?? "");
 	});
 }
@@ -149,9 +172,10 @@ async function encryptToFile(plain: string, outPath: string, keyPath: string): P
 	}
 }
 
-/** shred -u 原文件（D7=a）；shred 缺失（非 GNU 环境）→ 覆写后删除兜底；shred 存在但执行失败（r5 #3）→
- *  兜底删除照常，但实际销毁强度降为单次覆写，经 onWarning 告知；覆写兜底自身失败仍上抛（r4 #2）；
- *  目标已消失（并发迁移）视为成功。 */
+/** shred -u 原文件（D7=a）。r8 #2：shred 缺失/失败不再“覆写+删除”兜底——writeFile 'w' 是截断重写，
+ *  日志式/CoW 文件系统上通常分配新块，旧块未覆写，实际销毁强度≈直接删除，弱于承诺；改为告警“销毁未达成”
+ *  并保留原文件交手动处理（宁留明文待手动 shred，不假造销毁）。失败后目标已消失（并发删除，r6 #3）→
+ *  无从保留，视为已处理；覆写兜底自身失败上抛（r4 #2）的路径随兜底删除一并移除。 */
 async function shredFile(path: string, onWarning?: (msg: string) => void): Promise<void> {
 	try {
 		await stat(path);
@@ -159,41 +183,40 @@ async function shredFile(path: string, onWarning?: (msg: string) => void): Promi
 		if ((err as NodeJS.ErrnoException).code === "ENOENT") return;
 		throw err;
 	}
+	let shredFailure: string;
 	try {
 		const r = await runCapture("shred", ["-u", path]);
 		if (r.code === 0) return;
 		const detail = r.stderr.trim();
-		onWarning?.(
-			`secret-store: shred 执行失败（exit ${r.code}${detail ? `：${detail}` : ""}），原文件 ${path} 以单次随机覆写+删除兜底销毁（弱于 shred 多遍覆写；日志式/CoW 文件系统上覆写不保证销毁旧块，r7 #8），如需确保销毁强度请手动处理`,
-		);
+		shredFailure = `shred 执行失败（exit ${r.code}${detail ? `：${detail}` : ""}）`;
 	} catch {
-		// shred 不在 PATH（command not found）：静默走覆写兜底
+		// shred 不在 PATH（command not found）：同样不删除，走下方保留+告警
+		shredFailure = "shred 不可用（未安装或不在 PATH）";
 	}
-	// 覆写失败上抛（r4 #2）：不允许"未覆写即删除"的静默降级——保留原文件交手动处理。
-	// r6 #3：shred 失败到兑底之间目标可能已被并发删除——stat 包 try/catch，ENOENT 按"已消失视为成功"返回
-	// （与顶部 stat 语义一致），其他错误照旧上抛；writeFile 为 'w' 截断重写（非原地覆写），
-	// 随机串长度 = max(64, 原大小) ≥ 原文件，全文件单次随机覆写后删除。
-	let size = 64;
 	try {
-		size = Math.max(64, (await stat(path)).size);
+		await stat(path);
 	} catch (err) {
-		if ((err as NodeJS.ErrnoException).code === "ENOENT") return;
+		if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+			onWarning?.(`secret-store: ${shredFailure}，原文件 ${path} 已消失（并发删除），视为已处理`);
+			return;
+		}
 		throw err;
 	}
-	await writeFile(path, randomBytes(size));
-	await unlink(path);
+	onWarning?.(
+		`secret-store: ${shredFailure}，原文件 ${path} 销毁未达成，未删除、保留交手动处理（请手动 shred -u ${path}；日志式/CoW 文件系统上直接删除或覆写重写不保证销毁旧块，确认接受较弱销毁强度后可自行删除）`,
+	);
 }
 
 const ageBackend = (plainPath: string, cipherPath: string, keyPath: string): StoreBackend => {
-	// r7 #6：防覆盖校验缓存——load 解密成功 / 自身 persist 加密成功时记录密文 mtime+size；persist 校验时
-	// 一致即跳过重解密（省一次 age -d spawn，锁内调用方刚完成 load 时不再重复验证），不一致才重跑。
-	let lastVerifiedCipher: { mtimeMs: number | bigint; size: number | bigint } | undefined; // 字段类型随 stat（bigint 变体）
-	const noteVerifiedCipher = async (): Promise<void> => {
+	// r7 #6 引入、r8 #1 改造：防覆盖校验缓存 = 密文内容指纹（sha256 整文件——密文为 JSON 规模小文件）。
+	// 旧 mtimeMs+size 在同精度窗口内同 size 重写会误跳重验（错钥下 ensureIdentity 仍覆盖密文），mtime 缓存删除。
+	let lastVerifiedFingerprint: string | undefined;
+	const cipherFingerprint = async (): Promise<string | undefined> => {
 		try {
-			const st = await stat(cipherPath);
-			lastVerifiedCipher = { mtimeMs: st.mtimeMs, size: st.size };
-		} catch {
-			lastVerifiedCipher = undefined;
+			return createHash("sha256").update(await readFile(cipherPath)).digest("hex");
+		} catch (err) {
+			if ((err as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+			throw err;
 		}
 	};
 	return {
@@ -215,7 +238,7 @@ const ageBackend = (plainPath: string, cipherPath: string, keyPath: string): Sto
 					.then(() => onWarning?.(`secret-store: 检测到密文与遗留明文并存（${plainPath}），以密文为准，请手动删除明文文件`))
 					.catch(() => {});
 				const text = await decryptStoreText(cipherPath, keyPath);
-				await noteVerifiedCipher();
+				lastVerifiedFingerprint = await cipherFingerprint();
 				return parseStoreText(text, cipherPath, onWarning);
 			}
 			let legacyRaw: string | undefined;
@@ -236,22 +259,16 @@ const ageBackend = (plainPath: string, cipherPath: string, keyPath: string): Sto
 		async persist(store) {
 			// 防覆盖（r4 #1）：密文已存在但解不开（身份密钥丢失/被换）→ 显式拒绝写入——否则 ensureIdentity 会
 			// 生成新钥覆盖出与旧密文无关的新密文，旧凭证不可恢复丢失且无感知。报错文案与 load 恢复指引一致。
-			let cipherStat: Awaited<ReturnType<typeof stat>> | undefined;
-			try {
-				cipherStat = await stat(cipherPath);
-			} catch (err) {
-				if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-			}
-			if (cipherStat) {
-				const cached = lastVerifiedCipher;
-				if (!cached || cached.mtimeMs !== cipherStat.mtimeMs || cached.size !== cipherStat.size) {
-					await decryptStoreText(cipherPath, keyPath);
-					lastVerifiedCipher = { mtimeMs: cipherStat.mtimeMs, size: cipherStat.size };
-				}
+			// r8 #1：复用判定 = 密文内容指纹——无缓存或指纹不一致（含同精度窗口同 size 重写）→ 重跑 age -d
+			// 验证后更新缓存；一致 → 跳过（锁内刚 load/刚 persist 过，省一次 spawn）。无密文 → 无需防覆盖。
+			const currentFingerprint = await cipherFingerprint();
+			if (currentFingerprint !== undefined && currentFingerprint !== lastVerifiedFingerprint) {
+				await decryptStoreText(cipherPath, keyPath);
+				lastVerifiedFingerprint = currentFingerprint;
 			}
 			await ensureIdentity(keyPath);
 			await encryptToFile(serialize(store), cipherPath, keyPath);
-			await noteVerifiedCipher();
+			lastVerifiedFingerprint = await cipherFingerprint();
 		},
 	};
 };

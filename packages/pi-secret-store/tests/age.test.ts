@@ -5,7 +5,7 @@
  * plain 显式配置回归 + conf 非法值 fail closed。
  */
 import { execFile } from "node:child_process";
-import { chmod, copyFile, mkdtemp, readFile, readdir, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { copyFile, mkdtemp, readFile, readdir, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -52,7 +52,7 @@ describe("age 后端：遗留明文自动迁移（D7=a）", () => {
 		expect(guardKey.result?.block).toBe(true);
 	});
 
-	it("r5 #3：shred 存在但执行失败 → 兕底覆写删除照常完成，onWarning 告知实际销毁强度", async () => {
+	it("r8 #2：shred 存在但执行失败 → 不再“覆写+删除”兜底：原文件保留交手动处理，告警销毁未达成", async () => {
 		const h = await setupHarness(SEED, undefined, "age");
 		// fake shred：PATH 最前放置 exit 1 同名脚本——shred 可执行但失败（非 command not found）
 		const fakeBin = await mkdtemp(join(tmpdir(), "fake-shred-"));
@@ -60,13 +60,16 @@ describe("age 后端：遗留明文自动迁移（D7=a）", () => {
 		const savedPath = process.env.PATH;
 		process.env.PATH = `${fakeBin}:${savedPath}`;
 		try {
-			await start(h); // 迁移：shred exit 1 → 单次覆写+删除兜底完成 + 销毁强度告警
+			await start(h); // 迁移：shred exit 1 → 保留原文件 + 销毁未达成告警（r8 #2 不做删除兜底）
 		} finally {
 			process.env.PATH = savedPath;
 			await rm(fakeBin, { recursive: true, force: true });
 		}
-		await expect(stat(h.storePath)).rejects.toThrow(/ENOENT/); // 兑底删除完成（迁移未中断）
+		expect(h.notifyLog.join("\n")).toMatch(/1 个凭证已就绪/); // 迁移照常完成（密文为正典）
 		expect(h.notifyLog.join("\n")).toMatch(/shred 执行失败/);
+		expect(h.notifyLog.join("\n")).toMatch(/销毁未达成/);
+		await expect(readFile(h.storePath, "utf8")).resolves.toContain("harbor-secret-value"); // 原文件保留未动
+		await expect(stat(ageFile(h))).resolves.toBeDefined(); // 密文照常落盘
 		expect(h.notifyLog.join("\n")).not.toContain("harbor-secret-value"); // 明文不进通知面
 	});
 
@@ -85,6 +88,7 @@ describe("age 后端：遗留明文自动迁移（D7=a）", () => {
 		}
 		expect(h.notifyLog.join("\n")).toMatch(/1 个凭证已就绪/); // 迁移未因竞态中断
 		expect(h.notifyLog.join("\n")).toMatch(/shred 执行失败/); // 销毁强度降级照常告知
+		expect(h.notifyLog.join("\n")).toMatch(/视为已处理/); // r8 #2：失败后目标已不在 → 无从保留，视为已处理
 		await expect(stat(h.storePath)).rejects.toThrow(/ENOENT/); // 目标保持已删除
 		await expect(stat(ageFile(h))).resolves.toBeDefined(); // 密文已落盘
 	});
@@ -223,14 +227,25 @@ describe("age 后端：r4 findings 收口", () => {
 		await expect(stat(keyFile(h))).rejects.toThrow(/ENOENT/);
 	});
 
-	it("r4 #2：shred 兜底覆写失败 → 上抛保留原文件（不允许未覆写即删除的静默降级）", async () => {
-		if (typeof process.getuid === "function" && process.getuid() === 0) return; // root 无视权限位，无法构造覆写失败
+	it("r8 #2：shred 不可用（不在 PATH）→ 同样保留原文件交手动处理 + 告警（不再覆写+删除兜底，无静默降级）", async () => {
 		const h = await setupHarness(SEED, undefined, "age");
-		const raw = await readFile(h.storePath, "utf8");
-		await chmod(h.storePath, 0o400); // 原明文只读 → shred 与覆写兜底都 EACCES
-		await start(h);
-		expect(h.notifyLog.join("\n")).toMatch(/存储不可读/); // 迁移失败显式报错，不呈现成功
-		await expect(readFile(h.storePath, "utf8")).resolves.toBe(raw); // 原文件保留
+		// PATH 只含 age shim 目录（无 shred）：command not found → 不做删除兜底（r8 #2）
+		const fakeBin = await mkdtemp(join(tmpdir(), "no-shred-"));
+		const realBin = join(process.env.HOME ?? "/nonexistent", ".local", "bin");
+		await writeFile(join(fakeBin, "age"), `#!/bin/sh\nexec ${realBin}/age "$@"\n`, { mode: 0o755 });
+		await copyFile(join(realBin, "age-keygen"), join(fakeBin, "age-keygen"));
+		const savedPath = process.env.PATH;
+		process.env.PATH = fakeBin;
+		try {
+			await start(h);
+		} finally {
+			process.env.PATH = savedPath;
+			await rm(fakeBin, { recursive: true, force: true });
+		}
+		expect(h.notifyLog.join("\n")).toMatch(/shred 不可用/);
+		expect(h.notifyLog.join("\n")).toMatch(/销毁未达成/);
+		await expect(readFile(h.storePath, "utf8")).resolves.toContain("harbor-secret-value"); // 原文件保留
+		await expect(stat(ageFile(h))).resolves.toBeDefined(); // 迁移照常完成
 	});
 
 	it("r4 #3：conf 运行期翻转 age→plain → 写路径仍走已缓存后端（无双正典交叉写）", async () => {
@@ -287,8 +302,30 @@ describe("age 后端：首次使用路径持锁（r7 #1 跨 session 密钥竞态
 	});
 });
 
-describe("age 后端：persist 防覆盖校验复用 load 解密结果（r7 #6）", () => {
-	it("密文 mtime+size 未变时 persist 不重跑 age -d；密文变化（mtime）后恢复重验", async () => {
+describe("age 后端：外部工具调用超时（r8 #5）", () => {
+	it("挂起的 age → runCapture 超时 kill 并 reject（文案含工具名），load 显式失败不静默、无密文落盘", async () => {
+		const fakeBin = await mkdtemp(join(tmpdir(), "age-hang-"));
+		// age 与 age-keygen 都挂起：迁移路径首调的是 age-keygen（ensureIdentity），其二进制须存在才走得进挂起
+		await writeFile(join(fakeBin, "age"), "#!/bin/sh\nexec sleep 60\n", { mode: 0o755 });
+		await writeFile(join(fakeBin, "age-keygen"), "#!/bin/sh\nexec sleep 60\n", { mode: 0o755 });
+		process.env.PI_SECRET_STORE_AGE_BIN = join(fakeBin, "age");
+		process.env.PI_SECRET_STORE_TIMEOUT_MS = "300";
+		try {
+			const h = await setupHarness(SEED, undefined, "age");
+			await start(h); // 迁移路径第一个 age 调用（resolveAgeBin --version）即挂起 → 超时
+			expect(h.notifyLog.join("\n")).toMatch(/执行超时/);
+			expect(h.notifyLog.join("\n")).toContain("age");
+			await expect(stat(ageFile(h))).rejects.toThrow(/ENOENT/); // 不静默降级：无密文落盘
+		} finally {
+			delete process.env.PI_SECRET_STORE_AGE_BIN;
+			delete process.env.PI_SECRET_STORE_TIMEOUT_MS;
+			await rm(fakeBin, { recursive: true, force: true });
+		}
+	}, 10_000);
+});
+
+describe("age 后端：persist 防覆盖校验复用 load 解密结果（r7 #6；r8 #1 改密文内容指纹）", () => {
+	it("密文未变时 persist 不重跑 age -d；同精度窗口内同 size 重写密文（mtime 复位）后仍触发重验并拒绝写入", async () => {
 		const realBin = join(process.env.HOME ?? "/nonexistent", ".local", "bin");
 		const fakeBin = await mkdtemp(join(tmpdir(), "age-log-"));
 		const logFile = join(fakeBin, "age-calls.log");
@@ -303,14 +340,25 @@ describe("age 后端：persist 防覆盖校验复用 load 解密结果（r7 #6�
 			await assertAgeBackend(h);
 			const backend = await createBackend(h.agentDir);
 			await backend.load(); // 迁移：明文 → 密文（仅加密，无 -d）
-			await backend.load(); // 解密装载：-d ×1，记录密文 mtime+size
+			await backend.load(); // 解密装载：-d ×1，记录密文内容指纹
 			expect(await dCount()).toBe(1);
 			await backend.persist(SEED_TWO); // 锁内刚 load 过 → 复用校验不再 -d（旧实现再 -d 一次，红）
 			expect(await dCount()).toBe(1);
-			await utimes(ageFile(h), new Date(Date.now() + 5000), new Date(Date.now() + 5000)); // 外部改写信号：mtime 变化
-			await backend.persist(SEED_TWO); // 恢复重验：-d ×2，通过后照常加密
-			expect(await dCount()).toBe(2);
-			await expect(backend.load()).resolves.toMatchObject({ HARBOR_PASSWORD: expect.anything(), B_TOKEN: expect.anything() }); // round-trip
+			// r8 #1：同精度窗口内同 size 重写密文 + mtime 复位伪装未变 → 内容指纹不一致仍触发重验；
+			// 旧 mtime+size 缓存会误跳重验直接覆写（红）——错钥/被换密文下 ensureIdentity 不再可能覆盖密文。
+			// 先把 mtime 固定到整秒（utimes 往返精确），load #2 缓存的就是这个值：复位后旧缓存必然命中。
+			const cipherPath = ageFile(h);
+			const epoch = new Date(1_700_000_000_000);
+			await utimes(cipherPath, epoch, epoch);
+			await backend.load();
+			expect(await dCount()).toBe(2); // epoch 固定后的重载：-d ×2，缓存内容指纹
+			const tampered = Buffer.from(await readFile(cipherPath));
+			tampered[Math.floor(tampered.length / 2)] ^= 0xff; // 翻转密文体字节：长度不变、内容变化
+			await writeFile(cipherPath, tampered, { mode: 0o600 });
+			await utimes(cipherPath, epoch, epoch); // mtime/size 双复位：旧缓存判定面
+			await expect(backend.persist(SEED_TWO)).rejects.toThrow(/解密失败/); // 重验 → 防覆盖拒绝
+			expect(await dCount()).toBe(3);
+			expect((await readFile(cipherPath)).equals(tampered)).toBe(true); // 被篡改密文未被覆盖
 		} finally {
 			delete process.env.PI_SECRET_STORE_AGE_BIN;
 			await rm(fakeBin, { recursive: true, force: true });

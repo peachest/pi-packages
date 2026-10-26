@@ -15,6 +15,9 @@ const IN_QUOTE = 1;
 const IN_HEREDOC = 2;
 const IN_SUBST = 8;
 export const IN_SINGLE = 4;
+/** r8 #4：段切分"数据位"掩码（index.ts commandSegments 用）——引号字符串/heredoc 体/命令替换体内的
+ *  |&&; 不是命令段边界。与 commandContext 同源（位语义变更须同步检查，r6 #5 先例）。 */
+export const DATA_MASK = IN_QUOTE | IN_HEREDOC | IN_SUBST;
 
 /** bash 命令文本的引号/heredoc/命令替换上下文扫描（r3 #1；r7 #2 增命令替换位）：单引号无转义、双引号支持 \ 转义；
  *  `<<`/`<<-`（定界符可带引号）开启 heredoc 体至独占终止行，`<<<`（here-string）不视为 heredoc；

@@ -13,7 +13,7 @@ Pi 扩展：持久化凭证存储，双层语义——
 
 存储后端接口化（`lib/backend.ts`），磁盘正典可插拔：
 
-- **age（缺省）**：密文 `~/.pi/agent/secret-store.json.age` + 身份密钥 `~/.pi/agent/secret-store.key`（0600，与密文分离）。session_start 经 `age -d -i` 解密进内存（注入/查询/脱敏全走内存快照，链路与 plain 一致）；写时 `age -r <pub>` 加密 tmp+rename 原子落盘。身份密钥首次不存在时零交互 `age-keygen` 自动生成（0600）；口令加密形态不做（后续可选）。首次检测到遗留明文 `secret-store.json` → 自动加密迁移为 `.age` 并 `shred -u` 原文件（迁移在扩展进程内存完成，agent 与上下文不经手明文）。
+- **age（缺省）**：密文 `~/.pi/agent/secret-store.json.age` + 身份密钥 `~/.pi/agent/secret-store.key`（0600，与密文分离）。session_start 经 `age -d -i` 解密进内存（注入/查询/脱敏全走内存快照，链路与 plain 一致）；写时 `age -r <pub>` 加密 tmp+rename 原子落盘。身份密钥首次不存在时零交互 `age-keygen` 自动生成（0600）；口令加密形态不做（后续可选）。首次检测到遗留明文 `secret-store.json` → 自动加密迁移为 `.age` 并 `shred -u` 原文件（迁移在扩展进程内存完成，agent 与上下文不经手明文；shred 缺失/失败不兜底删除——保留原文件并告警交手动处理，r8 #2）。
 - **plain（兜底）**：#170 现行为原样（明文 json 0600），仅显式配置才用。
 - **配置**：`~/.pi/agent/secret-store.conf` 单行 `backend = age` 或 `backend = plain`（`#` 注释行忽略）；缺省 age，非法值 fail closed 报错。
 - **age 安装/检查**：从 [age releases](https://github.com/FiloSottile/age/releases) 下载并将 `age` 与 `age-keygen` 放入 `~/.local/bin`（或系统包管理器安装），验证：`~/.local/bin/age --version`。扩展解析顺序：`PI_SECRET_STORE_AGE_BIN` 环境变量（定向，不回退）→ `PATH` → `~/.local/bin/age`。
