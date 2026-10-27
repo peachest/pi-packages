@@ -15,6 +15,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import renewExtension from "./renew.ts";
+import { WINDOW_TTL_MS, deriveWindowState, readWindowState, type RenewEvent, type WindowState } from "./renew-store.ts";
 
 const SID = "00000000-0000-7000-8000-000000000000";
 const NEW_SID = "99999999-9999-7000-8000-999999999999";
@@ -323,8 +324,62 @@ const evtTypes = (adir: string) =>
   t("I2 修正后换届成功", evtTypes(adir).slice(-1)[0] === "DONE" && notifs.some((n) => n.m.includes("换届修正生效")));
 }
 
+// ---------- table-driven: deriveWindowState 纯函数 7 分支 ----------
+{
+  const T0 = "2026-10-27T00:00:00.000Z";
+  const T1 = "2026-10-27T00:01:00.000Z";
+  const T0ms = Date.parse(T0);
+  const ev = (type: RenewEvent["type"], ts: string, sessionId = SID): RenewEvent => ({ type, ts, sessionId });
+  const stateEq = (a: WindowState, b: WindowState) =>
+    a.open === b.open && a.ready === b.ready && a.ownerSessionId === b.ownerSessionId &&
+    a.startedAt === b.startedAt && a.ageMs === b.ageMs && a.resumable === b.resumable;
+  const CLOSED: WindowState = { open: false, ready: false, ownerSessionId: null, startedAt: null, ageMs: null, resumable: false };
+  const rows: Array<{ name: string; events: RenewEvent[]; now: number; want: WindowState }> = [
+    { name: "T1 空事件数组 → closed", events: [], now: T0ms, want: CLOSED },
+    { name: "T2 尾部 START 未过期 → open 未 ready，owner=START.sessionId", events: [ev("START", T0)], now: T0ms + 1000, want: { open: true, ready: false, ownerSessionId: SID, startedAt: T0, ageMs: 1000, resumable: false } },
+    { name: "T3 尾部 READY → open+ready，owner=开局 START.sessionId", events: [ev("START", T0), ev("READY", T1)], now: Date.parse(T1) + 500, want: { open: true, ready: true, ownerSessionId: SID, startedAt: T0, ageMs: 60500, resumable: false } },
+    { name: "T4a 尾部 DONE → closed", events: [ev("START", T0), ev("READY", T1), ev("DONE", T1)], now: T0ms, want: CLOSED },
+    { name: "T4b 尾部 CANCELLED → closed", events: [ev("START", T0), ev("READY", T1), ev("CANCELLED", T1)], now: T0ms, want: CLOSED },
+    { name: "T5a ABORT 段内有 READY → resumable", events: [ev("START", T0), ev("READY", T1), ev("ABORT", T1)], now: T0ms, want: { open: false, ready: false, ownerSessionId: SID, startedAt: null, ageMs: null, resumable: true } },
+    { name: "T5b ABORT 段内无 READY → 非 resumable", events: [ev("START", T0), ev("ABORT", T1)], now: T0ms, want: CLOSED },
+    { name: "T6a TTL 边界内（now-opening < TTL）→ open", events: [ev("START", T0)], now: T0ms + WINDOW_TTL_MS - 1, want: { open: true, ready: false, ownerSessionId: SID, startedAt: T0, ageMs: WINDOW_TTL_MS - 1, resumable: false } },
+    { name: "T6b TTL 到期（now-opening ≥ TTL）→ zombie closed（保留推导字段）", events: [ev("START", T0)], now: T0ms + WINDOW_TTL_MS, want: { open: false, ready: false, ownerSessionId: SID, startedAt: T0, ageMs: WINDOW_TTL_MS, resumable: false } },
+    { name: "T7a 尾部 LEGACY 被跳过，推导不变", events: [ev("START", T0), { type: "LEGACY", ts: "", sessionId: "" }], now: T0ms + 1000, want: { open: true, ready: false, ownerSessionId: SID, startedAt: T0, ageMs: 1000, resumable: false } },
+    { name: "T7b 尾部 LATE_READY 被跳过，不伪造 ready 窗口", events: [ev("START", T0), ev("LATE_READY", T1)], now: T0ms + 1000, want: { open: true, ready: false, ownerSessionId: SID, startedAt: T0, ageMs: 1000, resumable: false } },
+    { name: "T7c ABORT 回溯段内夹带 LEGACY/LATE_READY 不中断回溯", events: [ev("START", T0), ev("READY", T1), ev("LATE_READY", T1), { type: "LEGACY", ts: "", sessionId: "" }, ev("ABORT", T1)], now: T0ms, want: { open: false, ready: false, ownerSessionId: SID, startedAt: null, ageMs: null, resumable: true } },
+  ];
+  for (const r of rows) t(r.name, stateEq(deriveWindowState(r.events, r.now), r.want));
+}
+
+// ---------- J: CANCELLED — newSession 被用户取消 ----------
+{
+  const root = mkdtempSync(join(tmpdir(), "renew-J-"));
+  const { adir, root: _r } = makeEnv(root);
+  const pi = mkPi();
+  notifs = [];
+  // agent 在窗口内确认 ready（否则流程在校验阶段就 ABORT，走不到 newSession）
+  const orig = pi.sendUserMessage.bind(pi);
+  pi.sendUserMessage = (m: string) => {
+    orig(m);
+    pi.registered["agent-renew-ready"].execute("t", {}, undefined, undefined, {
+      cwd: root,
+      sessionManager: { getSessionId: () => SID },
+    });
+  };
+  await pi.registered["cmd:renew"].handler("", mkCtx(root, adir, { newSession: async () => ({ cancelled: true }) }));
+  const lines = readFileSync(join(adir, "renew.log"), "utf8").split("\n").filter((l) => l.trim());
+  const last = JSON.parse(lines[lines.length - 1]);
+  t("J1 尾部 CANCELLED 事件且属旧 session", last.type === "CANCELLED" && last.sessionId === SID);
+  t("J2 notify 提示换届取消", notifs.some((n) => n.m.includes("换届取消")));
+  t("J3 取消后窗口推导为 closed", readWindowState(adir).open === false);
+  // 窗口已关：再跑一次 /renew 必须重新走 START（默认 mkCtx 走完整换届）
+  await pi.registered["cmd:renew"].handler("", mkCtx(root, adir));
+  const types = evtTypes(adir);
+  t("J4 重跑 /renew 重新走 START 并完成换届", types[types.indexOf("CANCELLED") + 1] === "START" && types[types.length - 1] === "DONE");
+}
+
 // cleanup
-for (const d of ["renew-A-", "renew-B-", "renew-C-", "renew-D-", "renew-E-", "renew-F-", "renew-G-", "renew-H-", "renew-I-"]) {
+for (const d of ["renew-A-", "renew-B-", "renew-C-", "renew-D-", "renew-E-", "renew-F-", "renew-G-", "renew-H-", "renew-I-", "renew-J-"]) {
   try {
     for (const e of (await import("node:fs")).readdirSync(tmpdir())) {
       if (e.startsWith(d)) rmSync(join(tmpdir(), e), { recursive: true, force: true });
