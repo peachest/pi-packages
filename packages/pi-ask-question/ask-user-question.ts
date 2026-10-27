@@ -29,6 +29,7 @@ import { displayLabel, otherDisplayLabel, t } from "./state/i18n-bridge.ts";
 import { sentinelsToAppend } from "./state/row-intent.ts";
 import { normalizeQuestionParams, prepareQuestionArguments } from "./tool/normalize-params.ts";
 import { buildQuestionnaireResponse, buildToolResult } from "./tool/response-envelope.ts";
+import { collectSkillRefs, expandResultInjection, type SkillRef } from "./tool/skill-expansion.ts";
 import { ASK_USER_WIDGET_KEY, buildWidgetLine, makeWidgetComponent } from "./view/collapse-widget.ts";
 import { buildCallSummaryLine, buildDecisionCardLines } from "./view/decision-card.ts";
 import {
@@ -76,7 +77,7 @@ async function runRpcPath(pi: ExtensionAPI, ui: DialogUI, typed: QuestionParams,
 	emitAskUserBlockedEvent(pi, true, toolCallId);
 	try {
 		emitTerminalAttention();
-		return buildQuestionnaireResponse(await runRpcQuestionnaire(ui, typed), typed);
+		return buildInjectedResponse(pi, await runRpcQuestionnaire(ui, typed), typed);
 	} finally {
 		emitAskUserBlockedEvent(pi, false, toolCallId);
 	}
@@ -84,6 +85,35 @@ async function runRpcPath(pi: ExtensionAPI, ui: DialogUI, typed: QuestionParams,
 
 /** Canonical tool name — single source of truth shared with the reconcile module. */
 export const ASK_USER_QUESTION_TOOL_NAME = "ask_user";
+
+/**
+ * Envelope builder with submit-time `/skill:` injection: every envelope-producing
+ * answer path (TUI dialog, RPC walker, external/early answer) funnels through one of
+ * the four `buildQuestionnaireResponse` call sites, so the expansion is applied here
+ * rather than at each answer source. Host command fetch failure degrades to pass-through.
+ */
+function buildInjectedResponse(
+	pi: ExtensionAPI,
+	result: QuestionnaireResult | null | undefined,
+	typed: QuestionParams,
+) {
+	let skills: SkillRef[] = [];
+	try {
+		skills = collectSkillRefs(pi.getCommands() ?? []);
+	} catch {
+		// Host not ready or API absent — submit without injection.
+	}
+	return buildQuestionnaireResponse(expandResultInjection(result, skills), typed);
+}
+
+/** Skill command names for the inline-input suggestion list; empty on any host failure. */
+function collectSkillNames(pi: ExtensionAPI): string[] {
+	try {
+		return collectSkillRefs(pi.getCommands() ?? []).map((s) => s.name);
+	} catch {
+		return [];
+	}
+}
 
 const ERROR_NO_UI = "Error: UI not available (running in non-interactive mode)";
 
@@ -219,6 +249,7 @@ function registerCollapseKeyListener(
  * they must stay lazy per-invocation.
  */
 function makeSessionFactory(config: {
+	pi: ExtensionAPI;
 	ctx: ExtensionContext;
 	typed: QuestionParams;
 	itemsByTab: WrappingSelectItem[][];
@@ -276,6 +307,7 @@ function makeSessionFactory(config: {
 				}
 			},
 			collapseKey,
+			skillNames: collectSkillNames(config.pi),
 			canReopenWhileHidden,
 			rowBudget: rowBudgetForHost(tui.terminal, presentation.rowBudget),
 			// Collapse flips set/clear the persistent widget (T6); the session's commit is
@@ -303,6 +335,7 @@ const INERT_COMPONENT: import("./state/questionnaire-session.ts").QuestionnaireS
  * collapsed, so it needs no listener.
  */
 async function mountQuestionnaire(config: {
+	pi: ExtensionAPI;
 	ctx: ExtensionContext;
 	typed: QuestionParams;
 	itemsByTab: WrappingSelectItem[][];
@@ -311,8 +344,7 @@ async function mountQuestionnaire(config: {
 	open: OpenQuestionnaire;
 	Session: SessionModule["QuestionnaireSession"];
 }): Promise<QuestionnaireResult | undefined> {
-	const { ctx, collapseKey, presentation } = config;
-	const sessionRef: SessionRef = { current: null };
+	const { ctx, collapseKey, presentation } = config;	const sessionRef: SessionRef = { current: null };
 	const overlayHandleRef: OverlayHandleRef = { current: undefined };
 	const removeOverlayInputListener = presentation.hideOnCollapse
 		? registerCollapseKeyListener(ctx, collapseKey, sessionRef, overlayHandleRef)
@@ -351,9 +383,9 @@ async function mountQuestionnaire(config: {
  * that predate ctx.mode land here: run the dialog walker when the host has the
  * primitives; otherwise tell the model the user never saw the questions.
  */
-async function resolveUndefinedResult(ctx: ExtensionContext, typed: QuestionParams) {
+async function resolveUndefinedResult(pi: ExtensionAPI, ctx: ExtensionContext, typed: QuestionParams) {
 	if (hasDialogUI(ctx.ui)) {
-		return buildQuestionnaireResponse(await runRpcQuestionnaire(ctx.ui, typed), typed);
+		return buildInjectedResponse(pi, await runRpcQuestionnaire(ctx.ui, typed), typed);
 	}
 	return buildToolResult(ERROR_NO_CUSTOM_UI, { answers: [], cancelled: true, error: "no_custom_ui" });
 }
@@ -376,7 +408,7 @@ async function runTuiPath(pi: ExtensionAPI, ctx: ExtensionContext, typed: Questi
 		// load it only when the tool runs, not at extension registration.
 		const sessionLoad = await loadQuestionnaireSession();
 		// Answered during the load: the answer needs no dialog.
-		if (open.settled) return buildQuestionnaireResponse(open.settled, typed);
+		if (open.settled) return buildInjectedResponse(pi, open.settled, typed);
 		if (!sessionLoad.ok) {
 			return buildToolResult(sessionLoad.message, { answers: [], cancelled: true, error: sessionLoad.error });
 		}
@@ -389,6 +421,7 @@ async function runTuiPath(pi: ExtensionAPI, ctx: ExtensionContext, typed: Questi
 		const mount = (p: Presentation) =>
 			Promise.race([
 				mountQuestionnaire({
+					pi,
 					ctx,
 					typed,
 					itemsByTab,
@@ -421,10 +454,10 @@ async function runTuiPath(pi: ExtensionAPI, ctx: ExtensionContext, typed: Questi
 		if (result === undefined) {
 			// The RPC walker takes over; its prompts cannot be answered from outside.
 			open.host = "rpc";
-			return await resolveUndefinedResult(ctx, typed);
+			return await resolveUndefinedResult(pi, ctx, typed);
 		}
 
-		return buildQuestionnaireResponse(result, typed);
+		return buildInjectedResponse(pi, result, typed);
 	} finally {
 		presentation?.release?.();
 		emitAskUserBlockedEvent(pi, false, open.toolCallId);

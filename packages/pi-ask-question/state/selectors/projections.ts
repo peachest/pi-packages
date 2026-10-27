@@ -5,6 +5,7 @@ import type { SubmitPickerProps } from "../../view/components/submit-picker.ts";
 import type { TabBarProps } from "../../view/components/tab-bar.ts";
 import type { DialogProps } from "../../view/dialog-builder.ts";
 import { displayLabel } from "../i18n-bridge.ts";
+import { skillSuggestFor } from "../../tool/skill-expansion.ts";
 import type { GlobalSelector, PerTabBindingContext, PerTabSelector } from "./contract.ts";
 import { selectConfirmedIndicator, selectSavedNote } from "./derivations.ts";
 
@@ -27,6 +28,11 @@ function emptyMultiSelectProps(ctx: PerTabBindingContext): MultiSelectViewProps 
 function nextLabelFor(ctx: PerTabBindingContext): string {
 	const isLastQuestion = ctx.i === ctx.questions.length - 1;
 	return isLastQuestion ? MULTI_SUBMIT_LABEL : displayLabel("next");
+}
+
+function skillSuggestProps(state: { inputMode: boolean; suggestIndex: number }, ctx: PerTabBindingContext) {
+	// Only while the inline input is open — a stale `/` draft browsed from another row shows no list.
+	return state.inputMode ? (skillSuggestFor(ctx.inputBuffer, ctx.skillNames, state.suggestIndex) ?? undefined) : undefined;
 }
 
 export const selectMultiSelectProps: PerTabSelector<MultiSelectViewProps> = (state, ctx) => {
@@ -55,6 +61,7 @@ export const selectMultiSelectProps: PerTabSelector<MultiSelectViewProps> = (sta
 			inputMode: state.inputMode,
 			inputBuffer: ctx.inputBuffer,
 			inputCursorOffset: ctx.inputCursorOffset,
+			skillSuggest: skillSuggestProps(state, ctx),
 		},
 		rephraseActive,
 		nextActive,
@@ -71,6 +78,7 @@ export const selectOptionListProps: PerTabSelector<OptionListViewProps> = (state
 		focused,
 		inputBuffer: ctx.inputBuffer,
 		inputCursorOffset: ctx.inputCursorOffset,
+		skillSuggest: skillSuggestProps(state, ctx),
 		...(confirmed ? { confirmed } : {}),
 	};
 };

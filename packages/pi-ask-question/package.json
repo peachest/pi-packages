@@ -62,6 +62,7 @@
     "tool/format-answer.ts",
     "tool/normalize-params.ts",
     "tool/response-envelope.ts",
+    "tool/skill-expansion.ts",
     "tool/types.ts",
     "tool/validate-questionnaire.ts",
     "view/component-binding.ts",

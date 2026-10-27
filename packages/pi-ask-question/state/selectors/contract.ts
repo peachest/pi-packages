@@ -11,6 +11,8 @@ export interface BindingContext {
 	readonly totalQuestions: number;
 	readonly activeView: ActiveView;
 	readonly inputBuffer: string;
+	/** Skill command names for inline-input suggestion (may be empty). */
+	readonly skillNames: readonly string[];
 	readonly inputCursorOffset: number | undefined;
 	readonly activePreviewPane: StatefulView<PreviewPaneProps>;
 }

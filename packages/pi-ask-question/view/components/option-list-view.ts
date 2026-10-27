@@ -1,4 +1,5 @@
 import type { StatefulView } from "../stateful-view.ts";
+import type { SkillSuggest } from "../../tool/skill-expansion.ts";
 import { WrappingSelect, type WrappingSelectItem, type WrappingSelectTheme } from "./wrapping-select.ts";
 
 /**
@@ -24,6 +25,8 @@ export interface OptionListViewProps {
 	focused: boolean;
 	inputBuffer: string;
 	inputCursorOffset?: number;
+	/** Open inline-input `/skill:` suggestion list; omit when closed. */
+	skillSuggest?: SkillSuggest;
 	/** Optional previously-confirmed indicator. Omit when no marker should be drawn. */
 	confirmed?: { index: number; labelOverride?: string };
 }
@@ -50,6 +53,7 @@ export class OptionListView implements StatefulView<OptionListViewProps> {
 		this.select.setConfirmedIndex(props.confirmed?.index, props.confirmed?.labelOverride);
 		this.select.setInputBuffer(props.inputBuffer);
 		this.select.setInputCursorOffset(props.inputCursorOffset);
+		this.select.setSkillSuggest(props.skillSuggest);
 	}
 
 	handleInput(_data: string): void {}

@@ -42,6 +42,8 @@ export interface QuestionnaireState {
 	rephraseCountByTab: ReadonlyMap<number, number>;
 	/** Focused row in the Submit-tab picker (0 = Submit, 1 = Cancel). Reset on tab switch. */
 	submitChoiceIndex: number;
+	/** Highlighted row of the inline-input `/skill:` suggestion list. Resolved against the live buffer. */
+	suggestIndex: number;
 	/** Canonical mirror of the in-flight side-editor text; runtime mirrors after `forward_notes_keystroke`. */
 	notesDraft: string;
 	/**
@@ -70,6 +72,8 @@ export interface QuestionnaireState {
 export interface QuestionnaireRuntime {
 	keybindings: { matches(data: string, name: string): boolean };
 	inputBuffer: string;
+	/** Skill command names for inline-input completion; empty when the host list is unavailable. */
+	skillNames: readonly string[];
 	canMoveInputUp: boolean;
 	canMoveInputDown: boolean;
 	questions: readonly QuestionData[];

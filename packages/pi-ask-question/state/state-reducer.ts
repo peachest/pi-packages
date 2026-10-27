@@ -212,7 +212,7 @@ const navHandler: Handler<"nav"> = (state, action, ctx) => {
 };
 
 const inputClearHandler: Handler<"input_clear"> = (state, _action, _ctx) => ({
-	state: { ...state, customDraftsByTab: setCustomDraft(state, state.currentTab, "") },
+	state: { ...state, suggestIndex: 0, customDraftsByTab: setCustomDraft(state, state.currentTab, "") },
 	effects: [{ kind: "clear_input_buffer" }],
 });
 const inputEditHandler: Handler<"input_edit"> = (state, action, _ctx) => ({
@@ -220,8 +220,13 @@ const inputEditHandler: Handler<"input_edit"> = (state, action, _ctx) => ({
 	effects: [{ kind: "open_input_editor", value: action.value }],
 });
 const inputReplaceHandler: Handler<"input_replace"> = (state, action, _ctx) => ({
-	state: { ...state, customDraftsByTab: setCustomDraft(state, state.currentTab, action.value) },
+	state: { ...state, suggestIndex: 0, customDraftsByTab: setCustomDraft(state, state.currentTab, action.value) },
 	effects: [{ kind: "set_input_buffer", value: action.value }],
+});
+
+const suggestNavHandler: Handler<"suggest_nav"> = (state, action, _ctx) => ({
+	state: { ...state, suggestIndex: Math.max(0, action.nextIndex) },
+	effects: [],
 });
 
 const tabSwitchHandler: Handler<"tab_switch"> = (state, action, ctx) => switchTabResult(state, action.nextTab, ctx);
@@ -424,6 +429,7 @@ const HANDLERS: { [K in QuestionnaireAction["kind"]]: Handler<K> } = {
 	input_clear: inputClearHandler,
 	input_edit: inputEditHandler,
 	input_replace: inputReplaceHandler,
+	suggest_nav: suggestNavHandler,
 	tab_switch: tabSwitchHandler,
 	confirm: confirmHandler,
 	toggle: toggleHandler,

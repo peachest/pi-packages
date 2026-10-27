@@ -1,9 +1,10 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { displayLabel, otherDisplayLabel } from "../../state/i18n-bridge.ts";
+import type { SkillSuggest } from "../../tool/skill-expansion.ts";
 import type { QuestionData } from "../../tool/types.ts";
 import type { StatefulView } from "../stateful-view.ts";
-import { renderInlineInputRow } from "./inline-input.ts";
+import { renderInlineInputRow, renderSkillSuggestLines } from "./inline-input.ts";
 
 const ACTIVE_POINTER = "❯ ";
 const INACTIVE_POINTER = "  ";
@@ -27,6 +28,8 @@ export interface MultiSelectOtherRowProps {
 	/** Live inline-input buffer (read from `runtime.inputBuffer` / `ctx.inputBuffer`). */
 	inputBuffer: string;
 	inputCursorOffset: number | undefined;
+	/** Open inline-input `/skill:` suggestion list; omit when closed. */
+	skillSuggest?: SkillSuggest;
 }
 
 export interface MultiSelectViewProps {
@@ -184,6 +187,11 @@ export class MultiSelectView implements StatefulView<MultiSelectViewProps> {
 						const line = `${index === 0 ? rowPrefix : continuationPrefix}${segment}`;
 						return other.active ? selectedText(line) : line;
 					});
+		if (other.active && other.inputMode && other.skillSuggest) {
+			inputLines.push(
+				...renderSkillSuggestLines(other.skillSuggest, continuationPrefix, contentWidth, (t) => selectedText(t)),
+			);
+		}
 
 		// Live merged echo (#133): mirrors the reducer's checked+custom coexistence so the
 		// user sees the combined answer under the editor before committing.

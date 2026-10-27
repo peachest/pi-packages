@@ -27,6 +27,8 @@ export interface QuestionnairePropsAdapterConfig {
 	itemsByTab: ReadonlyArray<readonly WrappingSelectItem[]>;
 	tabsByIndex: ReadonlyArray<TabComponents>;
 	inlineInput: Editor;
+	/** Skill command names surfaced to selectors for inline-input completion. */
+	skillNames?: readonly string[];
 	globalBindings: ReadonlyArray<BoundGlobalBinding>;
 	perTabBindings: ReadonlyArray<BoundPerTabBinding>;
 	/**
@@ -52,11 +54,13 @@ export class QuestionnairePropsAdapter {
 	private readonly itemsByTab: ReadonlyArray<readonly WrappingSelectItem[]>;
 	private readonly tabsByIndex: ReadonlyArray<TabComponents>;
 	private readonly inlineInput: Editor;
+	private readonly skillNames: readonly string[];
 	private readonly globalBindings: ReadonlyArray<BoundGlobalBinding>;
 	private readonly perTabBindings: ReadonlyArray<BoundPerTabBinding>;
 	private readonly extraInvalidatables: ReadonlyArray<Invalidatable>;
 
 	constructor(config: QuestionnairePropsAdapterConfig) {
+		this.skillNames = config.skillNames ?? [];
 		this.tui = config.tui;
 		this.questions = config.questions;
 		this.itemsByTab = config.itemsByTab;
@@ -79,6 +83,7 @@ export class QuestionnairePropsAdapter {
 			totalQuestions,
 			activeView,
 			inputBuffer: this.inlineInput.getText(),
+			skillNames: this.skillNames,
 			inputCursorOffset: getInputCursorOffset(this.inlineInput),
 			activePreviewPane,
 		};

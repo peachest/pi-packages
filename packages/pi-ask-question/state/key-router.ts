@@ -1,5 +1,6 @@
 import { Key, matchesKey } from "@earendil-works/pi-tui";
 import type { QuestionAnswer } from "../tool/types.ts";
+import { skillSuggestFor } from "../tool/skill-expansion.ts";
 import { ROW_INTENT_META } from "./row-intent.ts";
 import type { QuestionnaireRuntime, QuestionnaireState } from "./state.ts";
 
@@ -38,6 +39,8 @@ export type QuestionnaireAction =
 	| { kind: "side_editor_exit"; slot: "notes" | "reason" }
 	| { kind: "submit" }
 	| { kind: "submit_nav"; nextIndex: 0 | 1 }
+	/** Move the inline-input suggestion highlight to an absolute candidate index (router clamps). */
+	| { kind: "suggest_nav"; nextIndex: number }
 	| { kind: "notes_forward"; data: string }
 	/** Flip `state.collapsed`. Always available, regardless of inner mode (see top intercept in `routeKey`). */
 	| { kind: "toggle_collapsed" }
@@ -202,6 +205,22 @@ function routeInputMode(
 	state: QuestionnaireState,
 	runtime: QuestionnaireRuntime,
 ): QuestionnaireAction {
+	// `/skill:` completion (commit-time expansion lives in tool/skill-expansion.ts):
+	// while the buffer is a bare `/`-fragment, Tab completes the highlighted candidate
+	// and Up/Down move the highlight — overriding cursor/row navigation for that window.
+	const suggest = skillSuggestFor(runtime.inputBuffer, runtime.skillNames, state.suggestIndex);
+	if (suggest) {
+		if (data === "\t") {
+			// Candidates are bare command names (`skill:xxx`) — re-attach the leading slash
+			// the fragment match stripped, or submit-time expansion won't recognize the buffer.
+			const completed = `/${suggest.candidates[suggest.selected]} `;
+			return { kind: "input_replace", value: completed };
+		}
+		if (kb.matches(data, KEYBIND_UP)) return { kind: "suggest_nav", nextIndex: Math.max(0, suggest.selected - 1) };
+		if (kb.matches(data, KEYBIND_DOWN)) {
+			return { kind: "suggest_nav", nextIndex: Math.min(suggest.candidates.length - 1, suggest.selected + 1) };
+		}
+	}
 	// Newline takes precedence over confirmation if a user configuration binds
 	// the same physical key to both semantic actions.
 	if (kb.matches(data, KEYBIND_NEW_LINE)) return { kind: "ignore" };

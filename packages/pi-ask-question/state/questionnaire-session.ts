@@ -22,6 +22,8 @@ export interface QuestionnaireSessionConfig {
 	editInput: (value: string) => Promise<string | undefined>;
 	/** Key spec for the collapse/expand shortcut, e.g. `"ctrl+]"` or `"alt+o"`. */
 	collapseKey: string;
+	/** Skill command names for inline-input `/skill:` completion. Empty/omitted → no suggestions. */
+	skillNames?: readonly string[];
 	/**
 	 * True iff `execute()` registered the raw `ctx.ui.onTerminalInput` listener — the only
 	 * path that can reach a hidden overlay. Gates the `set_overlay_hidden` effect: a host
@@ -60,6 +62,7 @@ function initialState(): QuestionnaireState {
 		reasonByTab: new Map(),
 		rephraseCountByTab: new Map(),
 		submitChoiceIndex: 0,
+		suggestIndex: 0,
 		notesDraft: "",
 		collapsed: false,
 	};
@@ -84,6 +87,7 @@ export class QuestionnaireSession {
 	private readonly keybindings: QuestionnaireRuntime["keybindings"];
 	private readonly editInput: QuestionnaireSessionConfig["editInput"];
 	private readonly collapseKey: string;
+	private readonly skillNames: readonly string[];
 	private readonly canReopenWhileHidden: boolean;
 	private readonly onCollapseChange: QuestionnaireSessionConfig["onCollapseChange"];
 	private inputEditorOpen = false;
@@ -108,6 +112,7 @@ export class QuestionnaireSession {
 		this.keybindings = config.keybindings;
 		this.editInput = config.editInput;
 		this.collapseKey = config.collapseKey;
+		this.skillNames = config.skillNames ?? [];
 		this.canReopenWhileHidden = config.canReopenWhileHidden;
 		this.onCollapseChange = config.onCollapseChange;
 
@@ -120,6 +125,7 @@ export class QuestionnaireSession {
 			initialState: this.state,
 			getCurrentTab: () => this.state.currentTab,
 			collapseKey: this.collapseKey,
+			skillNames: this.skillNames,
 			// Recall panel (params echo): the brief + anchors live on every tab of the dialog,
 			// not only on the settled transcript card.
 			context: config.params.context,
@@ -261,6 +267,7 @@ export class QuestionnaireSession {
 		return {
 			keybindings: this.keybindings,
 			inputBuffer: this.inlineInput.getExpandedText?.() ?? this.inlineInput.getText(),
+			skillNames: this.skillNames,
 			canMoveInputUp: cursor.line > 0,
 			canMoveInputDown: cursor.line < lastLine,
 			questions: this.questions,

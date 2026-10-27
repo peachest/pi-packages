@@ -29,6 +29,7 @@ function makeState(overrides: Partial<QuestionnaireState> = {}): QuestionnaireSt
 		submitChoiceIndex: 0,
 		notesDraft: "",
 		collapsed: false,
+		suggestIndex: 0,
 		...overrides,
 	};
 }

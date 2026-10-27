@@ -57,6 +57,8 @@ export interface QuestionnaireBuildConfig {
 	 * inside `getTerminalRows`, so `DialogView`'s overflow partition is mode-agnostic.
 	 */
 	rowBudget: (terminalRows: number) => number;
+	/** Skill command names for inline-input completion; optional, empty when absent. */
+	skillNames?: readonly string[];
 }
 
 export interface QuestionnaireBuilt {
@@ -135,6 +137,7 @@ class QuestionnaireBuilder {
 	private readonly markdownTheme = getMarkdownTheme();
 	private readonly notesInput: Editor;
 	private readonly inlineInput: Editor;
+	private readonly skillNames: readonly string[];
 	private readonly getTerminalWidth = () => this.tui.terminal.columns;
 	private readonly getTerminalRows = () => this.rowBudget(this.tui.terminal.rows);
 
@@ -150,6 +153,7 @@ class QuestionnaireBuilder {
 		this.context = config.context;
 		this.recent = config.recent;
 		this.rowBudget = config.rowBudget;
+		this.skillNames = config.skillNames ?? [];
 
 		this.selectTheme = this.makeSelectTheme();
 		const textEditorTheme = editorTheme(this.theme);
@@ -333,6 +337,7 @@ class QuestionnaireBuilder {
 			itemsByTab: this.itemsByTab,
 			tabsByIndex: tabs,
 			inlineInput: this.inlineInput,
+			skillNames: this.skillNames,
 			globalBindings,
 			perTabBindings,
 			extraInvalidatables: [this.notesInput],

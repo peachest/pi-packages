@@ -1,4 +1,5 @@
-import { CURSOR_MARKER, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { CURSOR_MARKER, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import type { SkillSuggest } from "../../tool/skill-expansion.ts";
 
 // Grapheme-aware extraction at the cursor: pi-tui's Editor reports UTF-16
 // line/column positions, so the cursor can land between code units of one cluster
@@ -63,4 +64,31 @@ export function renderInlineInputRow(opts: RenderInlineInputOptions): string[] {
 		const prefix = index === 0 ? rowPrefix : continuationPrefix;
 		return selectedText(`${prefix}${segment}`);
 	});
+}
+
+const MAX_RENDERED_SUGGESTIONS = 5;
+
+/**
+ * Suggestion list rendered under an open inline input while a bare `/skill:` fragment
+ * is typed: up to five candidates, the highlighted one prefixed `▸`, then a hint line.
+ * Shared by the single-select (WrappingSelect) and multi-select (MultiSelectView) rows.
+ */
+export function renderSkillSuggestLines(
+	suggest: SkillSuggest,
+	continuationPrefix: string,
+	contentWidth: number,
+	highlight: (text: string) => string,
+): string[] {
+	const lines: string[] = [];
+	const visible = suggest.candidates.slice(0, MAX_RENDERED_SUGGESTIONS);
+	for (let i = 0; i < visible.length; i++) {
+		const name = visible[i];
+		const marker = i === suggest.selected ? "▸ " : "  ";
+		const line = `${continuationPrefix}${marker}${name}`;
+		lines.push(truncateToWidth(i === suggest.selected ? highlight(line) : line, contentWidth + visibleWidth(continuationPrefix), "…"));
+	}
+	const hidden = suggest.candidates.length - visible.length;
+	const hint = hidden > 0 ? `Tab 补全 · ↑↓ 选择 · +${hidden} 更多` : "Tab 补全 · ↑↓ 选择";
+	lines.push(`${continuationPrefix}${truncateToWidth(hint, contentWidth + visibleWidth(continuationPrefix), "…")}`);
+	return lines;
 }

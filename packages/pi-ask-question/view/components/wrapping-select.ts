@@ -1,6 +1,7 @@
 import type { Component } from "@earendil-works/pi-tui";
 import { visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
-import { renderInlineInputRow } from "./inline-input.ts";
+import { renderInlineInputRow, renderSkillSuggestLines } from "./inline-input.ts";
+import type { SkillSuggest } from "../../tool/skill-expansion.ts";
 
 /**
  * Row-intent discriminated union. `kind` is the single discriminator —
@@ -65,6 +66,8 @@ export class WrappingSelect implements Component {
 	private focused = true;
 	private inputBuffer = "";
 	private inputCursorOffset: number | undefined = undefined;
+	/** Open suggestion list for the active inline-input row; `undefined` = closed. */
+	private skillSuggest: SkillSuggest | undefined = undefined;
 	/**
 	 * Index of the row that was previously confirmed for this list (e.g. the user's prior
 	 * answer when re-entering a multi-question tab). Renders `<label> ✔` in the active-row
@@ -132,6 +135,11 @@ export class WrappingSelect implements Component {
 	/** Set the cursor offset for the inline input row. `undefined` → end-of-buffer fallback. */
 	setInputCursorOffset(offset: number | undefined): void {
 		this.inputCursorOffset = offset;
+	}
+
+	/** Set the inline-input `/skill:` suggestion list; pass `undefined` to close it. */
+	setSkillSuggest(suggest: SkillSuggest | undefined): void {
+		this.skillSuggest = suggest;
 	}
 
 	/** Intentionally empty — input is routed at the container level. */
@@ -220,7 +228,11 @@ export class WrappingSelect implements Component {
 		const contentWidth = Math.max(WrappingSelect.MIN_CONTENT_WIDTH, width - visibleWidth(rowPrefix));
 
 		if (this.shouldRenderAsInlineInput(item, isActive)) {
-			return this.renderInlineInputRow(rowPrefix, continuationPrefix, contentWidth);
+			const lines = this.renderInlineInputRow(rowPrefix, continuationPrefix, contentWidth);
+			if (this.skillSuggest) {
+				lines.push(...renderSkillSuggestLines(this.skillSuggest, continuationPrefix, contentWidth, (t) => this.theme.selectedText(t)));
+			}
+			return lines;
 		}
 
 		const { label, isConfirmed } = this.deriveConfirmedState(item, index);

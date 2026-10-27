@@ -76,6 +76,7 @@ function makeState(overrides: Partial<QuestionnaireState> = {}): QuestionnaireSt
 		submitChoiceIndex: 0,
 		notesDraft: "",
 		collapsed: false,
+		suggestIndex: 0,
 		...overrides,
 	};
 }
@@ -90,6 +91,7 @@ function makeRuntime(overrides: Partial<QuestionnaireRuntime> = {}): Questionnai
 					: name === "tui.select.cancel" && data === "\x1b",
 		},
 		inputBuffer: "",
+		skillNames: [],
 		canMoveInputUp: false,
 		canMoveInputDown: false,
 		questions: QUESTIONS,
