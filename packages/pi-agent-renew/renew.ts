@@ -360,7 +360,7 @@ export default function renewExtension(pi: ExtensionAPI) {
     name: "agent-session-id",
     label: "Agent Session Id",
     description:
-      "返回当前 pi session 的 UUID（sessions.log 登记必须用这个值，禁止手写或凭记忆——历届事故均源于手抄错 id）。无副作用。",
+      "返回当前 pi session 的 UUID（sessions.log 登记以本工具返回值为准——历届事故均源于手抄错 id）。无副作用。",
     parameters: Type.Object({}),
     async execute(_id, _params, _signal, _onUpdate, toolCtx) {
       const sid = toolCtx?.sessionManager?.getSessionId?.() ?? "unknown";
@@ -375,7 +375,7 @@ export default function renewExtension(pi: ExtensionAPI) {
     name: "agent-renew-ready",
     label: "Agent Renew Ready",
     description:
-      "换届流程专用：当 /renew 指令要求你完成换届 checklist 后，用模型原生工具调用（直接 toolCall，不要经 bash/codemode 转发）调用本工具确认就绪。窗口外调用会记录 late-ready 并返回错误。",
+      "换届流程专用：完成换届 checklist 后，像调用其他工具一样（与调用 bash 相同的一次普通工具调用）调用本工具确认就绪。窗口外调用会记录并返回错误。",
     parameters: Type.Object({}),
     async execute(_id, _params, _signal, _onUpdate, toolCtx) {
       // The tool's own session — the window owner check uses it. Same source as
@@ -503,7 +503,7 @@ export default function renewExtension(pi: ExtensionAPI) {
             "   b. 脱离 session 进程的（daemon 订阅、远端节点脚本、-d 容器等）：在 STATE.md「活跃后台任务」节记录可寻回标识（订阅 id/容器/节点名/任务 id），换届后新 session 按标识找回；",
             "   c. daemon 订阅专项：把需要在换届后继续生效的订阅 cancel 掉，由新 session 重新挂（daemon 订阅随 session 生死，无法继承——继承功能在联合开发中，见其仓 ticket）；",
             "2. 更新 STATE.md：刷新战役快照与活跃后台资产（含标识）、重排 Backlog、交接附言写实（本届做了什么/未完成什么/下一届第一动作），并附上隐性操作知识指针（哪些经验/教训/直觉判断沉淀在哪个文档，让下一届不用重新探索）——按 SPEC §7 纪律 4/7；",
-            "3. 全部完成后，用模型原生工具调用（直接 toolCall，不要经 bash/codemode 转发）调用 agent-renew-ready 确认。不要做其他事。",
+            "3. 全部完成后，调用 agent-renew-ready 工具确认就绪（与调用 bash 相同的一次普通工具调用），随后停下等待换届流程接管。",
           ].join("\n")
         );
 
@@ -538,7 +538,7 @@ export default function renewExtension(pi: ExtensionAPI) {
             ok: false,
             why: "agent 未在本窗口内确认 agent-renew-ready",
             guidance:
-              "换届校验未通过：你还没有用模型原生工具调用（直接 toolCall，不经 bash/codemode）调用 agent-renew-ready。请现在调用它。",
+              "换届校验未通过：agent-renew-ready 尚未收到你的确认。请现在调用 agent-renew-ready 工具（与调用 bash 相同的一次普通工具调用）。",
           };
         }
         if (!note) {
