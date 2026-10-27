@@ -2,41 +2,154 @@
  * pi-agent-renew — /renew: agent identity generational handover
  * Spec: ~/.agents/agents/SPEC.md (section 6 handover, section 7 on-duty discipline)
  * Flow: identity match -> STATE update -> validate -> prompt + audit file -> newSession + bookkeeping + auto-send.
- * v0.2: run-start latch fixes the waitForIdle race (2026-10-21 regen-gov incident);
- *       late-ready resume; renew.log persistence; agent-session-id tool.
+ *
+ * v0.3: window state machine lives in renew.log (structured JSONL event stream),
+ *       replacing module-level flags — 2026-10-27 lead incident proved ready/armed
+ *       flags written via one execution path were invisible to another (direct
+ *       toolCall returned "已确认就绪" while the command handler validated false).
+ *       All execution paths (direct toolCall / codemode / concurrent handlers)
+ *       now coordinate through a single append-only file on disk.
+ *
+ * Window model (derived from the tail of renew.log, same read-as-tail philosophy
+ * as sessions.log's "last endedAt:null entry = on duty"):
+ *   - window open  = last window event ∈ {START, READY, TAKEOVER}, < TTL,
+ *                    same owner sessionId as the calling session
+ *   - ready        = last window event is READY (appended by the tool)
+ *   - terminal     = DONE / ABORT / CANCELLED closes the window, nothing to delete
+ *   - ownership    = caller sessionId == window sessionId
+ *       ├─ no file / no open window        → open
+ *       ├─ open window, owner ≠ caller    → takeover (dead predecessor's window)
+ *       ├─ open window, owner = caller, <TTL → refuse (true concurrent re-entry)
+ *       └─ open window, owner = caller, ≥TTL → takeover (own zombie window)
  */
 import { Type } from "typebox";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, statSync, appendFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 
-// ---------- module-level ready flag (set by the agent-renew-ready tool) ----------
-let renewReady = false;
-let renewArmed = false;
+const WINDOW_TTL_MS = 30 * 60 * 1000; // same-owner re-entry freshness (user-approved)
 
-/**
- * True once the sendUserMessage instruction has actually started an agent run.
- * waitForIdle resolves immediately if called before any run starts (observed
- * 2026-10-21 regen-gov incident), so the command handler must latch on
- * agent_start before waiting for idle.
- */
-let runStarted = false;
+// ---------- renew.log event stream (the window state machine) ----------
 
-/** Set when agent-renew-ready is called while unarmed — evidence the agent
- *  finished its STATE update outside a valid window; next /renew resumes. */
-let lateReadyAt: string | null = null;
+interface RenewEvent {
+  type: "START" | "READY" | "TAKEOVER" | "DONE" | "ABORT" | "CANCELLED" | "LEGACY";
+  ts: string; // ISO
+  sessionId: string; // owner of the window / actor of the event
+  detail?: string;
+  newSessionId?: string;
+  handoffFile?: string;
+}
 
-function logRenewEvent(agentDir: string | null, kind: string, detail: string): void {
-  const line = `${new Date().toISOString()} ${kind} ${detail}\n`;
-  // In-session persistence via appendEntry happens at call sites; this file log
-  // survives even if the session dies mid-renewal.
-  if (agentDir) {
+function renewLogPath(agentDir: string): string {
+  return join(agentDir, "renew.log");
+}
+
+function appendRenewEvent(agentDir: string, ev: Omit<RenewEvent, "ts">): void {
+  const full: RenewEvent = { ...ev, ts: new Date().toISOString() };
+  const body = readFileSyncSafe(renewLogPath(agentDir));
+  const needsNewline = body.length > 0 && !body.endsWith("\n");
+  appendFileSync(renewLogPath(agentDir), (needsNewline ? "\n" : "") + JSON.stringify(full) + "\n");
+}
+
+function readFileSyncSafe(p: string): string {
+  try {
+    return readFileSync(p, "utf8");
+  } catch {
+    return "";
+  }
+}
+
+/** Parse renew.log tolerantly: JSON lines with {type,...}; legacy free-text lines become LEGACY. */
+function parseRenewLog(agentDir: string): RenewEvent[] {
+  const lines = readFileSyncSafe(renewLogPath(agentDir)).split("\n").filter((l) => l.trim());
+  const events: RenewEvent[] = [];
+  for (const line of lines) {
     try {
-      appendFileSync(join(agentDir, "renew.log"), line);
+      const e = JSON.parse(line);
+      if (typeof e.type === "string" && typeof e.ts === "string") {
+        events.push(e as RenewEvent);
+      } else {
+        events.push({ type: "LEGACY", ts: "", sessionId: "" });
+      }
     } catch {
-      /* best effort */
+      events.push({ type: "LEGACY", ts: "", sessionId: "" }); // v0.2 free-text lines
     }
   }
+  return events;
+}
+
+const TERMINAL_TYPES = new Set(["DONE", "ABORT", "CANCELLED"]);
+
+interface WindowState {
+  open: boolean;
+  ready: boolean;
+  ownerSessionId: string | null;
+  startedAt: string | null;
+  ageMs: number | null;
+  /** last window segment (START..ABORT) reached READY — a later /renew with
+   *  non-placeholder handoff note can resume instead of re-instructing. */
+  resumable: boolean;
+}
+
+/** Derive the current window state from the tail of renew.log. */
+function readWindowState(agentDir: string): WindowState {
+  const events = parseRenewLog(agentDir);
+  // Locate the last non-LEGACY event; window semantics:
+  //   tail = READY | START | TAKEOVER      → window open (ready iff tail is READY)
+  //   tail = DONE | CANCELLED              → closed
+  //   tail = ABORT                         → closed; resumable iff the same
+  //                                          segment (back to the previous
+  //                                          terminal/opening event) had a READY
+  let last = -1;
+  for (let i = events.length - 1; i >= 0; i--) {
+    if (events[i].type !== "LEGACY") {
+      last = i;
+      break;
+    }
+  }
+  if (last < 0) {
+    return { open: false, ready: false, ownerSessionId: null, startedAt: null, ageMs: null, resumable: false };
+  }
+  const lastEv = events[last];
+  if (TERMINAL_TYPES.has(lastEv.type)) {
+    if (lastEv.type === "ABORT") {
+      let sawReady = false;
+      for (let i = last - 1; i >= 0; i--) {
+        const e = events[i];
+        if (e.type === "LEGACY") continue;
+        if (e.type === "READY") {
+          sawReady = true;
+          continue;
+        }
+        break; // segment boundary (opening or earlier terminal)
+      }
+      if (sawReady) {
+        return { open: false, ready: false, ownerSessionId: lastEv.sessionId || null, startedAt: null, ageMs: null, resumable: true };
+      }
+    }
+    return { open: false, ready: false, ownerSessionId: null, startedAt: null, ageMs: null, resumable: false };
+  }
+  // open window: tail is READY or START/TAKEOVER
+  const ready = lastEv.type === "READY";
+  let opening = lastEv;
+  if (ready) {
+    for (let i = last - 1; i >= 0; i--) {
+      const e = events[i];
+      if (e.type === "LEGACY") continue;
+      opening = e;
+      break;
+    }
+  }
+  const ageMs = opening.ts ? Date.now() - Date.parse(opening.ts) : null;
+  const stale = ageMs === null || ageMs >= WINDOW_TTL_MS;
+  return {
+    open: !stale, // stale = treated as closed (zombie)
+    ready,
+    ownerSessionId: opening.sessionId || null,
+    startedAt: opening.ts,
+    ageMs,
+    resumable: false,
+  };
 }
 
 // ---------- helpers ----------
@@ -197,10 +310,14 @@ function buildInitialPrompt(
 // ---------- extension ----------
 
 export default function renewExtension(pi: ExtensionAPI) {
-  // Latch: the sendUserMessage instruction turn has actually started.
+  // run-start latch (waitForIdle resolves immediately if no run has started yet —
+  // 2026-10-21 regen-gov incident). Per-command via event + closure, not module state.
+  let armAgentStart = false;
+
   pi.on("agent_start", async () => {
-    if (renewArmed) runStarted = true;
+    if (armAgentStart) runStartedFlag = true;
   });
+  let runStartedFlag = false;
 
   pi.registerTool({
     name: "agent-session-id",
@@ -221,27 +338,46 @@ export default function renewExtension(pi: ExtensionAPI) {
     name: "agent-renew-ready",
     label: "Agent Renew Ready",
     description:
-      "换届流程专用：当 /renew 指令要求你更新 STATE.md（含交接附言）后，调用本工具向换届扩展确认就绪。非换届窗口调用会失败。",
+      "换届流程专用：当 /renew 指令要求你完成换届 checklist 后，用模型原生工具调用（直接 toolCall，不要经 bash/codemode 转发）调用本工具确认就绪。窗口外调用会记录 late-ready 并返回错误。",
     parameters: Type.Object({}),
-    async execute() {
-      if (!renewArmed) {
-        const details: { armed: boolean; ready?: boolean } = { armed: false };
-        lateReadyAt = new Date().toISOString();
-        logRenewEvent(null, "LATE_READY", "agent-renew-ready called while unarmed (agent likely finished STATE update outside the window)");
+    async execute(_id, _params, _signal, _onUpdate, toolCtx) {
+      // The tool's own session — the window owner check uses it.
+      const callerSessionId = toolCtx?.sessionManager?.getSessionId?.() ?? "unknown";
+      const agentsRoot = toolCtx ? findAgentsRoot(toolCtx.cwd) : null;
+      if (!agentsRoot) {
+        return {
+          content: [{ type: "text", text: "错误：不在任何 agent workspace 内（找不到 .agents/agents/）。" }],
+          details: { ok: false },
+        };
+      }
+      const onDuty = matchIdentity(agentsRoot, callerSessionId);
+      if (!onDuty) {
+        return {
+          content: [{ type: "text", text: `错误：本 session (${callerSessionId.slice(0, 8)}) 不是任何 agent 的当值者，无法确认换届就绪。` }],
+          details: { ok: false },
+        };
+      }
+      const win = readWindowState(onDuty.agentDir);
+      if (!win.open || win.ownerSessionId !== callerSessionId) {
+        appendRenewEvent(onDuty.agentDir, {
+          type: "READY",
+          sessionId: callerSessionId,
+          detail: "rejected: no open window owned by this session (out-of-window call recorded for late-ready audit)",
+        });
         return {
           content: [
             {
               type: "text",
-              text: "错误：当前没有进行中的换届窗口（/renew 未触发或已超时中止）。不要重复调用本工具；用户会重新执行 /renew，届时会检测到你已完成的 STATE 更新并直接续办。",
+              text: "错误：当前没有属于本 session 的进行中换届窗口（/renew 未触发、已中止或属主不是本 session）。该调用已记录；若你已完成 STATE 更新，用户重新执行 /renew 时会检测到并直接续办。",
             },
           ],
-          details,
+          details: { ok: false },
         };
       }
-      renewReady = true;
+      appendRenewEvent(onDuty.agentDir, { type: "READY", sessionId: callerSessionId });
       return {
         content: [{ type: "text", text: "已确认就绪，换届流程继续。" }],
-        details: { armed: true, ready: true } as { armed: boolean; ready?: boolean },
+        details: { ok: true },
       };
     },
   });
@@ -264,72 +400,108 @@ export default function renewExtension(pi: ExtensionAPI) {
       const onDuty = matchIdentity(agentsRoot, sessionId);
       if (!onDuty) {
         ctx.ui.notify(
-          `本 session (${sessionId.slice(0, 8)}) 不是任何 agent 的当值者（sessions.log 指纹不匹配）。先 agent-bootstrap 登记（用 agent-session-id 工具取 id）或等待接管通道。`,
+          `本 session (${sessionId.slice(0, 8)}) 不是任何 agent 的当值者（sessions.log 指纹不匹配）。先 agent-bootstrap 登记（用 agent-session-id 工具取 id）。`,
           "error"
         );
-        logRenewEvent(null, "ABORT_NO_IDENTITY", `session ${sessionId} matched no on-duty agent under ${agentsRoot}`);
         return;
       }
 
-      // Late-ready resume: a previous window timed out but the agent already
-      // finished its STATE update (called ready while unarmed). Skip re-instruction.
-      const statePath = join(onDuty.agentDir, "STATE.md");
-      const resumedNote = lateReadyAt ? extractHandoffNote(statePath) : null;
-      const resuming = Boolean(resumedNote);
+      // 2. window acquisition (ownership triple + TTL), state in renew.log
+      const win = readWindowState(onDuty.agentDir);
+      let resumed = false;
+      if (win.open) {
+        if (win.ownerSessionId === sessionId) {
+          // same owner: READY already appended → resume; otherwise true concurrent re-entry → refuse
+          if (win.ready) {
+            resumed = true;
+            ctx.ui.notify("换届续办：检测到本窗口内 agent 已确认就绪，跳过指令直接校验。", "info");
+          } else {
+            ctx.ui.notify(
+              `换届拒绝：本 session 已有一个进行中的换届窗口（${Math.round((win.ageMs ?? 0) / 1000)}s 前开启）。等 agent 完成 checklist 后窗口会自动推进；若确认卡死，${Math.round(WINDOW_TTL_MS / 60000)} 分钟后可重新触发接管。`,
+              "error"
+            );
+            return;
+          }
+        } else {
+          // different owner: dead predecessor's window → takeover
+          appendRenewEvent(onDuty.agentDir, {
+            type: "TAKEOVER",
+            sessionId,
+            detail: `took over stale window owned by ${win.ownerSessionId?.slice(0, 8)}`,
+          });
+          ctx.ui.notify(`换届接管：清除前任 session 的残留窗口（${win.ownerSessionId?.slice(0, 8)}）。`, "info");
+        }
+      } else if (win.resumable) {
+        // READY was confirmed but the handler aborted (e.g. placeholder note);
+        // if the note is fixed now, resume straight to validation.
+        const note = extractHandoffNote(join(onDuty.agentDir, "STATE.md"));
+        if (note) {
+          resumed = true;
+          ctx.ui.notify("换届续办：上一窗口已确认就绪但校验中止，检测到附言已写实，直接进入校验。", "info");
+        }
+      }
+      if (!win.open && !resumed) {
+        appendRenewEvent(onDuty.agentDir, { type: "START", sessionId });
+      }
 
-      if (!resuming) {
-        // 2. instruct the agent to update STATE.md
-        renewArmed = true;
-        renewReady = false;
-        runStarted = false;
+      const statePath = join(onDuty.agentDir, "STATE.md");
+
+      if (!resumed) {
+        // 3. instruct the agent to run the checklist
+        runStartedFlag = false;
+        armAgentStart = true;
         ctx.ui.notify(`换届开始：${onDuty.agentName} @ ${onDuty.agentDir}`, "info");
-        logRenewEvent(onDuty.agentDir, "START", `session ${sessionId.slice(0, 8)} agent=${onDuty.agentName}`);
         pi.sendUserMessage(
           [
             "换届流程启动（/renew）。请按以下 checklist 逐项执行：",
             "1. 后台资产分类处置（SPEC §7 纪律 6）：",
             "   a. 绑定本 session 进程的（subagent、非 detached bg 任务）：等完成/收尾后再继续换届；确实等不了的先终止或写明交接处理方式；",
-            "   b. 脱离 session 进程的（daemon 订阅、远端节点脚本、-d 容器等）：在 STATE.md「活跃后台任务」节记录可寻回标识（订阅 id/容器/节点名/任务 id），换屇后新 session 按标识找回；",
-            "   c. daemon 订阅专项：把需要在换届后继续生效的订阅 cancel 掉，由新 session 重新挂（daemon 订阅随 session 生死，无法继承——继承功能在联合开发中，见 pi-events-daemon 仓 ticket）；",
+            "   b. 脱离 session 进程的（daemon 订阅、远端节点脚本、-d 容器等）：在 STATE.md「活跃后台任务」节记录可寻回标识（订阅 id/容器/节点名/任务 id），换届后新 session 按标识找回；",
+            "   c. daemon 订阅专项：把需要在换届后继续生效的订阅 cancel 掉，由新 session 重新挂（daemon 订阅随 session 生死，无法继承——继承功能在联合开发中，见其仓 ticket）；",
             "2. 更新 STATE.md：刷新战役快照与活跃后台资产（含标识）、重排 Backlog、交接附言写实（本届做了什么/未完成什么/下一届第一动作），并附上隐性操作知识指针（哪些经验/教训/直觉判断沉淀在哪个文档，让下一届不用重新探索）——按 SPEC §7 纪律 4/7；",
-            "3. 全部完成后调用 agent-renew-ready 工具确认。不要做其他事。",
+            "3. 全部完成后，用模型原生工具调用（直接 toolCall，不要经 bash/codemode 转发）调用 agent-renew-ready 确认。不要做其他事。",
           ].join("\n")
         );
 
-        // 3. wait for the instruction turn to actually start, then for it to finish.
-        // waitForIdle resolves immediately if no run has started yet (2026-10-21
-        // regen-gov incident: sendUserMessage is async-fire, idle-check raced it).
-        for (let i = 0; i < 100 && !runStarted; i++) {
+        // 4. wait for the instruction turn to actually start, then for it to finish.
+        for (let i = 0; i < 100 && !runStartedFlag; i++) {
           await new Promise((r) => setTimeout(r, 100)); // up to 10s for run start
         }
-        if (!runStarted) {
-          renewArmed = false;
-          renewReady = false;
+        armAgentStart = false;
+        if (!runStartedFlag) {
+          appendRenewEvent(onDuty.agentDir, {
+            type: "ABORT",
+            sessionId,
+            detail: "instruction turn never started within 10s",
+          });
           ctx.ui.notify("换届中止：指令发出后 10s 内 agent turn 未启动（session 可能无模型或卡死）。", "error");
-          logRenewEvent(onDuty.agentDir, "ABORT_NO_RUN_START", "instruction turn never started within 10s");
           return;
         }
         await ctx.waitForIdle();
       } else {
-        renewReady = true; // late-ready call itself is the readiness proof
-        ctx.ui.notify(`换届续办：检测到上一窗口超时后 agent 已完成 STATE 更新（${lateReadyAt}），直接进入校验。`, "info");
-        logRenewEvent(onDuty.agentDir, "RESUME", `late-ready at ${lateReadyAt}, handoff note present`);
+        runStartedFlag = false;
       }
 
-      // 4. validate
-      const handoffNote = resuming ? resumedNote : extractHandoffNote(statePath);
-      if (!renewReady || !handoffNote) {
-        renewArmed = false;
-        renewReady = false;
-        const why = !renewReady
-          ? "agent 未调用 agent-renew-ready（可能中途提问或被中断）；若它实际已完成 STATE 更新，重新执行 /renew 会自动续办"
+      // 5. validate: non-resumed windows must have their own READY in the tail;
+      // resumed windows already carry READY from the prior segment.
+      const winCheck = resumed ? { ready: true } : readWindowState(onDuty.agentDir);
+      const handoffNote = extractHandoffNote(statePath);
+      if (!winCheck.ready || !handoffNote) {
+        appendRenewEvent(onDuty.agentDir, {
+          type: "ABORT",
+          sessionId,
+          detail: !winCheck.ready
+            ? "agent did not confirm agent-renew-ready within the window (renew.log tail not READY)"
+            : "STATE.md 交接附言 empty or placeholder",
+        });
+        const why = !winCheck.ready
+          ? "agent 未（在本窗口内）确认 agent-renew-ready；若它实际已完成 STATE 更新，重新执行 /renew 会自动续办"
           : "STATE.md 的「交接附言」为空或仍是占位文本";
         ctx.ui.notify(`换届中止：${why}。处理后重新执行 /renew。`, "error");
-        logRenewEvent(onDuty.agentDir, "ABORT_VALIDATION", why);
         return;
       }
 
-      // 5. build prompt + audit file
+      // 6. build prompt + audit file
       const prompt = buildInitialPrompt(onDuty.agentDir, onDuty.agentName, handoffNote);
       const handoffsDir = join(onDuty.agentDir, "handoffs");
       if (!existsSync(handoffsDir)) mkdirSync(handoffsDir, { recursive: true });
@@ -337,7 +509,7 @@ export default function renewExtension(pi: ExtensionAPI) {
       const handoffFile = join(handoffsDir, `${ts}-from-${sessionId.slice(0, 8)}.md`);
       writeFileSync(handoffFile, prompt);
 
-      // 6. in-place session replacement + bookkeeping + auto-send
+      // 7. in-place session replacement + bookkeeping + auto-send
       const oldSessionId = sessionId;
       const agentDir = onDuty.agentDir;
       const endedAt = new Date().toISOString().replace(/\.\d+Z$/, "Z");
@@ -352,22 +524,22 @@ export default function renewExtension(pi: ExtensionAPI) {
             `换届自 ${oldSessionId.slice(0, 8)}（/renew 自动登记）`,
             handoffFile
           );
+          appendRenewEvent(agentDir, {
+            type: "DONE",
+            sessionId: oldSessionId,
+            newSessionId: newId,
+            handoffFile,
+          });
           await replacementCtx.sendUserMessage(prompt);
         },
       });
 
       if (result.cancelled) {
-        // newSession was cancelled — revert bookkeeping didn't happen (writes are
-        // inside withSession which doesn't run on cancel), so nothing to undo.
+        // newSession cancelled — bookkeeping (inside withSession) never ran, so the
+        // window is still open per renew.log; close it explicitly with ABORT.
+        appendRenewEvent(agentDir, { type: "CANCELLED", sessionId: oldSessionId, detail: "newSession cancelled by user" });
         ctx.ui.notify("换届取消（新 session 未创建）", "info");
-        logRenewEvent(agentDir, "CANCELLED", "newSession cancelled by user");
-      } else {
-        logRenewEvent(agentDir, "DONE", `session ${oldSessionId.slice(0, 8)} -> new session, handoff=${handoffFile}`);
       }
-      renewArmed = false;
-      renewReady = false;
-      runStarted = false;
-      lateReadyAt = null;
     },
   });
 }
