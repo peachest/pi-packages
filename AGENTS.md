@@ -34,3 +34,6 @@ Triage labels follow the five canonical roles with default names. See `docs/agen
 ### Domain docs
 
 Multi-context layout: a root `GLOSSARY-MAP.md` points to per-package `GLOSSARY.md` files. See `docs/agents/domain.md`.（2026-10-19 由 CONTEXT 迁移更名）
+## wt remove 前检查 session cwd（2026-10-27 二次复发）
+
+`wt remove <branch>` 会删除 worktree 目录。若任何 pi session 的 cwd 停在该目录内（包括创建 worktree 时被 wt 自动跟随切换的**原 session**），删除后该 session 所有 bash/codemode 工具 spawn ENOENT 全瘫，且 `wt switch` 事后救援不生效（shell integration 目录跟随失效）。规程：remove 前先 `pwd` 确认当前 session 不在目标 worktree 内；在 worktree 内做完活先 `wt switch main` 回主检出（并验证 bash `pwd` 真的变了）再 remove。
