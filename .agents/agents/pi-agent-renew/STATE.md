@@ -10,6 +10,14 @@ pi-agent-renew v0.3 已合并 main（PR #177，f8f69b7），生产在位。换�
 
 换届闭环实录：regen-gov 3→4 届、lead 1→2 届（07:39 成功，新 lead 上岗清出 15 条僵尸订阅）。
 
+**本届（第 1 届）新增**：身份自举入（ebe94e7，.agents/agents/ 随之建成）；agent-bootstrap skill 收尾提示同步（换届已可用 + agent-session-id 纪律，~/skills a9ff4af）；身份文件首次过 gitleaks 闸门（AGENT.json 内网代理 IP 改写为指针表述——身份文件同样受 sanitize 闸门约束）。
+
+## 本届做了什么（10-27 08:30 起第 1 届）
+
+- 身份自举：五件套 + AGENTS.md Agents 索引节 + sessions.log 首行（be053ed→ebe94e7 推 main）
+- agent-bootstrap skill 与扩展实态对齐（换届已可用提示 + sessionId 必须工具取）
+- 本届换届本身 = 扩展自舁后首次由 owner 身份执行的换届
+
 ## 活跃后台任务
 
 - 无本 session 的 bg 任务。换届机制用户侧（speculative-training）状态由其各自 STATE 维护。
@@ -23,4 +31,12 @@ pi-agent-renew v0.3 已合并 main（PR #177，f8f69b7），生产在位。换�
 
 ## 交接附言
 
-（本届在写）本届完成：扩展全生命周期——SPEC 定稿 → bootstrap skill → 扩展三轮事故加固（竞态/状态双源/正则过严）→ ocr 评审 + challenge-audit 复核 → 13 用例测试套件 → PR #177 合并 → lead/regen-gov 两台真实换届闭环。教训索引：wt remove 前必须 bash pwd 确认切出 worktree（AGENTS.md 5f8f92e，本仓两次复发）；对 agent 的提示词用正向陈述+招募先验（writing-for-agents），negation 会把被禁行为拉进上下文。
+**本届做了**：换届扩展全生命周期落地（SPEC §6 定稿 → 三轮事故加固 → ocr + challenge-audit → 13 用例测试套件 → PR #177 合并 main）+ 身份自举 + bootstrap skill 同步。
+**未完成**：Backlog 全部原样移交（见下）。
+**下一届第一动作**：Backlog 1——观察 speculative-training 各 agent 下一轮换届，重点看 TAKEOVER 路径（至今无真实触发）与 renew.log 在多 agent 并发下的表现。
+**隐性知识指针**（不要重新探索）：
+- 三起事故的根因/修复/用例映射 → renew.test.ts 文件头注释 + charter 红线节
+- 「校验器比执行者更死板会惩罚正确工作」的教训 → 附言正则事故（07:03 lead）+ ready 双源事故，都是同一模式的两个面
+- 对 agent 写提示词的规范 → writing-for-agents skill（negation 反效果/招募先验/渐进披露），renew.ts 四处文案已按此定稿
+- 身份文件也过 gitleaks 闸门 → ebe94e7（AGENT.json 内网 IP 被拦实录）
+- wt remove 前必须 bash pwd 验证切出 worktree → 本仓 AGENTS.md 5f8f92e（两次复发）
