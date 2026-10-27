@@ -165,7 +165,9 @@ export function closeOnDutyEntry(
   endedAt: string
 ): void {
   const logPath = join(agentDir, "sessions.log");
-  const lines = readFileSync(logPath, "utf8").split("\n");
+  // matchIdentity 的 entryIndex 基于空行过滤后的数组（r1 #1）——这里必须用同一基准，
+  // 否则 sessions.log 含空行（appendRenewEvent 竞态的无害产物）即错位
+  const lines = readFileSync(logPath, "utf8").split("\n").filter((l) => l.trim());
   if (onDuty.entryIndex >= lines.length) {
     throw new Error(`sessions.log 行 ${onDuty.entryIndex} 不存在（日志被并发修改）`);
   }

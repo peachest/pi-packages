@@ -378,8 +378,30 @@ const evtTypes = (adir: string) =>
   t("J4 重跑 /renew 重新走 START 并完成换届", types[types.indexOf("CANCELLED") + 1] === "START" && types[types.length - 1] === "DONE");
 }
 
+// ---------- K: r1 #1 — sessions.log 空行不致索引错位 ----------
+{
+  const root = mkdtempSync(join(tmpdir(), "renew-K-"));
+  const { adir, root: _r } = makeEnv(root);
+  // appendRenewEvent 竞态会留下的无害空行形态：塞在当值条目前面
+  writeFileSync(join(adir, "sessions.log"), "\n" + readFileSync(join(adir, "sessions.log"), "utf8"));
+  const pi = mkPi();
+  notifs = [];
+  const orig = pi.sendUserMessage.bind(pi);
+  pi.sendUserMessage = (m: string) => {
+    orig(m);
+    pi.registered["agent-renew-ready"].execute("t", {}, undefined, undefined, {
+      cwd: root,
+      sessionManager: { getSessionId: () => SID },
+    });
+  };
+  await pi.registered["cmd:renew"].handler("", mkCtx(root, adir));
+  const types = evtTypes(adir);
+  const rows = readFileSync(join(adir, "sessions.log"), "utf8").split("\n").filter((l) => l.trim()).map((l) => JSON.parse(l));
+  t("K1 空行不错位：正确的行补 endedAt，换届 DONE 无「并发修改」误报", !types.includes("ABORT") && types[types.length - 1] === "DONE" && rows[0].sessionId === SID && rows[0].endedAt !== null && rows[1].sessionId === NEW_SID && rows[1].endedAt === null);
+}
+
 // cleanup
-for (const d of ["renew-A-", "renew-B-", "renew-C-", "renew-D-", "renew-E-", "renew-F-", "renew-G-", "renew-H-", "renew-I-", "renew-J-"]) {
+for (const d of ["renew-A-", "renew-B-", "renew-C-", "renew-D-", "renew-E-", "renew-F-", "renew-G-", "renew-H-", "renew-I-", "renew-J-", "renew-K-"]) {
   try {
     for (const e of (await import("node:fs")).readdirSync(tmpdir())) {
       if (e.startsWith(d)) rmSync(join(tmpdir(), e), { recursive: true, force: true });
