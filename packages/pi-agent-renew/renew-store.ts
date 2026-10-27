@@ -77,9 +77,10 @@ export interface WindowState {
   resumable: boolean;
 }
 
-/** Derive the current window state from the tail of renew.log. */
-export function readWindowState(agentDir: string): WindowState {
-  const events = parseRenewLog(agentDir);
+/** Derive the current window state from the tail of the renew event stream.
+ *  Pure: no IO, no Date.now() — `now` is the ms timestamp (same semantics as
+ *  the former inline `Date.now() - Date.parse(opening.ts)`). */
+export function deriveWindowState(events: RenewEvent[], now: number): WindowState {
   // Locate the last non-LEGACY event; window semantics:
   //   tail = READY | START | TAKEOVER      → window open (ready iff tail is READY)
   //   tail = DONE | CANCELLED              → closed
@@ -127,7 +128,7 @@ export function readWindowState(agentDir: string): WindowState {
       break;
     }
   }
-  const ageMs = opening.ts ? Date.now() - Date.parse(opening.ts) : null;
+  const ageMs = opening.ts ? now - Date.parse(opening.ts) : null;
   const stale = ageMs === null || ageMs >= WINDOW_TTL_MS;
   return {
     open: !stale, // stale = treated as closed (zombie)
@@ -137,6 +138,11 @@ export function readWindowState(agentDir: string): WindowState {
     ageMs,
     resumable: false,
   };
+}
+
+/** Thin IO shell: parse renew.log, then derive with the wall clock. */
+export function readWindowState(agentDir: string): WindowState {
+  return deriveWindowState(parseRenewLog(agentDir), Date.now());
 }
 
 export interface OnDuty {
