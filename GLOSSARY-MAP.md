@@ -22,6 +22,7 @@ This is a monorepo with 22 packages under `packages/*`. Each package has its own
 | [prototype-events-daemon](packages/prototype-events-daemon/GLOSSARY.md) | Events daemon (prototype) | 前身术语副本（历史参照）；正典见 pi-events-daemon |
 | [pi-events-daemon](packages/pi-events-daemon/GLOSSARY.md) | Events daemon | **正典**：实体状态机基底 + 实现期裁定（Transitioned/epoch/TxOps/envAllowlist）；ADR docs/adr/0001-0008 |
 | [pi-agent-renew](packages/pi-agent-renew/GLOSSARY.md) | Renewal handover | /renew 换届扩展：换届窗口/换届账本/事件流尾部推导，事件流即状态机本体 |
+| [pi-secret-store](packages/pi-secret-store/GLOSSARY.md) | Secret store | 凭证存储 + 泄漏执法：选择性注入/回填/数据位/注入规划/存储保护面（七词条） |
 
 ## Packages without GLOSSARY.md yet
 

@@ -3,6 +3,8 @@
  * secret_env 变量名清单）+ 泄漏执法（P1 凭证检测，迁自 bash-guards.sh P1 段）。
  * 外加 bash 选择性注入（解析命令 $NAME/${NAME} 引用，只 export 被引用且已存的变量；per-凭证
  * allowedPrefix 首词限定，#171）与 tool_result/context 双层脱敏。
+ * 注入规划为深模块（#179）：命令文本分析（引用集/展开式/单引号/wrapper 词法/回填/上下文位）收在
+ * lib/injection.ts（纯文本分析，零 I/O 零 pi 依赖），本入口只剩 hook 六步流水线薄 adapter 与 I/O 面文案。
  * 存储后端接口化（#173）：age 密文为缺省正典（.age + 0600 身份密钥分离，遗留明文自动迁移+shred），
  * plain 显式配置兜底；读写全走内存快照，链路与 plain 时代一致。
  * 明文边界：明文不进 session log 与上下文——session log 落盘的是 mutate 前原始 command（已实跑验证），
@@ -17,12 +19,15 @@ import { Type } from "typebox";
 import { getAgentDir, type ExtensionAPI, type AgentToolResult } from "@earendil-works/pi-coding-agent";
 import { createBackend, updateStore, type StoreBackend } from "./lib/backend.ts";
 import { detectTokens, p1BlockReason } from "./lib/credentials.ts";
-import { Redactor, MIN_REDACT_LENGTH, commandContext, DATA_MASK, IN_SINGLE } from "./lib/redact.ts";
+import { hasInjectableRef, planInjection } from "./lib/injection.ts";
+import { Redactor, MIN_REDACT_LENGTH } from "./lib/redact.ts";
 import { dialogOptions, SecretInput, type DialogResult } from "./lib/secret-input.ts";
-import { nameProblem, shellQuote, storePaths, type Store } from "./lib/store.ts";
+import { nameProblem, storePaths, type Store } from "./lib/store.ts";
 // 测试走入口边界（packages/README.md 四规则）：re-export lib 的被测符号
 export { loadStore, storePaths, type Store } from "./lib/store.ts";
 export { updateStore } from "./lib/backend.ts";
+// 注入规划模块公共面（#179）：规则测试直调走入口
+export { planInjection, hasInjectableRef, commandContext, IN_SINGLE, IN_HEREDOC, IN_SUBST, DATA_MASK } from "./lib/injection.ts";
 
 const MARKER = "__PI_SECRET_STORE__";
 
@@ -38,131 +43,11 @@ const isSubsequence = (needle: string, haystack: string): boolean => {
 	return i === needle.length;
 };
 
-/** $NAME/${NAME} 引用名正则（r10 #2：referencedNames 与 singleQuotedStoredName 共用——此前两处独立维护同款正则有漂移风险；
- *  两处调用方均用 matchAll（内部克隆正则迭代），共享 /g 常量无 lastIndex 污染） */
-const VAR_REF_RE = /\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))/g;
-
-/** 命令文本中的 $NAME/${NAME} 引用名（仅裸名与纯 ${NAME} 花括号形态计入；${NAME:-def} 等展开式不计——
- *  命令不消费真实值时不注入真值，缩注入半径，rolling-review-r1 #1。文本级扫描：单引号内的 $NAME 同样
- *  计入——不展开，但已存名的单引号引用会被拦截（r5 #2，见 singleQuotedStoredName）。
- *  r8 #3：展开式形态由 expandedRefNames 单列——命中已存名时 block，未存名不拦。 */
-const referencedNames = (cmd: string): Set<string> => {
-	const names = new Set<string>();
-	for (const m of cmd.matchAll(VAR_REF_RE)) names.add(m[1] ?? m[2]);
-	return names;
-};
-
-/** 单引号内的已存名引用（r5 #2）：与 redact commandContext 同源逐字符扫描（r6 #5，近似 split 删除——
- *  '\'' 拼接段（5 引号 6 段）在奇数段切分下落偶数段被漏拦，双引号内撇号则被误拦）。单引号不展开，
- *  注入值只存在于 bash 工具进程环境——sudo（无 -E）/env -i 等清环境 wrapper 的内层 shell 展开时取到空值，
- *  命令带空变量照常执行。命中返回第一个名。 */
-const singleQuotedStoredName = (cmd: string, stored: readonly string[]): string | undefined => {
-	const ctx = commandContext(cmd);
-	for (const m of cmd.matchAll(VAR_REF_RE)) {
-		const n = m[1] ?? m[2];
-		if (stored.includes(n) && (ctx[m.index] & IN_SINGLE) !== 0) return n;
-	}
-	return undefined;
-};
-
-/** 展开式引用名（r8 #3，r9 #1 收紧判定）：${NAME:-def}/${NAME:=d}/${NAME:+a}/${NAME:?msg}/${NAME-d}/${NAME=x}/
- *  ${NAME+a}/${NAME?m}/${NAME#pat}/${NAME%pat}/${NAME/pat/rep} 等【明确的参数展开操作符】形态——${NAME} 后
- *  紧跟 :-/:=/:+/:? 或 - = + ? # % / 之一才算。r1 #1 语义下不注入真值，但命中已存名时命令会以空值/默认值
- *  照常执行（sudo（无 -E）/env -i 等清环境内层同样取不到），与单引号 r5 #2 同类缺口 → fail closed block。
- *  r9 #1：旧正则 [^}] 会回溯截断名字（${TOKEN} → m[1]=TOKE 命中截断前缀存名 → 纯花括号误 block；
- *  ${TOKEN}/config 等纯展开+字面后缀同样被波及）——收紧后纯 ${NAME} 花括号与字面后缀均不匹配（正常注入路径）。
- *  r10 #1：操作符锚定在 } 之内（[^}]*\} 收尾）——操作符后必须到达 } 才算展开式，未闭合花括号
- *  （${NAME-suffix，bash bad substitution 本不执行）不再误判展开式误 block。
- *  未存名不拦（r1 #1 白名单语义）。shortcut：${NAME:0:3} 子串展开（冒号后接数字）不在此列，与字面后缀同视为放行。 */
-const expandedRefNames = (cmd: string): Set<string> => {
-	const names = new Set<string>();
-	for (const m of cmd.matchAll(/\$\{([A-Za-z_][A-Za-z0-9_]*)(?::?[-+=?#%/])[^}]*\}/g)) names.add(m[1]);
-	return names;
-};
-
 const fingerprintOf = (v: string) => createHash("sha256").update(v).digest("hex").slice(0, 10);
 
 /** 遗留 env 删除失败状态（r3 #2 引入，r4 #6 提升到模块级）：同进程多 extension 实例共享——
  *  实例 B 须感知实例 A 的删除失败（fail closed 不因实例切换漏拦），持续到任一实例下次删除成功。 */
 let legacyEnvStale = false;
-
-/** 前缀比对用命令词（r2 #2 / r3 #3）：剥掉 sudo/env/nohup、VAR=value 赋值 token（括号已在切分正则里作废）后取第一个真命令词——
- *  `sudo nerdctl`/`env nerdctl`/`VAR=x nerdctl` 的首词不是命令本身，不剥离则限定凭证被误 block（fail closed 伤可用性）。
- *  sh/bash 族 wrapper 的 -c/-lc 载荷递归向后取词：`sh -c "nerdctl …"` 的真命令词是 nerdctl 不是 sh（r3 #3）；
- *  无 -c 的脚本路径场景（bash deploy.sh）比对词就是 shell 名，保持 r2 行为。 */
-const SHELL_WRAPPERS = new Set(["sh", "bash", "zsh", "dash", "ksh"]);
-// r4 #4：wrapper 已知选项 token 不是命令词——此前 `sudo -E nerdctl` 的比对词是 "-E"，allowedPrefix 合法命令被 fail-closed 误 block。
-// r7 #3：选项表按 wrapper 区分（GNU/sudo 手册语义）——sudo 的 -s（shell）/ -k（invalidate ticket）无参，既非命令词也不吞参
-// （旧全局带参表把它们当带参 i++，吞掉真命令词 sudo -s nerdctl … 命令词错位误 block）；带参者：sudo -u/-g、env -u、timeout -k/-s。
-// shortcut：仅覆盖常见形态，`sudo -u1000` 等紧贴拼写仍误判，出现时再扩表。
-const WRAPPER_OPTIONS = new Set(["-E", "--preserve-env", "-i", "--ignore-environment", "--preserve-status"]);
-const WRAPPER_FLAG_OPTIONS: Record<string, ReadonlySet<string>> = {
-	sudo: new Set(["-s", "-k"]), // 无参选项
-};
-const WRAPPER_OPTIONS_WITH_ARG: Record<string, ReadonlySet<string>> = {
-	sudo: new Set(["-u", "-g"]),
-	env: new Set(["-u"]),
-	timeout: new Set(["-k", "-s"]),
-};
-const isWrapperDuration = (t: string): boolean => /^\d+(?:\.\d+)?[smhd]?$/.test(t); // timeout 的时长参数（10 / 10s / 1.5m）
-const commandWord = (cmd: string): string => {
-	const toks = cmd.split(/[\s'"|&;()]+/);
-	let afterTimeout = false; // r5 #4：裸数字时长仅在 timeout 之后紧邻位置剥离——任意位置的纯数字 token 过宽（数字开头命令首词被误跳）
-	let wrapper: string | undefined; // r7 #3：最近的 wrapper（sudo/env/timeout），查各自的带参选项表
-	for (let i = 0; i < toks.length; i++) {
-		const tok = toks[i];
-		if (!tok || tok === "nohup" || /^[A-Za-z_][A-Za-z0-9_]*=/.test(tok)) continue;
-		// review-high #1：2>&1 被 |&;() 切分后的孤立纯数字残段不是命令词，不参与比对/不进报错文案；
-		// 非尾位裸数字首词仍按命令词比对（r5 #4：`10 serve` 的命令词是 10）
-		if (/^\d+$/.test(tok) && !toks.slice(i + 1).some(Boolean)) continue;
-		if (tok === "sudo" || tok === "env") {
-			wrapper = tok;
-			continue;
-		}
-		if (tok === "timeout") {
-			wrapper = "timeout";
-			afterTimeout = true;
-			continue;
-		}
-		if (WRAPPER_OPTIONS.has(tok) || tok.startsWith("--preserve-env=") || tok.startsWith("--kill-after=")) continue;
-		if (wrapper && WRAPPER_FLAG_OPTIONS[wrapper]?.has(tok)) continue; // r7 #3：sudo -s/-k 无参，不吞真命令词
-		if (afterTimeout && isWrapperDuration(tok)) {
-			afterTimeout = false; // timeout 只接受一个时长参数，剥掉即复位
-			continue;
-		}
-		if (wrapper && WRAPPER_OPTIONS_WITH_ARG[wrapper]?.has(tok)) {
-			i++; // 选项的独立参数（sudo -u alice / env -u NAME / timeout -k 5）同样不是命令词
-			continue;
-		}
-		if (SHELL_WRAPPERS.has(tok)) {
-			if (/^-[A-Za-z]*c/.test(toks[i + 1] ?? "")) {
-				i++; // -c/-lc 载荷：继续向后取真命令词
-				continue;
-			}
-			return tok;
-		}
-		return tok;
-	}
-	return "";
-};
-
-/** r8 #4：按 |、||、&&、;、;; 切命令段——引号字符串/heredoc 体/命令替换内的这些字符不是段边界
- *  （commandContext DATA_MASK 同源判定，r6 #5 先例）。&&/||/;; 在逐字符切分下产生空段，交由
- *  commandWord（空串）+ 下游 filter 自然剔除。返回各段原文（交 commandWord 归一）。 */
-const commandSegments = (cmd: string): string[] => {
-	const ctx = commandContext(cmd);
-	const segs: string[] = [];
-	let start = 0;
-	for (let i = 0; i < cmd.length; i++) {
-		if ((ctx[i] & DATA_MASK) !== 0) continue;
-		if (cmd[i] === "|" || cmd[i] === ";" || cmd[i] === "&") {
-			segs.push(cmd.slice(start, i));
-			start = i + 1;
-		}
-	}
-	segs.push(cmd.slice(start));
-	return segs;
-};
 
 /** 凭证限定呈现（#171，存在性层面，永不含值）：`allowedPrefix: a,b`，无限定时空串。 */
 const prefixTag = (e: { allowedPrefix?: string[] }): string =>
@@ -186,6 +71,9 @@ export default function secretStore(pi: ExtensionAPI) {
 	const agentDir = getAgentDir();
 	const { storePath, storePathAge, keyPath, confPath, legacyEnvFile } = storePaths(agentDir);
 	const redactor = new Redactor();
+	// 回填索引（#172/#179 显式化）：name → value，与 redactor.add 同批同源累积（[4] 累积不 clear：
+	// forget 后旧值仍回填是 deliberate fail-closed，数据源不变）；planInjection 从它派生回填变体表
+	const backfillIndex: Record<string, string> = {};
 	// 后端选择（#173）：conf 文件读一次缓存（每 factory 实例一份，测试沙箱隔离）；首次使用惰性创建
 	let backendPromise: Promise<StoreBackend> | undefined;
 	const getBackend = () => (backendPromise ??= createBackend(agentDir));
@@ -193,8 +81,11 @@ export default function secretStore(pi: ExtensionAPI) {
 	async function reload(onWarning?: (msg: string) => void): Promise<Store> {
 		const store = await (await getBackend()).load(onWarning);
 		// [4] 累积不 clear：forget/他 session 轮换后，旧值仍躺在磁盘文件与旧输出里，本 session 生存期内持续脱敏；
-		// 名随值注册（#172 回填反查 nameOf 用）
-		for (const [n, e] of Object.entries(store)) redactor.add(e.value, n);
+		// 名随值注册（#172 回填反查），回填索引同步累积（#179：planInjection 的显式回填数据源）
+		for (const [n, e] of Object.entries(store)) {
+			redactor.add(e.value, n);
+			backfillIndex[n] = e.value;
+		}
 		return store;
 	}
 
@@ -202,30 +93,26 @@ export default function secretStore(pi: ExtensionAPI) {
 	// #173 后保护面 = plain 正典 json + age 密文 + 身份密钥（读密钥 = 绕过全部加密）+ conf（r6 #1：改写 conf
 	// 可把后端切到 plain 写回明文正典，绕过“缺省不落明文”边界）；
 	// r3 #2：遗留 env 删除失败期间 fail-closed 纳入保护（滞留明文副本），成功删除即解除（状态模块级共享，r4 #6）。
+	// 受保护清单单一来源（#179 B 节）：新增保护面在此加一行，下方两个比对面（路径解析面 / 子串兜底面）自动同时覆盖；
+	// 条件项「遗留 env」以谓词形态内聚——仅 legacyEnvStale（session_start 维护）期间在列。
+	const protectedPaths = (): readonly string[] => [
+		storePath,
+		storePathAge, // r7 #4：显式单列，不依赖 storePathAge 恒含 storePath 子串的隐式包含
+		keyPath,
+		confPath, // r6 #1：conf 改写可切回 plain 后端
+		...(legacyEnvStale ? [legacyEnvFile] : []),
+	];
+
 	const isProtectedPath = (cwd: string, raw: string): boolean => {
 		const expanded = raw.startsWith("~") ? join(homedir(), raw.slice(1)) : raw;
 		const resolved = resolve(cwd, expanded);
-		return (
-			resolved === storePath ||
-			resolved === storePathAge ||
-			resolved === keyPath ||
-			resolved === confPath ||
-			(legacyEnvStale && resolved === legacyEnvFile)
-		);
+		return protectedPaths().includes(resolved);
 	};
 
 	/** 命令串 → 路径 token（空白/引号/shell 结构符切分，--opt= 前缀剥离）逐个解析比对；含空格/引号/$变量拼写的路径
-	 *  token 化会切碎、逐 token resolve 不中——受保护路径全量字面子串兜底（r5 #1；r7 #4：storePathAge 显式单列，
-	 *  不依赖恒含 storePath 子串的隐式包含；confPath 与 storePath 无包含关系，须单列——r6 #1）。 */
+	 *  token 化会切碎、逐 token resolve 不中——受保护路径全量字面子串兜底（r5 #1），子串面遍历同一清单。 */
 	const touchesStore = (s: string, cwd: string): boolean => {
-		if (
-			s.includes(storePath) ||
-			s.includes(storePathAge) || // r7 #4：显式单列，不依赖 storePathAge 恒含 storePath 子串的隐式包含
-			s.includes(keyPath) ||
-			s.includes(confPath) ||
-			(legacyEnvStale && s.includes(legacyEnvFile))
-		)
-			return true;
+		if (protectedPaths().some((p) => s.includes(p))) return true;
 		return s
 			.split(/[\s'"|&;()]+/)
 			.map((tok) => tok.replace(/^--[A-Za-z0-9][A-Za-z0-9-]*=/, ""))
@@ -260,8 +147,8 @@ export default function secretStore(pi: ExtensionAPI) {
 		}
 	});
 
-	// bash 命令：①P1 检测（先，见原始命令——已知格式 token 不因回填放行）②存储 guard（[7] resolved 比对）
-	// ③明文回填（#172）④选择性注入（#170）+ allowedPrefix（#171）。
+	// bash 命令六步流水线（#179 薄 adapter）：①P1 检测（先，见原始命令）②存储 guard（[7]，清单单一来源）
+	// ③防重标记 ④回填与数据位拦截（planInjection 回填路径）⑤预判谓词直通（零 I/O）⑥有引用 reload → planInjection → 拼装。
 	// 非 bash 文件类工具（read/grep/ls/edit/write…）：input.path 指向存储文件同样拦截（[7]）。
 	// 修改参数必须原地 mutate event.input —— 返回 { input } 无效（pi ToolCallEventResult 文档明示）。
 	pi.on("tool_call", async (event, ctx) => {
@@ -276,83 +163,34 @@ export default function secretStore(pi: ExtensionAPI) {
 			return undefined;
 		}
 		let cmd = String(input.command ?? "");
+		// 六步流水线（#179 薄 adapter，顺序与语义零变化）：判定本体在 lib/injection.ts，文案除 I/O 面外随模块。
+		// ① P1 凭证检测（先于一切，见原始命令——已知格式 token 不因回填放行）
 		const finding = detectTokens(cmd);
 		if (finding) return { block: true, reason: p1BlockReason(finding) };
+		// ② 存储文件 guard（工具路径面）
 		if (touchesStore(cmd, cwd)) return { block: true, reason: GUARD_REASON };
-		if (cmd.includes(MARKER)) return undefined; // 已带前缀（嵌套/重放），不重复注入
-		// #172 明文回填（链路定型：P1 检测 → 回填 → prefix/注入）：已存值明文误写进命令 → 机械替换回 $NAME。
-		// r3 #1：替换仅限裸 token；引号字符串/heredoc 数据位命中不改写 → block（三要素文案），防静默篡改数据语义。
-		// 反查源 = redactor 累积值（[4]：forget 后旧值仍回填）；替换出的 $NAME 交由下方注入路径重新验证（未存名静默跳过）。
-		const filled = redactor.backfill(cmd);
-		if (filled.dataHits.length > 0)
-			return {
-				block: true,
-				reason: `secret-store: 已存凭证明文出现在引号字符串、heredoc 或命令替换数据位置（r7 #2；凭证：${filled.dataHits.join("、")}）。该位置属数据语义（JSON/heredoc/命令替换等），自动回填会篡改命令数据，已拦截不改写。请改用 ${filled.dataHits.map((n) => `$${n}`).join("、")} 形式引用（bash 展开为值），或调用 secret_env 核对凭证名后调整命令结构。`,
-			};
-		if (filled.text !== cmd) event.input.command = cmd = filled.text;
-		// #170 选择性注入：先解析引用集；无 $ 引用（裸/花括号/展开式皆无）才零 I/O 直通（命令与无凭证库时逐字节一致，agent 无感）
-		const refs = referencedNames(cmd);
-		const expanded = expandedRefNames(cmd);
-		if (refs.size === 0 && expanded.size === 0) return undefined;
+		// ③ 防重标记检查（嵌套/重放不重复注入）
+		if (cmd.includes(MARKER)) return undefined;
+		// ④ 回填与数据位拦截（#172：planInjection 回填路径，store 空快照 = 未读存储；dataHits → block 文案随模块；
+		// backfill 改写可能创造引用，先于直通——D6）。
+		const pre = planInjection(cmd, {}, backfillIndex);
+		if (pre.text !== undefined) event.input.command = cmd = pre.text;
+		if (pre.block) return { block: true, reason: pre.block };
+		// ⑤ 预判谓词直通（零 I/O）：无引用命令与无凭证库时逐字节一致，agent 无感（#170）
+		if (!hasInjectableRef(cmd)) return undefined;
+		// ⑥ 有引用：reload 快照 → planInjection → 入口拼装前缀
 		// [8] 跨 session 一致：注入前重读 store，把即将注入的值同步注册进 redactor（累积不 clear）
 		let store: Store;
 		try {
 			store = await reload();
 		} catch {
-			// [6] fail closed：存储不可读时引用的变量值未知（redactor 无法覆盖），跳过注入并拦截
+			// [6] fail closed：存储不可读时引用的变量值未知（redactor 无法覆盖），跳过注入并拦截（I/O 层文案留入口）
 			return { block: true, reason: `secret-store: 存储不可读，凭证注入已停用（检查 ${agentDir} 下的存储/密钥/age 安装后重试）` };
 		}
-		// r8 #3：展开式引用命中已存名 → block（不注入真值 r1 #1，命令带空/默认值照常执行，与 r5 #2 同文案族）
-		const expHit = [...expanded].find((n) => Object.hasOwn(store, n));
-		if (expHit)
-			return {
-				block: true,
-				reason: `secret-store: 凭证 ${expHit} 以 \${${expHit}...} 展开式形态（如 \${${expHit}:-def}/\${${expHit}:?msg}）出现在命令中：展开式引用不注入真实值（rolling-review-r1 #1），命令会以空值/默认值照常执行（sudo（无 -E）/env -i 等清环境内层同样取不到）。请改写为 "$${expHit}"（外层展开后传入）或直接引用 $${expHit}。`,
-			};
-		// 注入集 = 引用 ∩ store 已存名；只缩半径不防外显（echo $NAME 照常注入）；未存名静默跳过（P1 白名单语义）
-		const names = [...refs].filter((n) => Object.hasOwn(store, n));
-		if (names.length === 0) return undefined;
-		// r5 #2：已注入名出现在单引号内 → 延迟展开遇清环境 wrapper（sudo 无 -E/env -i）取空值照常执行，fail closed。
-		// 契约（r8 #6）：下方判定依赖 redact.ts commandContext 的 IN_SINGLE 位（第 3 位）逐字符扫描语义，
-		// 含 r6 #5 的 '\'' 拼接近似切分（奇数段切分下拼接段落在单引号内）——commandContext 位定义或
-		// 单引号判定变更时，须同步检查 singleQuotedStoredName 与本调用处的拦截面是否一致。
-		const quoted = singleQuotedStoredName(cmd, names);
-		if (quoted)
-			return {
-				block: true,
-				reason: `secret-store: 凭证 ${quoted} 以 $${quoted} 形式出现在命令的单引号内：单引号不展开，sudo（无 -E）/env -i 等清环境的内层 shell 会取到空值照常执行。请改写为双引号 "$${quoted}"（外层展开后传入），或调整命令结构后直接引用 $${quoted}。`,
-			};
-		// #171 allowedPrefix（review-high #1 改 per-credential 段比对）：凭证只与其 $NAME 引用所在段的命令词比对，
-		// 且每个引用段都必须命中（r2 #2 剥 sudo/env/赋值 token；无引用段的段不参与该凭证判定）——
-		// `echo $TOKEN | nerdctl ps`、`nerdctl ps; echo $TOKEN` 形态不得借不引用凭证的命中段放行 echo 段的消费；
-		// 引用段在管道后（消费段）命中仍放行（r8 #4 语义保持）。报错文案仍列全段命令词（r8 #4 口径）。
-		const segments = commandSegments(cmd);
-		const segWords = segments.map(commandWord).filter(Boolean);
-		const mismatched = names.filter((n) => {
-			const prefixes = store[n].allowedPrefix ?? [];
-			if (prefixes.length === 0) return false;
-			return !segments
-				.filter((s) => referencedNames(s).has(n))
-				.every((s) => {
-					const w = commandWord(s);
-					return w !== "" && prefixes.some((p) => w.startsWith(p));
-				});
-		});
-		if (mismatched.length > 0) {
-			const detail = mismatched
-				.map((n) =>
-					// r6 #2：命令词解析不出（重定向/管道/纯赋值等形态）时 fail-closed 拦截不变，但单独文案指明
-					// 是“解析不出”而非“不命中”，避免空命令词引号排障误导
-					segWords.length === 0
-						? `凭证 ${n} 限定仅用于命令词命中 [${(store[n].allowedPrefix ?? []).join(",")}] 的命令，但无法从命令解析命令词，为避免空变量照常执行未注入。请调整命令结构使首词明确；如需变更限定请先 /secret-store forget ${n} 删除后重新录入（需重输明文）`
-						: `凭证 ${n} 限定仅用于命令词命中 [${(store[n].allowedPrefix ?? []).join(",")}] 的命令，当前命令词 "${segWords.join("、")}" 不命中，未注入。如需变更限定请先 /secret-store forget ${n} 删除后重新录入（需重输明文）`,
-				)
-				.join("；");
-			return { block: true, reason: `secret-store: ${detail}` };
-		}
-		// [11] 逐变量单引号字面量：值含 $/反引号/引号/换行等特殊字符时 bash 仍逐字节还原，不构成注入面
-		const assignments = names.map((n) => `${n}=${shellQuote(store[n].value)}`).join(" ");
-		event.input.command = `: ${MARKER}; export ${assignments}; ${cmd}`;
+		const plan = planInjection(cmd, store, backfillIndex);
+		if (plan.text !== undefined) event.input.command = cmd = plan.text;
+		if (plan.block) return { block: true, reason: plan.block };
+		if (plan.assignments?.length) event.input.command = `: ${MARKER}; export ${plan.assignments.join(" ")}; ${cmd}`;
 		return undefined;
 	});
 
