@@ -32,9 +32,7 @@ export function renewLogPath(agentDir: string): string {
 
 export function appendRenewEvent(agentDir: string, ev: Omit<RenewEvent, "ts">): void {
   const full: RenewEvent = { ...ev, ts: new Date().toISOString() };
-  const body = readFileSyncSafe(renewLogPath(agentDir));
-  const needsNewline = body.length > 0 && !body.endsWith("\n");
-  appendFileSync(renewLogPath(agentDir), (needsNewline ? "\n" : "") + JSON.stringify(full) + "\n");
+  appendLineSafe(renewLogPath(agentDir), JSON.stringify(full));
 }
 
 function readFileSyncSafe(p: string): string {
@@ -45,6 +43,14 @@ function readFileSyncSafe(p: string): string {
   }
 }
 
+/** Append one JSONL line, repairing a missing trailing newline first (r1 #7:
+ *  the read-body -> newline-guard -> append pattern shared by both appenders). */
+function appendLineSafe(path: string, text: string): void {
+  const body = readFileSyncSafe(path);
+  const prefix = body.length > 0 && !body.endsWith("\n") ? "\n" : "";
+  appendFileSync(path, prefix + text + "\n");
+}
+
 /** Parse renew.log tolerantly: JSON lines with {type,...}; legacy free-text lines become LEGACY. */
 export function parseRenewLog(agentDir: string): RenewEvent[] {
   const lines = readFileSyncSafe(renewLogPath(agentDir)).split("\n").filter((l) => l.trim());
@@ -52,7 +58,9 @@ export function parseRenewLog(agentDir: string): RenewEvent[] {
   for (const line of lines) {
     try {
       const e = JSON.parse(line);
-      if (typeof e.type === "string" && typeof e.ts === "string") {
+      // 合法行判定：type/ts 之外 sessionId 也必须非空 string（r1 #4）——
+      // 缺失时模板串会输出 "undefined" 混入推导
+      if (typeof e.type === "string" && typeof e.ts === "string" && typeof e.sessionId === "string" && e.sessionId !== "") {
         events.push(e as RenewEvent);
       } else {
         events.push({ type: "LEGACY", ts: "", sessionId: "" });
@@ -165,11 +173,25 @@ export function closeOnDutyEntry(
   endedAt: string
 ): void {
   const logPath = join(agentDir, "sessions.log");
-  const lines = readFileSync(logPath, "utf8").split("\n");
+  // matchIdentity 的 entryIndex 基于空行过滤后的数组（r1 #1）——这里必须用同一基准，
+  // 否则 sessions.log 含空行（appendRenewEvent 竞态的无害产物）即错位
+  const body = readFileSyncSafe(logPath);
+  if (!body.trim()) {
+    throw new Error(`sessions.log 为空或不存在（${logPath}）`);
+  }
+  const lines = body.split("\n").filter((l) => l.trim());
+  if (onDuty.entryIndex < 0) {
+    throw new Error(`sessions.log entryIndex 非法（${onDuty.entryIndex}）`);
+  }
   if (onDuty.entryIndex >= lines.length) {
     throw new Error(`sessions.log 行 ${onDuty.entryIndex} 不存在（日志被并发修改）`);
   }
-  const entry = JSON.parse(lines[onDuty.entryIndex]);
+  let entry: Record<string, unknown>;
+  try {
+    entry = JSON.parse(lines[onDuty.entryIndex]);
+  } catch (err) {
+    throw new Error(`sessions.log 行 ${onDuty.entryIndex} JSON 解析失败：${lines[onDuty.entryIndex].slice(0, 20)}（${err instanceof Error ? err.message : String(err)}）`);
+  }
   if (entry.sessionId !== expectedSessionId) {
     throw new Error(
       `sessions.log 行 ${onDuty.entryIndex} 的 sessionId (${String(entry.sessionId).slice(0, 8)}) 与当值者 (${expectedSessionId.slice(0, 8)}) 不符——日志被并发修改，拒绝盲改`
@@ -195,7 +217,5 @@ export function appendSessionEntry(
     note,
     handoffFile,
   };
-  const body = readFileSyncSafe(join(agentDir, "sessions.log"));
-  const prefix = body.length > 0 && !body.endsWith("\n") ? "\n" : "";
-  appendFileSync(join(agentDir, "sessions.log"), prefix + JSON.stringify(entry) + "\n");
+  appendLineSafe(join(agentDir, "sessions.log"), JSON.stringify(entry));
 }

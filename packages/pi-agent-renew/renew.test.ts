@@ -15,7 +15,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import renewExtension from "./renew.ts";
-import { WINDOW_TTL_MS, deriveWindowState, readWindowState, type RenewEvent, type WindowState } from "./renew-store.ts";
+import { WINDOW_TTL_MS, closeOnDutyEntry, deriveWindowState, parseRenewLog, readWindowState, type RenewEvent, type WindowState } from "./renew-store.ts";
 
 const SID = "00000000-0000-7000-8000-000000000000";
 const NEW_SID = "99999999-9999-7000-8000-999999999999";
@@ -378,8 +378,61 @@ const evtTypes = (adir: string) =>
   t("J4 重跑 /renew 重新走 START 并完成换届", types[types.indexOf("CANCELLED") + 1] === "START" && types[types.length - 1] === "DONE");
 }
 
+// ---------- K: r1 #1 — sessions.log 空行不致索引错位 ----------
+{
+  const root = mkdtempSync(join(tmpdir(), "renew-K-"));
+  const { adir, root: _r } = makeEnv(root);
+  // appendRenewEvent 竞态会留下的无害空行形态：塞在当值条目前面
+  writeFileSync(join(adir, "sessions.log"), "\n" + readFileSync(join(adir, "sessions.log"), "utf8"));
+  const pi = mkPi();
+  notifs = [];
+  const orig = pi.sendUserMessage.bind(pi);
+  pi.sendUserMessage = (m: string) => {
+    orig(m);
+    pi.registered["agent-renew-ready"].execute("t", {}, undefined, undefined, {
+      cwd: root,
+      sessionManager: { getSessionId: () => SID },
+    });
+  };
+  await pi.registered["cmd:renew"].handler("", mkCtx(root, adir));
+  const types = evtTypes(adir);
+  const rows = readFileSync(join(adir, "sessions.log"), "utf8").split("\n").filter((l) => l.trim()).map((l) => JSON.parse(l));
+  t("K1 空行不错位：正确的行补 endedAt，换届 DONE 无「并发修改」误报", !types.includes("ABORT") && types[types.length - 1] === "DONE" && rows[0].sessionId === SID && rows[0].endedAt !== null && rows[1].sessionId === NEW_SID && rows[1].endedAt === null);
+}
+
+// ---------- L: r1 #4 — 无 sessionId 的 JSON 行不构成合法事件 ----------
+{
+  const root = mkdtempSync(join(tmpdir(), "renew-L-"));
+  const { adir, root: _r } = makeEnv(root);
+  writeFileSync(join(adir, "renew.log"), JSON.stringify({ type: "START", ts: new Date().toISOString() }) + "\n");
+  t("L1 无 sessionId 的 START 归 LEGACY、不构成开放窗口", parseRenewLog(adir)[0].type === "LEGACY" && readWindowState(adir).open === false);
+}
+
+// ---------- M: r1 #5/#6 — closeOnDutyEntry 读取与解析防御 ----------
+{
+  const root = mkdtempSync(join(tmpdir(), "renew-M-"));
+  const { adir, root: _r } = makeEnv(root);
+  const onDuty = { agentName: "lead", agentDir: adir, entryIndex: 0, startedAt: "t" };
+  writeFileSync(join(adir, "sessions.log"), "not-json\n");
+  let msg = "";
+  try {
+    closeOnDutyEntry(adir, onDuty, SID, "e");
+  } catch (err) {
+    msg = err instanceof Error ? err.message : String(err);
+  }
+  t("M1 畸形行报错含行号与摘要", msg.includes("行 0") && msg.includes("not-json"));
+  writeFileSync(join(adir, "sessions.log"), "");
+  let msg2 = "";
+  try {
+    closeOnDutyEntry(adir, onDuty, SID, "e");
+  } catch (err) {
+    msg2 = err instanceof Error ? err.message : String(err);
+  }
+  t("M2 空文件报错含 sessions.log 路径", msg2.includes(join(adir, "sessions.log")));
+}
+
 // cleanup
-for (const d of ["renew-A-", "renew-B-", "renew-C-", "renew-D-", "renew-E-", "renew-F-", "renew-G-", "renew-H-", "renew-I-", "renew-J-"]) {
+for (const d of ["renew-A-", "renew-B-", "renew-C-", "renew-D-", "renew-E-", "renew-F-", "renew-G-", "renew-H-", "renew-I-", "renew-J-", "renew-K-", "renew-L-", "renew-M-"]) {
   try {
     for (const e of (await import("node:fs")).readdirSync(tmpdir())) {
       if (e.startsWith(d)) rmSync(join(tmpdir(), e), { recursive: true, force: true });
