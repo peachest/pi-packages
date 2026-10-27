@@ -100,15 +100,13 @@ describe("/secret-store 命令", () => {
 		expect(joined).not.toContain("harbor-secret-value");
 	});
 
-	it("forget <name> → 删除并同步 env 文件", async () => {
+	it("forget <name> → 删除并同步存储（#170 后无 env 文件）", async () => {
 		const h = await setupHarness(SEED);
 		await h.handlers.session_start[0]({ reason: "new" }, toolCtx(h));
 		await h.commands.get("secret-store").handler("forget GITBLUE_TOKEN", toolCtx(h));
 		const store = JSON.parse(await readFile(h.storePath, "utf8"));
 		expect(store.secrets.GITBLUE_TOKEN).toBeUndefined();
 		expect(store.secrets.HARBOR_PASSWORD).toBeDefined();
-		const env = await readFile(h.envFile, "utf8");
-		expect(env).not.toContain("GITBLUE_TOKEN");
 	});
 
 	it("空存储 list → 存储为空提示", async () => {
@@ -134,6 +132,34 @@ describe("secret_ensure", () => {
 		const h = await setupHarness();
 		expect([...h.tools.keys()].sort()).toEqual(["secret_ensure", "secret_env", "secret_query"]);
 		expect(h.commands.has("secret-store")).toBe(true);
+	});
+});
+
+describe("allowedPrefix 呈现（#171）", () => {
+	const PREFIXED_SEED = {
+		HARBOR_PASSWORD: { value: "harbor-secret-value", updatedAt: "2026-10-20T00:00:00.000Z", fingerprint: "fp1234567890", allowedPrefix: ["harbor", "nerdctl"] },
+	};
+
+	it("secret_query 精确命中呈现 allowedPrefix，永不含值", async () => {
+		const h = await setupHarness(PREFIXED_SEED);
+		const out = await runExact(h, "secret_query", { name: "HARBOR_PASSWORD" });
+		const text = out.content[0].text;
+		expect(text).toContain("allowedPrefix: harbor,nerdctl");
+		expect(text).not.toContain("harbor-secret-value");
+	});
+
+	it("无限定凭证的呈现不含 allowedPrefix 字样（向后兼容）", async () => {
+		const h = await setupHarness(SEED);
+		const out = await runExact(h, "secret_query", { name: "HARBOR_PASSWORD" });
+		expect(out.content[0].text).not.toContain("allowedPrefix");
+	});
+
+	it("/secret-store list 呈现限定信息，不含值", async () => {
+		const h = await setupHarness(PREFIXED_SEED);
+		await h.commands.get("secret-store").handler("", toolCtx(h));
+		const joined = h.notifyLog.join("\n");
+		expect(joined).toContain("allowedPrefix: harbor,nerdctl");
+		expect(joined).not.toContain("harbor-secret-value");
 	});
 });
 

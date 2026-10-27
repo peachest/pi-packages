@@ -1,10 +1,11 @@
 /**
- * 持久化存储：~/.pi/agent/secret-store.json（0600、唯一 tmp+rename 原子写、跨进程更新锁）+
- * secret-store.env（bash source 用，单引号字面量序列化）。
- * 移植自 ~/tmp/secret-store-proto/index.ts loadStore/saveStore/writeEnvFile。
+ * 持久化存储：~/.pi/agent/secret-store.json（0600、唯一 tmp+rename 原子写、跨进程更新锁）。
+ * env 文件侧已随 #170 选择性注入移除（注入改走内存 store 快照），legacyEnvFile 仅为退役删除而保留路径。
+ * 移植自 ~/tmp/secret-store-proto/index.ts 的 loadStore。
  */
 import { randomBytes } from "node:crypto";
-import { chmod, mkdir, open, readFile, rename, stat, unlink, writeFile, type FileHandle } from "node:fs/promises";
+import { AsyncLocalStorage } from "node:async_hooks";
+import { open, readFile, stat, unlink, writeFile, type FileHandle } from "node:fs/promises";
 import { join } from "node:path";
 import { MIN_REDACT_LENGTH } from "./redact.ts";
 
@@ -12,12 +13,17 @@ export interface StoreEntry {
 	value: string;
 	updatedAt: string;
 	fingerprint: string;
+	/** 命令首词前缀限定（#171）：非空时首词命中任一前缀才注入；缺省/[] = 任意命令可用。 */
+	allowedPrefix?: string[];
 }
 export type Store = Record<string, StoreEntry>;
 
 export const storePaths = (agentDir: string) => ({
 	storePath: join(agentDir, "secret-store.json"),
-	envFile: join(agentDir, "secret-store.env"),
+	storePathAge: join(agentDir, "secret-store.json.age"), // age 后端正典（#173）：密文
+	keyPath: join(agentDir, "secret-store.key"), // age 身份密钥（0600，与密文分离）
+	confPath: join(agentDir, "secret-store.conf"), // 后端选择配置（缺省 age）
+	legacyEnvFile: join(agentDir, "secret-store.env"), // v1 遗留 env 文件，session_start 退役删除（rolling-review-r1 #3）
 });
 
 /** 合法凭证名 = bash 变量名（[5]）：env 行的赋值目标，放宽即命令注入/语法错误。 */
@@ -33,19 +39,27 @@ export function nameProblem(name: string): string | undefined {
 	return undefined;
 }
 
-/** [5]/[7]/[13] 条目形状校验：名字合法、value 是字符串、不含 NUL、达到脱敏阈值（Redactor 短于 4 字符会静默忽略）。 */
+/** [5]/[7]/[13] 条目形状校验：名字合法、value 是字符串、不含 NUL、达到脱敏阈值（Redactor 短于 4 字符会静默忽略）、
+ *  allowedPrefix（若给出）是字符串数组且元素非空串/无首尾空白（#171；r2 #1：空串元素 startsWith 恒真 = 完全取消限定）。
+ *  读（手改 JSON）与写共用本入口，两路都拦。 */
 function entryProblem(name: string, entry: unknown): string | undefined {
 	const nameErr = nameProblem(name);
 	if (nameErr) return nameErr;
 	if (typeof entry !== "object" || entry === null || typeof (entry as StoreEntry).value !== "string") return "value 非字符串";
-	const { value } = entry as StoreEntry;
+	const { value, allowedPrefix } = entry as StoreEntry;
 	if (value.includes("\0")) return "value 含 NUL 字符";
 	if (value.length < MIN_REDACT_LENGTH) return `value 短于 ${MIN_REDACT_LENGTH} 字符，无法可靠脱敏`;
+	if (allowedPrefix !== undefined) {
+		if (!Array.isArray(allowedPrefix) || allowedPrefix.some((p) => typeof p !== "string"))
+			return "allowedPrefix 必须是字符串数组";
+		if (allowedPrefix.some((p) => p.length === 0 || p.trim() !== p))
+			return "allowedPrefix 元素不能为空串或含首尾空白";
+	}
 	return undefined;
 }
 
 /** [9] 整店校验：任一条目非法 → 抛错（调用方在任何文件落地前拒绝）。 */
-function validateStore(store: Store): void {
+export function validateStore(store: Store): void {
 	for (const [name, entry] of Object.entries(store)) {
 		const problem = entryProblem(name, entry);
 		if (problem) throw new Error(`secret-store: 拒绝写入，条目 ${name} 校验失败：${problem}`);
@@ -64,6 +78,14 @@ export async function loadStore(storePath: string, onWarning?: (msg: string) => 
 		if ((err as NodeJS.ErrnoException).code === "ENOENT") return Object.create(null) as Store; // 与填充路径一致：null 原型，原型继承属性不可误判为条目（#126）
 		throw err;
 	}
+	return parseStoreText(raw, storePath, onWarning);
+}
+
+/** 已读文本 → Store（age 后端解密产物共用同一解析/校验路径，#173）。
+ *  review-high #2：strict（迁移路径专用）= 结构/条目级 problem 即抛错而非跳过——migrateLegacy 随后 shred 原明文，
+ *  宽松跳过会变成"静默丢弃+销毁原件"（不可恢复）；strict 抛错使原文件保留。读路径（loadStore/age 解密装载）
+ *  维持宽松跳过（现网行为）。 */
+export function parseStoreText(raw: string, storePath: string, onWarning?: (msg: string) => void, strict = false): Store {
 	let parsed: unknown;
 	try {
 		parsed = JSON.parse(raw);
@@ -74,14 +96,24 @@ export async function loadStore(storePath: string, onWarning?: (msg: string) => 
 	const secrets = (parsed as { secrets?: unknown }).secrets;
 	if (secrets === undefined) return Object.create(null) as Store;
 	if (typeof secrets !== "object" || secrets === null) {
+		if (strict) throw new Error(`secret-store: 存储文件 ${storePath} secrets 字段非对象，迁移中止（原文件保留未动）`);
 		onWarning?.("secret-store: secrets 字段非对象，按空存储处理");
 		return Object.create(null) as Store;
 	}
 	const out = Object.create(null) as Store; // null 原型：磁盘条目名不可信（__proto__ 键不得触发原型链写）
 	for (const [name, entry] of Object.entries(secrets)) {
 		const problem = entryProblem(name, entry);
-		if (problem) onWarning?.(`secret-store: 忽略条目 ${name}：${problem}`);
-		else out[name] = entry as StoreEntry;
+		if (problem) {
+			if (strict)
+				throw new Error(
+					`secret-store: 存储文件 ${storePath} 条目 ${name} 校验失败（${problem}），迁移中止：原文件保留未动、未写任何密文；请修复或移除该条目后重试`,
+				);
+			onWarning?.(`secret-store: 忽略条目 ${name}：${problem}`);
+		} else {
+			const e = entry as StoreEntry;
+			// r3 #5：显式构造新条目对象（allowedPrefix schema 迁移补全，#171），不共享解析中间对象引用
+			out[name] = { ...e, allowedPrefix: e.allowedPrefix ?? [] };
+		}
 	}
 	return out;
 }
@@ -108,78 +140,29 @@ async function acquireLock(lockPath: string, deadline: number): Promise<FileHand
 	}
 }
 
-/** [5] 跨进程互斥锁原语：updateStore 与 session_start 的 load+env 生成共用。 */
+/** 同一异步链内的锁重入跟踪（r7 #1）：updateStore 持锁后调 backend.load，其首次使用/迁移分支会再进
+ *  withStoreLock——同一锁文件自取会自旋到超时。ALS 只沿 await 链传播：并发 session 的兄弟调用各自
+ *  取锁，互斥语义不变。 */
+const heldLock = new AsyncLocalStorage<string>();
+
+/** [5] 跨进程互斥锁原语：updateStore 读-改-写共用。 */
 export async function withStoreLock<T>(storePath: string, fn: () => Promise<T>): Promise<T> {
 	const lockPath = `${storePath}.lock`;
-	const fd = await acquireLock(lockPath, Date.now() + LOCK_TIMEOUT_MS);
-	try {
-		await fd.writeFile(String(process.pid)); // 记录持锁者，便于诊断遗留锁
-		return await fn();
-	} finally {
-		await fd.close();
-		await unlink(lockPath).catch(() => {});
-	}
-}
-
-/**
- * [11]/[12] 跨进程互斥的读-改-写：锁内 reload → merge → 两阶段原子提交 json+env（[8]）。
- * mutator 返回 undefined 表示无需变更（不重写文件）。lockfile 无 fencing：持锁进程若停顿
- * 超过 LOCK_TIMEOUT_MS 可能被按 stale 抢占——mutator 窗口为毫秒级，实际风险可忽略。
- */
-export async function updateStore(
-	agentDir: string,
-	storePath: string,
-	envFile: string,
-	mutate: (store: Store) => Store | undefined,
-): Promise<Store> {
-	await mkdir(agentDir, { recursive: true });
-	return withStoreLock(storePath, async () => {
-		const store = await loadStore(storePath);
-		const next = mutate(store);
-		if (next === undefined) return store;
-		validateStore(next); // [9] 任一条目非法 → 整体拒绝，零文件落地
-		// [8] 两阶段提交：json+env 都 stage 成 tmp 后依序 rename（json 先 env 后）；
-		// env rename 失败 → 旧 json 原文 stage+rename 回滚（原本没有则删掉），杜绝半提交。
-		let oldJson: string | null = null;
+	if (heldLock.getStore() === lockPath) return fn(); // 同链重入直通（r7 #1）
+	return heldLock.run(lockPath, async () => {
+		const fd = await acquireLock(lockPath, Date.now() + LOCK_TIMEOUT_MS);
 		try {
-			oldJson = await readFile(storePath, "utf8");
-		} catch (err) {
-			if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+			await fd.writeFile(String(process.pid)); // 记录持锁者，便于诊断遗留锁
+			return await fn();
+		} finally {
+			await fd.close();
+			await unlink(lockPath).catch(() => {});
 		}
-		const jsonTmp = await stageTmp(storePath, `${JSON.stringify({ secrets: next }, null, 2)}\n`);
-		let envTmp: string;
-		try {
-			envTmp = await stageTmp(envFile, serializeEnv(next));
-		} catch (err) {
-			await unlink(jsonTmp).catch(() => {});
-			throw err;
-		}
-		try {
-			await rename(jsonTmp, storePath);
-			await chmod(storePath, 0o600).catch(() => {});
-		} catch (err) {
-			await unlink(jsonTmp).catch(() => {});
-			await unlink(envTmp).catch(() => {});
-			throw err;
-		}
-		try {
-			await rename(envTmp, envFile);
-			await chmod(envFile, 0o600).catch(() => {});
-		} catch (err) {
-			await unlink(envTmp).catch(() => {});
-			if (oldJson === null) await unlink(storePath).catch(() => {});
-			else {
-				const back = await stageTmp(storePath, oldJson);
-				await rename(back, storePath); // 回滚失败如实上抛（与 err 同因：存储层故障）
-			}
-			throw err;
-		}
-		return next;
 	});
 }
 
 /** [8] 唯一 tmp（pid+随机）+ wx 独占创建，0600；写失败清理 tmp，rename 由调用方负责。 */
-async function stageTmp(path: string, content: string): Promise<string> {
+export async function stageTmp(path: string, content: string): Promise<string> {
 	const tmp = `${path}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`;
 	try {
 		await writeFile(tmp, content, { mode: 0o600, flag: "wx" });
@@ -190,39 +173,5 @@ async function stageTmp(path: string, content: string): Promise<string> {
 	}
 }
 
-/** 唯一 tmp + rename 原子替换，0600；失败清理 tmp（[11]：共享 .tmp 名并发写互踩）。 */
-async function atomicWrite(path: string, content: string): Promise<void> {
-	const tmp = await stageTmp(path, content);
-	try {
-		await rename(tmp, path);
-		await chmod(path, 0o600).catch(() => {});
-	} catch (err) {
-		await unlink(tmp).catch(() => {});
-		throw err;
-	}
-}
-
-export async function saveStore(agentDir: string, storePath: string, store: Store): Promise<void> {
-	await mkdir(agentDir, { recursive: true });
-	await atomicWrite(storePath, JSON.stringify({ secrets: store }, null, 2) + "\n");
-}
-
-/** bash 单引号字面量：'…' 内一切字符（含 $、反引号、真实换行）皆字面；' 自身以 '\'' 表达（[4]）。[11] 注入前缀同款导出。 */
+/** bash 单引号字面量：'…' 内一切字符（含 $、反引号、真实换行）皆字面；' 自身以 '\'' 表达（[4]）。[11] 注入前缀逐变量引用同款。 */
 export const shellQuote = (value: string): string => `'${value.replace(/'/g, `'\\''`)}'`;
-
-/** env 文件内容：NAME='<单引号字面量>'——JSON 转义不是 bash 字面量（$()/反引号/$HOME 会被执行/展开、换行被破坏）。非法名/NUL 即抛（发生在任何文件落地前）。 */
-function serializeEnv(store: Store): string {
-	return (
-		Object.entries(store)
-			.map(([name, e]) => {
-				if (!STORE_NAME_RE.test(name)) throw new Error(`secret-store: 非法变量名 ${name}，拒绝写入 env 文件`);
-				if (e.value.includes("\0")) throw new Error(`secret-store: 凭证 ${name} 的值含 NUL 字符，无法写入 env 文件`);
-				return `${name}=${shellQuote(e.value)}`;
-			})
-			.join("\n") + "\n"
-	);
-}
-
-export async function writeEnvFile(envFile: string, store: Store): Promise<void> {
-	await atomicWrite(envFile, serializeEnv(store));
-}
