@@ -72,7 +72,7 @@ function mkCtx(root: string, adir: string, over: any = {}) {
       getSessionId: () => SID,
     },
     waitForIdle: async () => {
-      writeFileSync(join(adir, "STATE.md"), "# S\n\n## 交接附言\n附言写实。\n");
+      writeFileSync(join(adir, "STATE.md"), "# S\n\n## 交接附言\n本届完成 A/B/C，未完成 D，下一届第一动作 E，隐性知识见 docs/x.md。\n");
     },
     newSession: async (o: any) => {
       await o.withSession({
@@ -121,7 +121,7 @@ const evtTypes = (adir: string) =>
     "",
     mkCtx(root, adir, {
       waitForIdle: async () => {
-        writeFileSync(join(adir, "STATE.md"), "# S\n\n## 交接附言\n写实。\n");
+        writeFileSync(join(adir, "STATE.md"), "# S\n\n## 交接附言\n本届完成 A/B/C，未完成 D，下一届第一动作 E，隐性知识见 docs/x.md。\n");
         await gate;
       },
     })
@@ -166,6 +166,8 @@ const evtTypes = (adir: string) =>
   await pi.registered["cmd:renew"].handler(
     "",
     mkCtx(root, adir, {
+      // agent calls ready but never fixes the note even after guidance —
+      // corrective retry runs, second READY fires, final ABORT
       waitForIdle: async () => {
         writeFileSync(join(adir, "STATE.md"), "# S\n\n## 交接附言\n（本届在写）\n");
         pi.registered["agent-renew-ready"].execute("t", {}, undefined, undefined, {
@@ -176,8 +178,8 @@ const evtTypes = (adir: string) =>
     })
   );
   const e1 = evtTypes(adir);
-  t("D1 READY 后因附言 ABORT", e1.includes("READY") && e1[e1.length - 1] === "ABORT");
-  writeFileSync(join(adir, "STATE.md"), "# S\n\n## 交接附言\n写实附言。\n");
+  t("D1 指导重试仍失败 → ABORT", e1.filter((x) => x === "READY").length >= 2 && e1[e1.length - 1] === "ABORT");
+  writeFileSync(join(adir, "STATE.md"), "# S\n\n## 交接附言\n本届完成 A/B/C，未完成 D，下一届第一动作 E，隐性知识见 docs/x.md。\n");
   notifs = [];
   await pi.registered["cmd:renew"].handler(
     "",
@@ -218,7 +220,9 @@ const evtTypes = (adir: string) =>
     origSend(m);
   };
   await pi.registered["cmd:renew"].handler("", mkCtx(root, adir));
-  t("F3 LATE_READY 不产生续办（重新发指令）", notifs.some((n) => n.m.includes("换届开始")) && instructionSent === 1);
+  // a forged resume would notify "换届续办" and skip sendUserMessage entirely;
+  // correct behavior: fresh instruction sent, no resume notification
+  t("F3 LATE_READY 不产生续办（重新发指令）", notifs.some((n) => n.m.includes("换届开始")) && instructionSent >= 1 && !notifs.some((n) => n.m.includes("换届续办")));
 }
 
 // ---------- G: audit HIGH-3 — bookkeeping guards ----------
@@ -282,8 +286,45 @@ const evtTypes = (adir: string) =>
   t("H 悬空 null 不阻塞当值匹配", notifs.some((n) => n.m.includes("换届开始")) && evtTypes(adir).slice(-1)[0] === "DONE");
 }
 
+// ---------- I: validation failure → corrective guidance → agent fixes → success ----------
+{
+  const root = mkdtempSync(join(tmpdir(), "renew-I-"));
+  const { adir, root: _r } = makeEnv(root);
+  const pi = mkPi();
+  notifs = [];
+  let guidance: string = "";
+  const origSend = pi.sendUserMessage.bind(pi);
+  // first instruction: agent runs checklist but writes placeholder note; after
+  // the corrective guidance arrives, it fixes the note and calls ready.
+  let round = 0;
+  pi.sendUserMessage = (m: string) => {
+    if (m.includes("换届校验未通过")) {
+      guidance = m;
+      // agent fixes the note in response to guidance
+      writeFileSync(join(adir, "STATE.md"), "# S\n\n## 交接附言（给下一届 lead）\n本届完成 A/B/C，未完成 D，下一届第一动作 E。隐性知识见 docs/x.md。\n");
+      pi.registered["agent-renew-ready"].execute("t", {}, undefined, undefined, {
+        cwd: root,
+        sessionManager: { getSessionId: () => SID },
+      });
+    } else {
+      // initial instruction: agent does checklist, writes placeholder note, AND
+      // calls ready (premature confirmation — exactly the 10-27 lead pattern)
+      writeFileSync(join(adir, "STATE.md"), "# S\n\n## 交接附言\n（本届在写）\n");
+      pi.registered["agent-renew-ready"].execute("t", {}, undefined, undefined, {
+        cwd: root,
+        sessionManager: { getSessionId: () => SID },
+      });
+    }
+    round++;
+    origSend(m);
+  };
+  await pi.registered["cmd:renew"].handler("", mkCtx(root, adir, { waitForIdle: async () => {} }));
+  t("I1 校验失败后发送了修正指导", guidance.includes("交接附言"));
+  t("I2 修正后换届成功", evtTypes(adir).slice(-1)[0] === "DONE" && notifs.some((n) => n.m.includes("换届修正生效")));
+}
+
 // cleanup
-for (const d of ["renew-A-", "renew-B-", "renew-C-", "renew-D-", "renew-E-", "renew-F-", "renew-G-", "renew-H-"]) {
+for (const d of ["renew-A-", "renew-B-", "renew-C-", "renew-D-", "renew-E-", "renew-F-", "renew-G-", "renew-H-", "renew-I-"]) {
   try {
     for (const e of (await import("node:fs")).readdirSync(tmpdir())) {
       if (e.startsWith(d)) rmSync(join(tmpdir(), e), { recursive: true, force: true });

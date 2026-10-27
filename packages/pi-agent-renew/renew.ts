@@ -281,13 +281,18 @@ function extractSpecDiscipline(specPath: string): string {
   return m ? m[0].trim() : "（SPEC.md §7 未找到，请直接读 ~/.agents/agents/SPEC.md）";
 }
 
-/** Read the 交接附言 section from STATE.md (last ## section). */
+/** Read the 交接附言 section from STATE.md.
+ *  Title match tolerates suffixes (「## 交接附言（给下一届 lead）」— agents
+ *  legitimately annotate the heading; 2026-10-27 lead renewal aborted on this).
+ *  Returns null when missing/placeholder; the caller decides whether to retry. */
 function extractHandoffNote(statePath: string): string | null {
   if (!existsSync(statePath)) return null;
   const text = readFileSync(statePath, "utf8");
-  const m = text.match(/##\s*交接附言\s*\n([\s\S]*?)(?=\n## |$)/);
+  const m = text.match(/##\s*交接附言[^\n]*\n([\s\S]*?)(?=\n## |$)/);
   const body = m?.[1]?.trim();
-  return body && body.length > 0 && !body.startsWith("（") ? body : null;
+  // placeholder = the template's literal scaffold (starts with the fullwidth
+  // paren convention) or a stub too short to be a real handoff
+  return body && body.length >= 20 && !body.startsWith("（") ? body : null;
 }
 
 // ---------- prompt assembly (SPEC §6: 只放指针不复制内容) ----------
@@ -521,24 +526,60 @@ export default function renewExtension(pi: ExtensionAPI) {
         runStartedFlag = false;
       }
 
-      // 5. validate: non-resumed windows must have their own READY in the tail;
-      // resumed windows already carry READY from the prior segment.
-      const winCheck = resumed ? { ready: true } : readWindowState(onDuty.agentDir);
-      const handoffNote = extractHandoffNote(statePath);
-      if (!winCheck.ready || !handoffNote) {
-        appendRenewEvent(onDuty.agentDir, {
-          type: "ABORT",
-          sessionId,
-          detail: !winCheck.ready
-            ? "agent did not confirm agent-renew-ready within the window (renew.log tail not READY)"
-            : "STATE.md 交接附言 empty or placeholder",
-        });
-        const why = !winCheck.ready
-          ? "agent 未（在本窗口内）确认 agent-renew-ready；若它实际已完成 STATE 更新，重新执行 /renew 会自动续办"
-          : "STATE.md 的「交接附言」为空或仍是占位文本";
-        ctx.ui.notify(`换届中止：${why}。处理后重新执行 /renew。`, "error");
-        return;
+      // 5. validate with one corrective-retry: instead of aborting on the first
+      // miss (which forces the user to re-run /renew), send the agent concrete
+      // fix guidance and wait for the turn to finish, then re-validate.
+      // Terminate only after the retry still fails (real failure, user acts).
+      const validate = (): { ok: true; handoffNote: string } | { ok: false; why: string; guidance: string } => {
+        const winNow = resumed ? { ready: true } : readWindowState(onDuty.agentDir);
+        const note = extractHandoffNote(statePath);
+        if (!winNow.ready) {
+          return {
+            ok: false,
+            why: "agent 未在本窗口内确认 agent-renew-ready",
+            guidance:
+              "换届校验未通过：你还没有用模型原生工具调用（直接 toolCall，不经 bash/codemode）调用 agent-renew-ready。请现在调用它。",
+          };
+        }
+        if (!note) {
+          return {
+            ok: false,
+            why: "STATE.md 的「交接附言」缺失、过短或仍是占位文本",
+            guidance:
+              "换届校验未通过：STATE.md 的「交接附言」一节需要写实。要求：①标题行以「## 交接附言」开头（允许带后缀说明）；②正文 ≥20 字，包含：本届做了什么、未完成什么、下一届第一动作、隐性知识指针（哪些经验沉淀在哪个文档）。写完后重新调用 agent-renew-ready。",
+          };
+        }
+        return { ok: true, handoffNote: note };
+      };
+
+      let outcome = validate();
+      if (!outcome.ok) {
+        // corrective retry: one round of specific guidance, then re-validate
+        ctx.ui.notify(`换届校验未过，发送修正指导：${outcome.why}`, "info");
+        armAgentStart = true;
+        runStartedFlag = false;
+        pi.sendUserMessage(outcome.guidance);
+        for (let i = 0; i < 100 && !runStartedFlag; i++) {
+          await new Promise((r) => setTimeout(r, 100));
+        }
+        armAgentStart = false;
+        if (runStartedFlag) {
+          await ctx.waitForIdle();
+        }
+        outcome = validate();
+        if (!outcome.ok) {
+          // still failing after guidance — this is a real failure, hand to user
+          appendRenewEvent(onDuty.agentDir, {
+            type: "ABORT",
+            sessionId,
+            detail: `validation failed even after corrective retry: ${outcome.why}`,
+          });
+          ctx.ui.notify(`换届中止（已发过一轮修正指导仍失败）：${outcome.why}。处理后重新执行 /renew。`, "error");
+          return;
+        }
+        ctx.ui.notify("换届修正生效，校验通过。", "info");
       }
+      const handoffNote: string = outcome.ok ? outcome.handoffNote : "unreachable";
 
       // 6. build prompt + audit file — guard so a corrupt AGENT.json aborts the
       // window cleanly (ABORT event) instead of leaving a zombie until TTL.
