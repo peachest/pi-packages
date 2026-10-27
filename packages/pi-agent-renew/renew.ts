@@ -25,14 +25,14 @@
 import { Type } from "typebox";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, statSync, appendFileSync } from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 const WINDOW_TTL_MS = 30 * 60 * 1000; // same-owner re-entry freshness (user-approved)
 
 // ---------- renew.log event stream (the window state machine) ----------
 
 interface RenewEvent {
-  type: "START" | "READY" | "TAKEOVER" | "DONE" | "ABORT" | "CANCELLED" | "LEGACY";
+  type: "START" | "READY" | "LATE_READY" | "TAKEOVER" | "DONE" | "ABORT" | "CANCELLED" | "LEGACY";
   ts: string; // ISO
   sessionId: string; // owner of the window / actor of the event
   detail?: string;
@@ -102,7 +102,8 @@ function readWindowState(agentDir: string): WindowState {
   //                                          terminal/opening event) had a READY
   let last = -1;
   for (let i = events.length - 1; i >= 0; i--) {
-    if (events[i].type !== "LEGACY") {
+    const t = events[i].type;
+    if (t !== "LEGACY" && t !== "LATE_READY") {
       last = i;
       break;
     }
@@ -116,7 +117,7 @@ function readWindowState(agentDir: string): WindowState {
       let sawReady = false;
       for (let i = last - 1; i >= 0; i--) {
         const e = events[i];
-        if (e.type === "LEGACY") continue;
+        if (e.type === "LEGACY" || e.type === "LATE_READY") continue;
         if (e.type === "READY") {
           sawReady = true;
           continue;
@@ -135,7 +136,7 @@ function readWindowState(agentDir: string): WindowState {
   if (ready) {
     for (let i = last - 1; i >= 0; i--) {
       const e = events[i];
-      if (e.type === "LEGACY") continue;
+      if (e.type === "LEGACY" || e.type === "LATE_READY") continue;
       opening = e;
       break;
     }
@@ -154,12 +155,12 @@ function readWindowState(agentDir: string): WindowState {
 
 // ---------- helpers ----------
 
-/** Current session id from the session file name (…_<uuid>.jsonl). */
+/** Current session id — single source for BOTH /renew and agent-renew-ready:
+ * sessionManager.getSessionId() (the session file name embeds the same UUID;
+ * never re-derive from the file name — two schemes drifting apart would break
+ * every owner comparison, 2026-10-27 challenge-audit HIGH-2). */
 function currentSessionId(ctx: ExtensionCommandContext): string {
-  const file = ctx.sessionManager.getSessionFile() ?? "";
-  const base = basename(file, ".jsonl");
-  const id = base.includes("_") ? base.slice(base.lastIndexOf("_") + 1) : base;
-  return id || ctx.sessionManager.getSessionId();
+  return ctx.sessionManager.getSessionId?.() ?? "unknown";
 }
 
 /** Walk up from cwd to ~ looking for .agents/agents/. Returns nearest hit or null. */
@@ -181,13 +182,20 @@ interface OnDuty {
   startedAt: string;
 }
 
-/** Find the agent whose last endedAt:null sessions.log entry matches sessionId. */
+/** Find the agent whose sessions.log has an open (endedAt:null) entry for
+ *  sessionId. Dangling null entries from dead predecessors are tolerated:
+ *  ANY null entry matching counts (2026-10-27 challenge-audit MEDIUM-7 —
+ *  lead carried 3 dangling nulls; last-entry-only matching locked renewal). */
 function matchIdentity(agentsRoot: string, sessionId: string): OnDuty | null {
   let names: string[];
   try {
-    names = readdirSync(agentsRoot).filter((n) =>
-      statSync(join(agentsRoot, n)).isDirectory()
-    );
+    names = readdirSync(agentsRoot).filter((n) => {
+      try {
+        return statSync(join(agentsRoot, n)).isDirectory();
+      } catch {
+        return false; // broken symlink / raced deletion — skip, don't fail the scan
+      }
+    });
   } catch {
     return null;
   }
@@ -200,10 +208,9 @@ function matchIdentity(agentsRoot: string, sessionId: string): OnDuty | null {
       try {
         entry = JSON.parse(lines[i]);
       } catch {
-        continue;
+        continue; // malformed line — skip
       }
-      if (entry.endedAt !== null && entry.endedAt !== undefined) continue; // not on duty
-      // last endedAt:null entry for this agent — must match current session
+      if (entry.endedAt !== null && entry.endedAt !== undefined) continue;
       if (entry.sessionId === sessionId) {
         return {
           agentName: name,
@@ -212,7 +219,7 @@ function matchIdentity(agentsRoot: string, sessionId: string): OnDuty | null {
           startedAt: String(entry.startedAt ?? ""),
         };
       }
-      break; // this agent has an on-duty entry but it's someone else
+      // dangling null owned by a dead session — keep scanning (don't break)
     }
   }
   return null;
@@ -220,14 +227,29 @@ function matchIdentity(agentsRoot: string, sessionId: string): OnDuty | null {
 
 /**
  * Append-only style update of the old row's endedAt (edit only that field in
- * place — SPEC §6: 补全字段不算改历史；note 内容不动).
+ * place — SPEC §6: 补全字段不算改历史；note 内容不动). Verifies the target row's
+ * sessionId BEFORE editing (audit HIGH-3: a stale entryIndex after concurrent
+ * log modification would corrupt a sibling row).
  */
-function closeOnDutyEntry(agentDir: string, entryIndex: number, endedAt: string): void {
+function closeOnDutyEntry(
+  agentDir: string,
+  onDuty: OnDuty,
+  expectedSessionId: string,
+  endedAt: string
+): void {
   const logPath = join(agentDir, "sessions.log");
   const lines = readFileSync(logPath, "utf8").split("\n");
-  const entry = JSON.parse(lines[entryIndex]);
+  if (onDuty.entryIndex >= lines.length) {
+    throw new Error(`sessions.log 行 ${onDuty.entryIndex} 不存在（日志被并发修改）`);
+  }
+  const entry = JSON.parse(lines[onDuty.entryIndex]);
+  if (entry.sessionId !== expectedSessionId) {
+    throw new Error(
+      `sessions.log 行 ${onDuty.entryIndex} 的 sessionId (${String(entry.sessionId).slice(0, 8)}) 与当值者 (${expectedSessionId.slice(0, 8)}) 不符——日志被并发修改，拒绝盲改`
+    );
+  }
   entry.endedAt = endedAt;
-  lines[entryIndex] = JSON.stringify(entry);
+  lines[onDuty.entryIndex] = JSON.stringify(entry);
   writeFileSync(logPath, lines.join("\n"));
 }
 
@@ -237,7 +259,8 @@ function appendSessionEntry(
   note: string,
   handoffFile: string
 ): void {
-  const logPath = join(agentDir, "sessions.log");
+  // Pure append (appendFileSync) — a read-all + rewrite would race concurrent
+  // appends and truncate the log on a mid-write crash (audit MEDIUM-4).
   const entry = {
     sessionId,
     startedAt: new Date().toISOString().replace(/\.\d+Z$/, "Z"),
@@ -245,9 +268,9 @@ function appendSessionEntry(
     note,
     handoffFile,
   };
-  const body = readFileSync(logPath, "utf8");
-  const needsNewline = body.length > 0 && !body.endsWith("\n");
-  writeFileSync(logPath, body + (needsNewline ? "\n" : "") + JSON.stringify(entry) + "\n");
+  const body = readFileSyncSafe(join(agentDir, "sessions.log"));
+  const prefix = body.length > 0 && !body.endsWith("\n") ? "\n" : "";
+  appendFileSync(join(agentDir, "sessions.log"), prefix + JSON.stringify(entry) + "\n");
 }
 
 /** Extract SPEC §7 当值纪律 section (from the numbered list to the next ## or EOF). */
@@ -274,7 +297,14 @@ function buildInitialPrompt(
   agentName: string,
   handoffNote: string
 ): string {
-  const manifest = JSON.parse(readFileSync(join(agentDir, "AGENT.json"), "utf8"));
+  // AGENT.json missing/corrupt must not throw from the command handler — that
+  // would leave the START event as a zombie window until TTL (audit MEDIUM-6).
+  let manifest: { workspace?: string; name?: string };
+  try {
+    manifest = JSON.parse(readFileSync(join(agentDir, "AGENT.json"), "utf8"));
+  } catch (err) {
+    throw new Error(`AGENT.json 读取失败（${agentDir}）：${err instanceof Error ? err.message : err}`);
+  }
   // SPEC 唯一真相源在全局 workspace：~/.agents/agents/SPEC.md；工作区副本（若有）优先
   const workspaceSpec = join(agentDir, "..", "SPEC.md");
   const globalSpec = join(process.env.HOME ?? "", ".agents", "agents", "SPEC.md");
@@ -312,12 +342,14 @@ function buildInitialPrompt(
 export default function renewExtension(pi: ExtensionAPI) {
   // run-start latch (waitForIdle resolves immediately if no run has started yet —
   // 2026-10-21 regen-gov incident). Per-command via event + closure, not module state.
+  // Declare before the pi.on registration; /renew concurrency is already blocked
+  // by the window mutex before any latch reset, so a single latch pair is safe.
+  let runStartedFlag = false;
   let armAgentStart = false;
 
   pi.on("agent_start", async () => {
     if (armAgentStart) runStartedFlag = true;
   });
-  let runStartedFlag = false;
 
   pi.registerTool({
     name: "agent-session-id",
@@ -341,9 +373,11 @@ export default function renewExtension(pi: ExtensionAPI) {
       "换届流程专用：当 /renew 指令要求你完成换届 checklist 后，用模型原生工具调用（直接 toolCall，不要经 bash/codemode 转发）调用本工具确认就绪。窗口外调用会记录 late-ready 并返回错误。",
     parameters: Type.Object({}),
     async execute(_id, _params, _signal, _onUpdate, toolCtx) {
-      // The tool's own session — the window owner check uses it.
+      // The tool's own session — the window owner check uses it. Same source as
+      // the /renew handler (sessionManager.getSessionId()) so owner comparison
+      // can never split across two derivation schemes.
       const callerSessionId = toolCtx?.sessionManager?.getSessionId?.() ?? "unknown";
-      const agentsRoot = toolCtx ? findAgentsRoot(toolCtx.cwd) : null;
+      const agentsRoot = toolCtx?.cwd ? findAgentsRoot(toolCtx.cwd) : null;
       if (!agentsRoot) {
         return {
           content: [{ type: "text", text: "错误：不在任何 agent workspace 内（找不到 .agents/agents/）。" }],
@@ -359,8 +393,13 @@ export default function renewExtension(pi: ExtensionAPI) {
       }
       const win = readWindowState(onDuty.agentDir);
       if (!win.open || win.ownerSessionId !== callerSessionId) {
+        // LATE_READY: an out-of-window call, recorded for audit ONLY. It must
+        // NOT participate in window derivation (readWindowState treats tail
+        // READY as an open ready window) — writing READY here would forge a
+        // ready window and skip validation on the next /renew (2026-10-27
+        // challenge-audit HIGH-1).
         appendRenewEvent(onDuty.agentDir, {
-          type: "READY",
+          type: "LATE_READY",
           sessionId: callerSessionId,
           detail: "rejected: no open window owned by this session (out-of-window call recorded for late-ready audit)",
         });
@@ -501,15 +540,31 @@ export default function renewExtension(pi: ExtensionAPI) {
         return;
       }
 
-      // 6. build prompt + audit file
-      const prompt = buildInitialPrompt(onDuty.agentDir, onDuty.agentName, handoffNote);
+      // 6. build prompt + audit file — guard so a corrupt AGENT.json aborts the
+      // window cleanly (ABORT event) instead of leaving a zombie until TTL.
+      let prompt: string;
+      try {
+        prompt = buildInitialPrompt(onDuty.agentDir, onDuty.agentName, handoffNote);
+      } catch (err) {
+        appendRenewEvent(onDuty.agentDir, {
+          type: "ABORT",
+          sessionId,
+          detail: `prompt build failed: ${err instanceof Error ? err.message : err}`,
+        });
+        ctx.ui.notify(`换届中止：${err instanceof Error ? err.message : err}。`, "error");
+        return;
+      }
       const handoffsDir = join(onDuty.agentDir, "handoffs");
       if (!existsSync(handoffsDir)) mkdirSync(handoffsDir, { recursive: true });
       const ts = new Date().toISOString().replace(/[:.]/g, "-");
       const handoffFile = join(handoffsDir, `${ts}-from-${sessionId.slice(0, 8)}.md`);
       writeFileSync(handoffFile, prompt);
 
-      // 7. in-place session replacement + bookkeeping + auto-send
+      // 7. in-place session replacement + bookkeeping + auto-send.
+      // Bookkeeping is failure-guarded: a half-done registration is worse than a
+      // logged failure (new session exists but sessions.log unrenewed) — every
+      // step verifies its precondition and any error lands in renew.log so the
+      // next /renew can see what happened (audit HIGH-3).
       const oldSessionId = sessionId;
       const agentDir = onDuty.agentDir;
       const endedAt = new Date().toISOString().replace(/\.\d+Z$/, "Z");
@@ -517,20 +572,33 @@ export default function renewExtension(pi: ExtensionAPI) {
         parentSession: ctx.sessionManager.getSessionFile(),
         withSession: async (replacementCtx) => {
           const newId = currentSessionId(replacementCtx as ExtensionCommandContext);
-          closeOnDutyEntry(agentDir, onDuty.entryIndex, endedAt);
-          appendSessionEntry(
-            agentDir,
-            newId,
-            `换届自 ${oldSessionId.slice(0, 8)}（/renew 自动登记）`,
-            handoffFile
-          );
+          try {
+            closeOnDutyEntry(agentDir, onDuty, oldSessionId, endedAt);
+            appendSessionEntry(
+              agentDir,
+              newId,
+              `换届自 ${oldSessionId.slice(0, 8)}（/renew 自动登记）`,
+              handoffFile
+            );
+          } catch (err) {
+            // Registration failure with the new session already created: log it
+            // loudly and still deliver the prompt — the agent identity works,
+            // only the ledger is stale; next /renew/--adopt can repair.
+            appendRenewEvent(agentDir, {
+              type: "ABORT",
+              sessionId: oldSessionId,
+              detail: `sessions.log bookkeeping failed after newSession: ${err instanceof Error ? err.message : err} — LEDGER STALE, repair manually`,
+            });
+          }
+          // DONE only after the prompt actually reaches the new session
+          // (audit: DONE-before-send claimed success on a half-delivered handover).
+          await replacementCtx.sendUserMessage(prompt);
           appendRenewEvent(agentDir, {
             type: "DONE",
             sessionId: oldSessionId,
             newSessionId: newId,
             handoffFile,
           });
-          await replacementCtx.sendUserMessage(prompt);
         },
       });
 
