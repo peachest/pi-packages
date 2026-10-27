@@ -15,7 +15,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import renewExtension from "./renew.ts";
-import { WINDOW_TTL_MS, deriveWindowState, parseRenewLog, readWindowState, type RenewEvent, type WindowState } from "./renew-store.ts";
+import { WINDOW_TTL_MS, closeOnDutyEntry, deriveWindowState, parseRenewLog, readWindowState, type RenewEvent, type WindowState } from "./renew-store.ts";
 
 const SID = "00000000-0000-7000-8000-000000000000";
 const NEW_SID = "99999999-9999-7000-8000-999999999999";
@@ -408,8 +408,31 @@ const evtTypes = (adir: string) =>
   t("L1 无 sessionId 的 START 归 LEGACY、不构成开放窗口", parseRenewLog(adir)[0].type === "LEGACY" && readWindowState(adir).open === false);
 }
 
+// ---------- M: r1 #5/#6 — closeOnDutyEntry 读取与解析防御 ----------
+{
+  const root = mkdtempSync(join(tmpdir(), "renew-M-"));
+  const { adir, root: _r } = makeEnv(root);
+  const onDuty = { agentName: "lead", agentDir: adir, entryIndex: 0, startedAt: "t" };
+  writeFileSync(join(adir, "sessions.log"), "not-json\n");
+  let msg = "";
+  try {
+    closeOnDutyEntry(adir, onDuty, SID, "e");
+  } catch (err) {
+    msg = err instanceof Error ? err.message : String(err);
+  }
+  t("M1 畸形行报错含行号与摘要", msg.includes("行 0") && msg.includes("not-json"));
+  writeFileSync(join(adir, "sessions.log"), "");
+  let msg2 = "";
+  try {
+    closeOnDutyEntry(adir, onDuty, SID, "e");
+  } catch (err) {
+    msg2 = err instanceof Error ? err.message : String(err);
+  }
+  t("M2 空文件报错含 sessions.log 路径", msg2.includes(join(adir, "sessions.log")));
+}
+
 // cleanup
-for (const d of ["renew-A-", "renew-B-", "renew-C-", "renew-D-", "renew-E-", "renew-F-", "renew-G-", "renew-H-", "renew-I-", "renew-J-", "renew-K-", "renew-L-"]) {
+for (const d of ["renew-A-", "renew-B-", "renew-C-", "renew-D-", "renew-E-", "renew-F-", "renew-G-", "renew-H-", "renew-I-", "renew-J-", "renew-K-", "renew-L-", "renew-M-"]) {
   try {
     for (const e of (await import("node:fs")).readdirSync(tmpdir())) {
       if (e.startsWith(d)) rmSync(join(tmpdir(), e), { recursive: true, force: true });

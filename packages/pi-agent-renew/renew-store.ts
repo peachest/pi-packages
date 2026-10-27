@@ -169,11 +169,23 @@ export function closeOnDutyEntry(
   const logPath = join(agentDir, "sessions.log");
   // matchIdentity 的 entryIndex 基于空行过滤后的数组（r1 #1）——这里必须用同一基准，
   // 否则 sessions.log 含空行（appendRenewEvent 竞态的无害产物）即错位
-  const lines = readFileSync(logPath, "utf8").split("\n").filter((l) => l.trim());
+  const body = readFileSyncSafe(logPath);
+  if (!body.trim()) {
+    throw new Error(`sessions.log 为空或不存在（${logPath}）`);
+  }
+  const lines = body.split("\n").filter((l) => l.trim());
+  if (onDuty.entryIndex < 0) {
+    throw new Error(`sessions.log entryIndex 非法（${onDuty.entryIndex}）`);
+  }
   if (onDuty.entryIndex >= lines.length) {
     throw new Error(`sessions.log 行 ${onDuty.entryIndex} 不存在（日志被并发修改）`);
   }
-  const entry = JSON.parse(lines[onDuty.entryIndex]);
+  let entry: Record<string, unknown>;
+  try {
+    entry = JSON.parse(lines[onDuty.entryIndex]);
+  } catch (err) {
+    throw new Error(`sessions.log 行 ${onDuty.entryIndex} JSON 解析失败：${lines[onDuty.entryIndex].slice(0, 20)}（${err instanceof Error ? err.message : String(err)}）`);
+  }
   if (entry.sessionId !== expectedSessionId) {
     throw new Error(
       `sessions.log 行 ${onDuty.entryIndex} 的 sessionId (${String(entry.sessionId).slice(0, 8)}) 与当值者 (${expectedSessionId.slice(0, 8)}) 不符——日志被并发修改，拒绝盲改`
