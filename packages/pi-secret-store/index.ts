@@ -253,7 +253,7 @@ export default function secretStore(pi: ExtensionAPI) {
 		try {
 			const store = await reload(warn);
 			if (ctx.hasUI && Object.keys(store).length > 0)
-				ctx.ui.notify(`secret-store: ${Object.keys(store).length} 个凭证已就绪（bash 内直接引用 $NAME）`, "info");
+				ctx.ui.notify(`secret-store: ${Object.keys(store).length} 个凭证已就绪（bash 内直接引用 $NAME；脚本内部读环境变量时显式传递：NAME=$NAME python3 x.py）`, "info");
 		} catch (err) {
 			// [13] 仅 ENOENT 视为空存储；损坏/权限不重写任何文件，通知后跳过
 			warn(`secret-store 存储不可读：${(err as Error).message}`);
@@ -371,8 +371,8 @@ export default function secretStore(pi: ExtensionAPI) {
 		name: "secret_query",
 		label: "Secret Query",
 		description:
-			"查询持久化凭证：给 name 精确命中返回存在性详情（指纹+更新时间，永不含明文）；未命中则按子序列模糊匹配返回候选名单；name 留空返回全部清单。如需在 bash 中使用已存在的凭证，直接引用 $变量名（与凭证名一致），无需本工具返回值。",
-		promptSnippet: "需要密码/API key/登录凭证/token 时先查这里再考虑问用户（existence only, never the value）",
+			"查询持久化凭证：给 name 精确命中返回存在性详情（指纹+更新时间，永不含明文）；未命中则按子序列模糊匹配返回候选名单；name 留空返回全部清单。如需在 bash 中使用已存在的凭证，直接引用 $变量名（与凭证名一致），无需本工具返回值；脚本内部读环境变量时显式传递：NAME=$NAME python3 x.py。",
+		promptSnippet: "需要密码/API key/登录凭证/token 时先查这里再考虑问用户（existence only, never the value）；bash 用法：命令文本含 $NAME 字面量即自动注入，脚本消费时显式传参 NAME=$NAME python3 x.py",
 		parameters: Type.Object({
 			name: Type.String({ description: "凭证名/环境变量名，如 HARBOR_PASSWORD、GITBLUE_TOKEN；留空列出全部" }),
 		}),
@@ -382,7 +382,7 @@ export default function secretStore(pi: ExtensionAPI) {
 			// null 原型存储 + hasOwn 判存在（#126）：继承属性（toString 等）不得误报为凭证
 			const e = Object.hasOwn(store, query) ? store[query] : undefined;
 			if (e) {
-				return say(`凭证 ${query} 存在（指纹 ${e.fingerprint}，更新于 ${e.updatedAt}${prefixTag(e)}）。在 bash 中直接引用 $${query} 即可，不要尝试读取明文。`);
+				return say(`凭证 ${query} 存在（指纹 ${e.fingerprint}，更新于 ${e.updatedAt}${prefixTag(e)}）。在 bash 中直接引用 $${query} 即可；脚本内部读环境变量时显式传递：${query}=$${query} python3 x.py。不要尝试读取明文。`);
 			}
 			// 模糊匹配：查询串为名字的子序列（大小写不敏感）；空查询 = 全量清单
 			const q = query.toLowerCase();
@@ -400,8 +400,8 @@ export default function secretStore(pi: ExtensionAPI) {
 		name: "secret_env",
 		label: "Secret Env",
 		description:
-			"列出全部已存凭证的变量名清单（名称+指纹+更新时间，不含值）。使用时在 bash 中直接引用 $NAME，勿写明文——明文写入命令会被 P1 凭证检测拦截。",
-		promptSnippet: "需要凭证时先列这里有哪些已存凭证再决定问用户；列出后 bash 中直接 $NAME 引用（names only, never the values）",
+			"列出全部已存凭证的变量名清单（名称+指纹+更新时间，不含值）。使用时在 bash 中直接引用 $NAME，勿写明文——明文写入命令会被 P1 凭证检测拦截。脚本内部读环境变量时显式传递：NAME=$NAME python3 x.py。",
+		promptSnippet: "需要凭证时先列这里有哪些已存凭证再决定问用户；列出后 bash 中直接 $NAME 引用（names only, never the values），脚本消费时显式传参 NAME=$NAME python3 x.py",
 		parameters: Type.Object({}),
 		async execute() {
 			const store = await (await getBackend()).load();
