@@ -21,6 +21,7 @@ This is a monorepo with 22 packages under `packages/*`. Each package has its own
 | [pi-timekeeper](packages/pi-timekeeper/GLOSSARY.md) | Timekeeper | Codex 式时间感知：run 边界拉式注入时间锚，节流双条件 + 压缩重锚，绝不唤醒 idle |
 | [prototype-events-daemon](packages/prototype-events-daemon/GLOSSARY.md) | Events daemon (prototype) | 前身术语副本（历史参照）；正典见 pi-events-daemon |
 | [pi-events-daemon](packages/pi-events-daemon/GLOSSARY.md) | Events daemon | **正典**：实体状态机基底 + 实现期裁定（Transitioned/epoch/TxOps/envAllowlist）；ADR docs/adr/0001-0008 |
+| [pi-agent-renew](packages/pi-agent-renew/GLOSSARY.md) | Renewal handover | /renew 换届扩展：换届窗口/换届账本/事件流尾部推导，事件流即状态机本体 |
 
 ## Packages without GLOSSARY.md yet
 
