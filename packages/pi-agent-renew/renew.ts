@@ -427,8 +427,8 @@ export default function renewExtension(pi: ExtensionAPI) {
   });
 
   pi.registerCommand("renew", {
-    description: "Agent 换届：更新 STATE → 原地新 session → 自动发送身份 prompt（SPEC.md §6）",
-    handler: async (_args, ctx) => {
+    description: "Agent 换届：更新 STATE → 原地新 session → 自动发送身份 prompt（SPEC.md §6）。可附用户补充要求：/renew <补充要求>",
+    handler: async (args, ctx) => {
       if (ctx.mode !== "tui" && ctx.mode !== "rpc") {
         ctx.ui.notify("/renew 需要交互模式", "error");
         return;
@@ -495,17 +495,23 @@ export default function renewExtension(pi: ExtensionAPI) {
         runStartedFlag = false;
         armAgentStart = true;
         ctx.ui.notify(`换届开始：${onDuty.agentName} @ ${onDuty.agentDir}`, "info");
-        pi.sendUserMessage(
-          [
-            "换届流程启动（/renew）。请按以下 checklist 逐项执行：",
+        const checklist: string[] = [
+          "换届流程启动（/renew）。请按以下 checklist 逐项执行：",
             "1. 后台资产分类处置（SPEC §7 纪律 6）：",
             "   a. 绑定本 session 进程的（subagent、非 detached bg 任务）：等完成/收尾后再继续换届；确实等不了的先终止或写明交接处理方式；",
-            "   b. 脱离 session 进程的（daemon 订阅、远端节点脚本、-d 容器等）：在 STATE.md「活跃后台任务」节记录可寻回标识（订阅 id/容器/节点名/任务 id），换届后新 session 按标识找回；",
-            "   c. daemon 订阅专项：把需要在换届后继续生效的订阅 cancel 掉，由新 session 重新挂（daemon 订阅随 session 生死，无法继承——继承功能在联合开发中，见其仓 ticket）；",
+            "   b. 脱离 session 进程的（daemon 事件订阅、远端节点脚本、-d 容器等）：在 STATE.md「活跃后台任务」节记录可寻回标识（订阅 id/容器/节点名/任务 id），换届后新 session 按标识找回；",
+            "   c. daemon 订阅专项：把需要在换届后继续生效的订阅 cancel 掉，由新 session 重新挂（daemon 订阅随 session 生死，无法继承——继承功能尚未完成）；",
             "2. 更新 STATE.md：刷新战役快照与活跃后台资产（含标识）、重排 Backlog、交接附言写实（本届做了什么/未完成什么/下一届第一动作），并附上隐性操作知识指针（哪些经验/教训/直觉判断沉淀在哪个文档，让下一届不用重新探索）——按 SPEC §7 纪律 4/7；",
-            "3. 全部完成后，调用 agent-renew-ready 工具确认就绪（与调用 bash 相同的一次普通工具调用），随后停下等待换届流程接管。",
-          ].join("\n")
-        );
+          "3. 全部完成后，调用 agent-renew-ready 工具确认就绪，随后停下等待换届流程接管。",
+        ];
+        // 用户附加输入（对齐 pi /compact 的 customInstructions "Additional focus" 惯例：
+        // 有则追加一行焦点说明，无则不加；不携带纠错含义，与校验失败的 corrective
+        // guidance 明确区分）
+        const userGuidance = (args ?? "").trim();
+        if (userGuidance) {
+          checklist.push("", `Additional focus（用户对本次换届的补充要求）：${userGuidance}`);
+        }
+        pi.sendUserMessage(checklist.join("\n"));
 
         // 4. wait for the instruction turn to actually start, then for it to finish.
         for (let i = 0; i < 100 && !runStartedFlag; i++) {
