@@ -32,9 +32,7 @@ export function renewLogPath(agentDir: string): string {
 
 export function appendRenewEvent(agentDir: string, ev: Omit<RenewEvent, "ts">): void {
   const full: RenewEvent = { ...ev, ts: new Date().toISOString() };
-  const body = readFileSyncSafe(renewLogPath(agentDir));
-  const needsNewline = body.length > 0 && !body.endsWith("\n");
-  appendFileSync(renewLogPath(agentDir), (needsNewline ? "\n" : "") + JSON.stringify(full) + "\n");
+  appendLineSafe(renewLogPath(agentDir), JSON.stringify(full));
 }
 
 function readFileSyncSafe(p: string): string {
@@ -43,6 +41,14 @@ function readFileSyncSafe(p: string): string {
   } catch {
     return "";
   }
+}
+
+/** Append one JSONL line, repairing a missing trailing newline first (r1 #7:
+ *  the read-body -> newline-guard -> append pattern shared by both appenders). */
+function appendLineSafe(path: string, text: string): void {
+  const body = readFileSyncSafe(path);
+  const prefix = body.length > 0 && !body.endsWith("\n") ? "\n" : "";
+  appendFileSync(path, prefix + text + "\n");
 }
 
 /** Parse renew.log tolerantly: JSON lines with {type,...}; legacy free-text lines become LEGACY. */
@@ -211,7 +217,5 @@ export function appendSessionEntry(
     note,
     handoffFile,
   };
-  const body = readFileSyncSafe(join(agentDir, "sessions.log"));
-  const prefix = body.length > 0 && !body.endsWith("\n") ? "\n" : "";
-  appendFileSync(join(agentDir, "sessions.log"), prefix + JSON.stringify(entry) + "\n");
+  appendLineSafe(join(agentDir, "sessions.log"), JSON.stringify(entry));
 }
