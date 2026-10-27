@@ -1,0 +1,36 @@
+{
+  "name": "pi-agent-renew",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Pi extension: /renew — agent identity generational handover (SPEC.md: ~/.agents/agents/SPEC.md). In-place newSession with manifest-driven prompt, sessions.log bookkeeping, and handoff audit file.",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "agent-identity",
+    "handover",
+    "renew"
+  ],
+  "license": "MIT",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hyx/pi-mypackage.git",
+    "directory": "packages/pi-agent-renew"
+  },
+  "exports": {
+    ".": "./renew.ts"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "pi": {
+    "extensions": [
+      "./renew.ts"
+    ]
+  }
+}
