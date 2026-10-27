@@ -11,7 +11,7 @@ afterEach(cleanupEnv);
 
 const SEED = {
 	HARBOR_PASSWORD: { value: "harbor-secret-value", updatedAt: "2026-10-20T00:00:00.000Z", fingerprint: "fp1234567890" },
-	GITBLUE_TOKEN: { value: "gitblue-secret-value", updatedAt: "2026-10-19T00:00:00.000Z", fingerprint: "fp0987654321" },
+	GITBLUE_TOKEN: { value: "placeholder-secret-value", updatedAt: "2026-10-19T00:00:00.000Z", fingerprint: "fp0987654321" },
 	GITHUB_TOKEN: { value: "github-secret-value", updatedAt: "2026-10-18T00:00:00.000Z", fingerprint: "fp1111222233" },
 };
 
@@ -71,7 +71,7 @@ describe("secret_env：全量名单（无参）", () => {
 		expect(out.content[0].text).toContain("HARBOR_PASSWORD");
 		expect(out.content[0].text).toContain("GITBLUE_TOKEN");
 		expect(text).not.toContain("harbor-secret-value");
-		expect(text).not.toContain("gitblue-secret-value");
+		expect(text).not.toContain("placeholder-secret-value");
 		expect(text).not.toContain("github-secret-value");
 		expect(text).not.toContain("value"); // 返回面不含 value 字段
 	});

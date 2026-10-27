@@ -21,7 +21,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 # grep -E pattern. Word-bounded where the token is also a common substring.
-PATTERNS='transwarp|gitblue|harbor\.trans|harbor\.example|\bapplied-ai\b|\bnodexpu\b|NodeXpu|kube-nodexpu|yuxi\.hou|\bllm1[0-9]\b|\bdev(17|32|119)\b|\bbase-charts\b|ppu-device|\bdflash\b'
+PATTERNS='transwarp|gitblue(?!\.example)|harbor\.trans|harborblue|harbor\.example|\bapplied-ai\b|\bnodexpu\b|NodeXpu|kube-nodexpu|yuxi\.hou|\bllm1[0-9]\b|\bllm(2[0-9]|3[0-9])\b|\bdev(17|32|119)\b|172\.1[6-9]\.|\bbase-charts\b|ppu-device|ppu-device-plugin|\bdflash\b|\bllmops\b|\bmlops\b|\bmwh\b|\bapplet\b|\bkgpu\b|\bhamife\b'
 
 mode="tracked"
 if [[ "${1:-}" == "-u" ]]; then mode="untracked"; shift; fi
@@ -36,15 +36,20 @@ fi
 
 rc=0
 
+# Exempt paths（用户拍板的豁免类，2026-10-27）：词表自引用 / vendored 上游产物 /
+# 身份矩阵测试 fixture（词是测试对象非泄漏）。llmops-wiki 引用不在豁免列——
+# 正在去引用（票面见 .scratch/180-llmops-wiki-deref/）。
+EXEMPT_RE='^(scripts/sanitize-check\.sh|gitleaks\.toml|packages/[^/]+/upstream/|packages/pi-bash-guards/tests/fixtures/|packages/pi-bash-guards/tests/golden/)'
+
 # Layer 1: manual-checklist patterns
 echo "== pattern scan (${#files[@]} files, mode=$mode) =="
 hits=0
 for f in "${files[@]}"; do
-    [[ "$f" == scripts/sanitize-check.sh ]] && continue   # checker contains PATTERNS by construction
+    [[ "$f" =~ $EXEMPT_RE ]] && continue   # self-rules / vendored / identity-matrix fixtures（见 EXEMPT_RE 注释）
     while IFS= read -r line; do
         echo "PATTERN  $line"
         hits=$((hits+1))
-    done < <(grep -nEH "$PATTERNS" -- "$f" 2>/dev/null)
+    done < <(grep -nPH "$PATTERNS" -- "$f" 2>/dev/null)
 done
 [[ $hits -gt 0 ]] && rc=1
 echo "pattern findings: $hits"
