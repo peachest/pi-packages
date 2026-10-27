@@ -1,6 +1,9 @@
 /**
  * renew-store — the handover ledger (换届账本): the renew.log event stream plus
- * the sessions.log on-duty register. Moved verbatim from renew.ts (move-only).
+ * the sessions.log on-duty register. Moved from renew.ts: ticket #181 verbatim;
+ * #182 split deriveWindowState(events, now) out of readWindowState; rolling
+ * review r1 hardening (#1 index base, #4 sessionId check, #5/#6 read+parse
+ * guards, #7 appendLineSafe).
  *
  * No dependency injection, by design: production and tests both run against the
  * real filesystem — there is no second adapter. This seam exists for locality
@@ -19,7 +22,7 @@ export const WINDOW_TTL_MS = 30 * 60 * 1000; // same-owner re-entry freshness (u
 
 export interface RenewEvent {
   type: "START" | "READY" | "LATE_READY" | "TAKEOVER" | "DONE" | "ABORT" | "CANCELLED" | "LEGACY";
-  ts: string; // ISO
+  ts: string; // ISO（LEGACY 占位事件为空串，Date.parse 会得 NaN——LEGACY 永不参与推导）
   sessionId: string; // owner of the window / actor of the event
   detail?: string;
   newSessionId?: string;
