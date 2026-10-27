@@ -15,7 +15,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import renewExtension from "./renew.ts";
-import { WINDOW_TTL_MS, deriveWindowState, readWindowState, type RenewEvent, type WindowState } from "./renew-store.ts";
+import { WINDOW_TTL_MS, deriveWindowState, parseRenewLog, readWindowState, type RenewEvent, type WindowState } from "./renew-store.ts";
 
 const SID = "00000000-0000-7000-8000-000000000000";
 const NEW_SID = "99999999-9999-7000-8000-999999999999";
@@ -400,8 +400,16 @@ const evtTypes = (adir: string) =>
   t("K1 空行不错位：正确的行补 endedAt，换届 DONE 无「并发修改」误报", !types.includes("ABORT") && types[types.length - 1] === "DONE" && rows[0].sessionId === SID && rows[0].endedAt !== null && rows[1].sessionId === NEW_SID && rows[1].endedAt === null);
 }
 
+// ---------- L: r1 #4 — 无 sessionId 的 JSON 行不构成合法事件 ----------
+{
+  const root = mkdtempSync(join(tmpdir(), "renew-L-"));
+  const { adir, root: _r } = makeEnv(root);
+  writeFileSync(join(adir, "renew.log"), JSON.stringify({ type: "START", ts: new Date().toISOString() }) + "\n");
+  t("L1 无 sessionId 的 START 归 LEGACY、不构成开放窗口", parseRenewLog(adir)[0].type === "LEGACY" && readWindowState(adir).open === false);
+}
+
 // cleanup
-for (const d of ["renew-A-", "renew-B-", "renew-C-", "renew-D-", "renew-E-", "renew-F-", "renew-G-", "renew-H-", "renew-I-", "renew-J-", "renew-K-"]) {
+for (const d of ["renew-A-", "renew-B-", "renew-C-", "renew-D-", "renew-E-", "renew-F-", "renew-G-", "renew-H-", "renew-I-", "renew-J-", "renew-K-", "renew-L-"]) {
   try {
     for (const e of (await import("node:fs")).readdirSync(tmpdir())) {
       if (e.startsWith(d)) rmSync(join(tmpdir(), e), { recursive: true, force: true });

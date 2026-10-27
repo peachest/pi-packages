@@ -52,7 +52,9 @@ export function parseRenewLog(agentDir: string): RenewEvent[] {
   for (const line of lines) {
     try {
       const e = JSON.parse(line);
-      if (typeof e.type === "string" && typeof e.ts === "string") {
+      // 合法行判定：type/ts 之外 sessionId 也必须非空 string（r1 #4）——
+      // 缺失时模板串会输出 "undefined" 混入推导
+      if (typeof e.type === "string" && typeof e.ts === "string" && typeof e.sessionId === "string" && e.sessionId !== "") {
         events.push(e as RenewEvent);
       } else {
         events.push({ type: "LEGACY", ts: "", sessionId: "" });
