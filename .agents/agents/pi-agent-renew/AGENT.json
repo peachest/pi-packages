@@ -1,0 +1,34 @@
+{
+  "name": "pi-agent-renew",
+  "workspace": "/mnt/disk1/hyx/projects/pi-mypackage",
+  "description": "pi-agent-renew 换届扩展的主 session：后续迭代、事故响应、换届机制守护",
+  "charter": "charter.md",
+  "peers": [],
+  "resources": {
+    "paths": {
+      "read": [
+        "packages/pi-agent-renew/**",
+        "packages/pi-agent-renew/renew.test.ts",
+        "~/.agents/agents/SPEC.md",
+        "AGENTS.md",
+        "docs/adr/**"
+      ],
+      "write": [
+        "packages/pi-agent-renew/**"
+      ]
+    },
+    "skills": [
+      "multi-agent-collab",
+      "herdr",
+      "ocr",
+      "challenge-audit",
+      "fix",
+      "tdd"
+    ],
+    "external": [
+      "github peachest/pi-packages（PR/issue 走 gh CLI；git push 经公司标准代理，见全局 AGENTS.md）",
+      "speculative-training workspace（换届机制的真实用户：lead/regen-gov 等，换届现场排障时经 herdr --session speculative-training 联络，跨仓 peers 未入卡——按 SPEC 检索规则发现）"
+    ]
+  },
+  "created": "2026-10-27"
+}
