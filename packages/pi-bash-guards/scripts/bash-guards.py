@@ -21,7 +21,7 @@
 #                   rules needing state beyond the seam (cwd tracking, argv
 #                   dest, git probes, full-text debt rules).
 #   ═══ MESSAGES ═══ every verdict text as a template; dynamic messages are
-#                   callables over the matcher's params. 13 entries carry 16
+#                   callables over the matcher's params. 14 entries carry 17
 #                   verdicts: no-verify/G1/P6 each hold two messages whose
 #                   selection is order-sensitive within one scan pass —
 #                   splitting them into per-message rules would reorder which
@@ -492,6 +492,19 @@ def _match_p3(ctx):
             return {"spec": m.group(1) + unit, "seconds": seconds}
     return None
 
+def _match_sleep_chain(ctx):
+    # sleep-chain. `sleep N && …` polling: short chained sleeps escape P3's
+    # 60s threshold but the turn still parks serially on a hand-rolled wait
+    # loop. Command-position match on the segments seam (not full-text, same
+    # rationale as P2/P3); a trailing sleep with nothing chained after it is
+    # a plain backoff and stays allowed. Scope global: polling waste is not
+    # repo-specific (user request 2026-10-27).
+    prs = pairs(ctx["cmd"])
+    for i, (seg, _d) in enumerate(prs):
+        if re.match(r"^sleep\s+\S+", seg) and i + 1 < len(prs):
+            return {"spec": seg.split(None, 1)[1][:40]}
+    return None
+
 # P6. Commit identity must match the repo's remote platform (pi-arena: 35
 # commits one day split across two identities; base-charts: 4/5 commits
 # with the wrong author, fixed by history rewrite).
@@ -754,6 +767,8 @@ RULES = [
     # P2/P3/P6: projects layer only (session cwd under ~/projects)
     {"id": "P2", "scope": "projects", "matcher": _match_p2, "message": "P2"},
     {"id": "P3", "scope": "projects", "matcher": _match_p3, "message": "P3"},
+    # sleep-chain. `sleep N && …` polling (the short-sleep escape from P3)
+    {"id": "sleep-chain", "scope": "global", "matcher": _match_sleep_chain, "message": "sleep-chain"},
     # P6. commit identity (two messages)
     {"id": "P6", "scope": "projects", "matcher": _match_p6, "message": "P6"},
     # KB. knowledge-base-first gate: cluster probing requires the vault read
@@ -863,8 +878,17 @@ MESSAGES = {
           "should be event-driven: use the pi-events-daemon tools "
           "(`subscribe` with a check/entity — it wakes this session "
           "on completion), or `bg_run` for one-shot background "
-          "commands. Genuine short backoff: keep it under 60s or "
-          "split into repeated short sleeps around real work.",
+          "commands. Genuine short backoff: keep it under 60s and "
+          "standalone — chained `sleep N && …` is blocked by the "
+          "sleep-chain guard.",
+    "sleep-chain": "`sleep {spec} && …` is a hand-rolled poll — the turn "
+               "parks serially until the chained step runs. Mount an "
+               "event subscription instead: read /skill:pi-events-daemon "
+               "and use `subscribe` (a check/entity subscription wakes "
+               "this session on the state change you are waiting for). "
+               "If a subscription cannot cover the case, fall back to the "
+               "bg_* tools: start the work with `bg_run` and let its "
+               "completion notification wake you.",
     "P6-inline": "git -c user.email={inline} matches no remote platform "
                  "of this repo ({platform} is the push target; expected "
                  "{expected}). Commit with the matching identity.",

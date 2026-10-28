@@ -2,7 +2,7 @@
 	"name": "pi-bash-guards",
 	"version": "0.1.0",
 	"private": true,
-	"description": "Pi 全局行为守卫（kendex hook 脚本包）：bare-cd/docker→nerdctl/worktree→wt/R1-R4 worktree 生命周期/commit-push --no-verify/G1 agent 目录手拷/P2 git add -A/P3 长 sleep/P6 commit 身份（多 remote any-match）。纯 python 单文件引擎（spec #142），无 TS 扩展入口。",
+	"description": "Pi 全局行为守卫（kendex hook 脚本包）：bare-cd/docker→nerdctl/worktree→wt/R1-R4 worktree 生命周期/commit-push --no-verify/G1 agent 目录手拷/P2 git add -A/P3 长 sleep/sleep-chain 轮询/P6 commit 身份（多 remote any-match）。纯 python 单文件引擎（spec #142），无 TS 扩展入口。",
 	"keywords": [
 		"pi-package",
 		"pi",

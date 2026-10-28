@@ -189,4 +189,33 @@ describe("packaged guard sanity (direct payload probes)", () => {
 		});
 		expect(out).toBeDefined();
 	});
+
+	it("blocks chained sleep polling (sleep-chain, any cwd)", () => {
+		let blocked = false;
+		try {
+			execFileSync("python3", [GUARD], {
+				input: JSON.stringify({
+					tool_input: { command: "sleep 5 && curl -sf http://x/health" },
+					transcript_path: "/tmp/anywhere/x.jsonl",
+					session_id: "t",
+				}),
+				encoding: "utf8",
+			});
+		} catch (e) {
+			blocked = (e as { status?: number }).status === 2;
+		}
+		expect(blocked).toBe(true);
+	});
+
+	it("allows standalone short sleep (no chaining)", () => {
+		const out = execFileSync("python3", [GUARD], {
+			input: JSON.stringify({
+				tool_input: { command: "sleep 5" },
+				transcript_path: "/tmp/anywhere/x.jsonl",
+				session_id: "t",
+			}),
+			encoding: "utf8",
+		});
+		expect(out).toBeDefined();
+	});
 });

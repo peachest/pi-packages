@@ -21,6 +21,7 @@ Pi 全局行为守卫（kendex hook 脚本包）——把 session 挖掘出的�
 | G1 手拷入 agent 目录 | 全局 | 手动复制文件进 `~/.pi/agent/{extensions,npm}` / `~/.agents/skills` → 用 `pi install`/skills 安装链 | 2026-10-20 四轮挖掘 |
 | P2 git add -A | projects | `git add -A`/`git add .` → 逐文件显式 add **〔全文匹配债〕** | 250 calls（ppu 仓 AGENTS.md 同源） |
 | P3 长 sleep | projects | `sleep` ≥60s → 改 pi-events-daemon 订阅或后台任务 **〔全文匹配债〕** | sleep 轮询四轮挖掘共识 |
+| sleep-chain 轮询 | 全局 | `sleep N && …`（链式短轮询，P3 的 60s 逃逸口）→ 读 /skill:pi-events-daemon 用 `subscribe` 挂订阅；订阅覆盖不了再回退 `bg_run` 等 bg_* 工具；结尾孤立 `sleep N` 放行 | 用户拍板 2026-10-27 |
 | P6 commit 身份 | projects | `git commit` 的 user.email 必须匹配**任一 remote** 的平台（github→peachest/QQ 邮箱、transwarp→侯雨希/transwarp 邮箱；多 remote any-match；pushRemote/pushDefault 链解析；rtk 与 secret-store 注入前缀穿透） | P6 矩阵 29 用例（tests/fixtures/test-p6-multiremote.sh） |
 
 P1（凭证指纹检测）已于 2026-10-20 迁入 [pi-secret-store](../pi-secret-store)（随包演进，方案 A），本包不再含 P1。
@@ -48,11 +49,11 @@ cd packages/pi-bash-guards && npm test
 
 vitest 包一层 spawn 跑三套原始 fixture（`tests/fixtures/*.sh` 原样保留，fixtures 经 `bash "$GUARD"` 调引擎——引擎首行 exec-polyglot 使纯 python 文件可被 bash 直调，spec #142），断言末行 `PASS=/FAIL=` 计数：
 
-- Suite A（全局回归，46 用例）：bare-cd / docker / worktree / --no-verify / G1 / P2 / P3
+- Suite A（全局回归，47 用例）：bare-cd / docker / worktree / --no-verify / G1 / P2 / P3 / sleep-chain
 - Suite B（P6 多 remote 矩阵，29 t-calls → 27 计数用例，1 对 re-judge 注释化）：身份解析链 / any-match 语义 / 降级路径
 - Suite C（worktree 生命周期 R1-R4，95 用例，tests/fixtures/test-wt-lifecycle.sh）：R1/R2/R4 拦截+放行、R3 真实 main-vs-wt 布局 linked worktree 边界（git init + worktree add 构造 `.git` 文件/目录两态）、R3 豁免（40 位 sha 物化 ×2 / 非 wt 布局树 ×2 / wt 布局对照 ×1，#153）、rtk 前缀穿透、heredoc 正文不误拦回归（锁 spec #137 创建事故）
 
-另有 2 个直接 payload 探针（docker 拦截 / ls 放行）守 sync 后的运行时行为，外加两组 spec #142 新增：三要素渲染断言（tests/messages.test.ts：15 条 verdict 消息逐条渲染并断言含推荐命令 token）与金输出回归（tests/golden.test.ts：重跑 tests/golden/capture.sh 并 diff 存档 tests/golden/verdicts.jsonl，248 条 verdict 逐字节一致，非空即语义漂移）。测试跑包内源码（`GUARD` 默认指 `scripts/bash-guards.py`），`npm run sync` 负责 parity。
+另有 2 个直接 payload 探针（docker 拦截 / ls 放行 + sleep-chain 拦截 / 孤立 sleep 放行）守 sync 后的运行时行为，外加两组 spec #142 新增：三要素渲染断言（tests/messages.test.ts：14 条表项 17 条 verdict 消息逐条渲染并断言含推荐命令 token）与金输出回归（tests/golden.test.ts：重跑 tests/golden/capture.sh 并 diff 存档 tests/golden/verdicts.jsonl，逐字节一致，非空即语义漂移）。测试跑包内源码（`GUARD` 默认指 `scripts/bash-guards.py`），`npm run sync` 负责 parity。
 
 ## 与 packages/README.md 四规则的关系（纯脚本包适配说明）
 

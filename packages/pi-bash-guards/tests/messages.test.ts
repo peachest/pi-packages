@@ -4,7 +4,7 @@
  * Every block message must carry the three elements (reason + correct
  * replacement command + example) — "the model must not have to guess"
  * upgraded from convention to CI invariant. Each of the 16 verdict messages
- * (13 table entries; no-verify/G1/P6 hold two templates each) is rendered
+ * (14 table entries; no-verify/G1/P6 hold two templates each) is rendered
  * through the engine's own render_message and asserted to contain its
  * recommended-command token.
  */
@@ -39,6 +39,7 @@ const CASES: Array<[string, Record<string, unknown>, string]> = [
 	["G1", { kind: "dest" }, "pi install npm:<name>"],
 	["P2", {}, "git add <file1> <file2>"],
 	["P3", { spec: "2h", seconds: 7200 }, "subscribe"],
+	["sleep-chain", { spec: "5" }, "subscribe"],
 	["P6", { kind: "inline", inline: "stranger@x.y", platform: "github", expected: "dev@personal.example" }, "Commit with the matching identity"],
 	["P6", { kind: "email", email: "stranger@x.y", platform: "github", expected: "dev@personal.example", suggest: "dev@personal.example" }, "git config user.email dev@personal.example"],
 	["KB", {}, "rg -l"],
@@ -71,7 +72,7 @@ print(json.dumps([{ "id": r["id"], "scope": r["scope"], "hasMatcher": callable(r
 			{ encoding: "utf8", env: PYENV },
 		);
 		const rules: Array<{ id: string; scope: string; hasMatcher: boolean; msg: boolean }> = JSON.parse(out);
-		expect(rules).toHaveLength(14); // 12 + KB (#166) + R5 branch naming (2026-10-26)
+		expect(rules).toHaveLength(15); // 12 + KB (#166) + R5 (2026-10-26) + sleep-chain (2026-10-27)
 		for (const r of rules) {
 			expect(r.scope === "global" || r.scope === "projects", `${r.id} scope`).toBe(true);
 			expect(r.hasMatcher, `${r.id} matcher`).toBe(true);
