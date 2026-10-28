@@ -41,6 +41,9 @@ export interface OpDispatchDeps {
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 
+/** pi session UUID 形态（#190 闸门：拒绝空串/占位字面量等僵尸 sessionId）。 */
+const SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 /**
  * wire 单串（type:key 全串）→ EntityRef：key 段以三正典前缀（external/|project|user/）锚定，
  * type = 首个锚点之前（票 40 评审 F7：贪婪切分在 native key 含冒号时错位——type 也含冒号，
@@ -227,6 +230,15 @@ export function createOpDispatch(deps: OpDispatchDeps): (frame: OpRequestFrame) 
           }
 
           // smoke 预检（syntax+live-run 失败 → {subscribed:false, validate} 不建订阅不抛错；通过 → 剥离 smoke 提交）
+          // #190 闸门：sessionId 是 wake 编址与 dock 过滤的键——空串/占位猜测落库即僵尸订阅
+          // （#189 实证两类脏数据：缺省漏注入 → ""；agent 猜测 → "current"）。平台契约
+          // sessionId = pi session UUID；客户端缺省注入面（extension live 并入 #189 /
+          // transport 连接声明 票 119）负责带上，此处只做形状执法。
+          if (!SESSION_ID_RE.test(String(opts.sessionId))) {
+            throw new Error(
+              `subscribe rejected: opts.sessionId 必填且须为本 session UUID（36 位连字符十六进制），得到 ${JSON.stringify(opts.sessionId ?? null)}——缺省注入面失效时请显式传入`,
+            );
+          }
           // 票 119：ad-hoc check 形态缺省启用（死订阅创建时拦截——glab-401 类永不唤醒事故）；
           // opts.smoke:false 显式跳过（逃生口，警告责任转移给调用方）
           let smokeValidate: ValidateReport | undefined;

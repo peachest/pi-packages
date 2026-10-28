@@ -128,7 +128,7 @@ describe("票 40 评审 F4 — URL 订阅模板名回填（槽身份不裂）", 
   it("URL 订阅与显式同名模板订阅共享槽（I5）：订阅行 template 一致、probe_spec 单槽", async () => {
     const rig = makeRig();
     const url = "https://gl.a.com/merge_requests/42";
-    const viaUrl = (await rig.dispatch(frame("subscribe", { url, opts: { sessionId: "s1" } }))) as {
+    const viaUrl = (await rig.dispatch(frame("subscribe", { url, opts: { sessionId: "01a19999-1111-7111-8111-111111111111" } }))) as {
       subscribed: boolean;
       entityRef: string;
     };
@@ -138,7 +138,7 @@ describe("票 40 评审 F4 — URL 订阅模板名回填（槽身份不裂）", 
       frame("subscribe", {
         entityRef: viaUrl.entityRef,
         check: "glab mr status",
-        opts: { sessionId: "s2", template: "mr" },
+        opts: { sessionId: "01a19999-2222-7222-8222-222222222222", template: "mr" },
       }),
     )) as { subscribed: boolean };
     expect(explicit.subscribed).toBe(true);
@@ -179,11 +179,11 @@ describe("票 49/#114 — 多参数 URL subscribe：urlPattern 捕获组随帧�
   it("双参数 URL → 实体铸造 key 消费全部参数，check 双占位符代入", async () => {
     const rig = makeMultiRig();
     const r = (await rig.dispatch(
-      frame("subscribe", { url: "https://gl.multi.com/grp/proj/-/merge_requests/42", opts: { sessionId: "s1" } }),
+      frame("subscribe", { url: "https://gl.multi.com/grp/proj/-/merge_requests/42", opts: { sessionId: "01a19999-1111-7111-8111-111111111111" } }),
     )) as { subscribed: boolean; entityRef: string; check?: string };
     expect(r.subscribed).toBe(true);
     expect(r.entityRef).toBe("gitlab:mr-multi:external/grp/proj/42");
-    const rows = rig.store.querySubscriptions({ sessionId: "s1" });
+    const rows = rig.store.querySubscriptions({ sessionId: "01a19999-1111-7111-8111-111111111111" });
     expect(rows).toHaveLength(1);
     expect(rows[0]!.check).toBe("glab mr view 'grp/proj' '42'");
   });
@@ -204,7 +204,7 @@ describe("票 49/#114 — 多参数 URL subscribe：urlPattern 捕获组随帧�
       ],
     });
     await expect(
-      rig.dispatch(frame("subscribe", { url: "https://gl.opt.com/opt/mr", opts: { sessionId: "s1" } })),
+      rig.dispatch(frame("subscribe", { url: "https://gl.opt.com/opt/mr", opts: { sessionId: "01a19999-1111-7111-8111-111111111111" } })),
     ).rejects.toThrow(/缺少必填参数: project/);
     expect(rig.store.queryEntities({})).toHaveLength(0);
   });
@@ -240,7 +240,7 @@ describe("票 40 评审 F7 — wire type:key 拆分以 key 前缀锚定（native
     expect(r.entityRef).toBe("fs:path:project/a:external/b");
     // wire 单串再入：贪婪拆分会把 type 错切成 "fs:path:project/a"
     const sub = (await rig.dispatch(
-      frame("subscribe", { entityRef: "fs:path:project/a:external/b", check: "exit 0" }),
+      frame("subscribe", { entityRef: "fs:path:project/a:external/b", check: "exit 0", opts: { sessionId: "01a19999-1111-7111-8111-111111111111" } }),
     )) as { subscribed: boolean; entityRef: string };
     expect(sub.subscribed).toBe(true);
     expect(sub.entityRef).toBe("fs:path:project/a:external/b");
@@ -253,10 +253,10 @@ describe("票 40 评审 F11 — ad-hoc 幂等哈希 canonical（键序不裂实�
   it("同 check 同 schedule（键序异形）→ 同一 adhoc 实体；store 单实体", async () => {
     const rig = makeRig();
     const a = (await rig.dispatch(
-      frame("subscribe", { check: "cond-a", opts: { smoke: false, schedule: { type: "interval", every: 60_000 } } }),
+      frame("subscribe", { check: "cond-a", opts: { sessionId: "01a19999-1111-7111-8111-111111111111", smoke: false, schedule: { type: "interval", every: 60_000 } } }),
     )) as { subscribed: boolean; entityRef: string };
     const b = (await rig.dispatch(
-      frame("subscribe", { check: "cond-a", opts: { smoke: false, schedule: { every: 60_000, type: "interval" } } }),
+      frame("subscribe", { check: "cond-a", opts: { sessionId: "01a19999-1111-7111-8111-111111111111", smoke: false, schedule: { every: 60_000, type: "interval" } } }),
     )) as { subscribed: boolean; entityRef: string };
     expect(a.subscribed).toBe(true);
     expect(b.entityRef).toBe(a.entityRef);
@@ -297,7 +297,7 @@ describe("票 40 评审 F6/F12 — validate 报告接真实静态语法校验（
     rig.exec.enqueue({ exitCode: 0 }); // 语法检查通过
     rig.exec.enqueue({ exitCode: 2 }); // smoke live-run failed
     const r = (await rig.dispatch(
-      frame("subscribe", { check: "exit 2", opts: { smoke: true } }),
+      frame("subscribe", { check: "exit 2", opts: { sessionId: "01a19999-1111-7111-8111-111111111111", smoke: true } }),
     )) as { subscribed: boolean; validate: Record<string, unknown> };
     expect(r.subscribed).toBe(false);
     expect(r.validate).toMatchObject({ syntaxOk: true, verdict: "failed", warnings: [] });
@@ -342,7 +342,7 @@ describe("票 119：ad-hoc check 默认 smoke——死订阅创建时拦截", ()
     const rig = makeRig();
     rig.exec.enqueue({ exitCode: 0 }); // 语法检查
     rig.exec.enqueue({ exitCode: 2 }); // live-run 失败
-    const r = (await rig.dispatch(frame("subscribe", { check: "exit 2" }))) as { subscribed: boolean };
+    const r = (await rig.dispatch(frame("subscribe", { check: "exit 2", opts: { sessionId: "01a19999-1111-7111-8111-111111111111" } }))) as { subscribed: boolean };
     expect(r.subscribed).toBe(false);
   });
 
@@ -350,13 +350,13 @@ describe("票 119：ad-hoc check 默认 smoke——死订阅创建时拦截", ()
     const rig = makeRig();
     rig.exec.enqueue({ exitCode: 0 }); // 语法检查
     rig.exec.enqueue({ exitCode: 0, stdout: "ok" }); // live-run
-    const r = (await rig.dispatch(frame("subscribe", { check: "echo ok", opts: { once: true } }))) as { subscribed: boolean };
+    const r = (await rig.dispatch(frame("subscribe", { check: "echo ok", opts: { sessionId: "01a19999-1111-7111-8111-111111111111", once: true } }))) as { subscribed: boolean };
     expect(r.subscribed).toBe(true);
   });
 
   it("opts.smoke === false 显式跳过（逃生口，不执行任何 checker）", async () => {
     const rig = makeRig();
-    const r = (await rig.dispatch(frame("subscribe", { check: "exit 2", opts: { smoke: false } }))) as { subscribed: boolean };
+    const r = (await rig.dispatch(frame("subscribe", { check: "exit 2", opts: { sessionId: "01a19999-1111-7111-8111-111111111111", smoke: false } }))) as { subscribed: boolean };
     expect(r.subscribed).toBe(true);
   });
 });
@@ -382,7 +382,7 @@ describe("票 122：validate 双 seam 接线——profile 静态面复活（候�
     const rig = makeRig();
     rig.exec.enqueue({ exitCode: 0 }); // smoke 语法
     rig.exec.enqueue({ exitCode: 0, stdout: "ok" }); // smoke live-run
-    const r = (await rig.dispatch(frame("subscribe", { url: "https://gl.a.com/merge_requests/42", opts: { once: true } }))) as { subscribed: boolean; warnings?: string[] };
+    const r = (await rig.dispatch(frame("subscribe", { url: "https://gl.a.com/merge_requests/42", opts: { sessionId: "01a19999-1111-7111-8111-111111111111", once: true } }))) as { subscribed: boolean; warnings?: string[] };
     expect(r.subscribed).toBe(true);
     // "glab mr status" 无 exit → staticLint 启发式 warning 并入（静态面复活的生产证据）
     expect((r.warnings ?? []).some((w) => w.includes("未显式声明 exit"))).toBe(true);
@@ -394,11 +394,36 @@ describe("票 129（scan-⑤）：smoke 失败清理先行 register——孤儿�
     const rig = makeRig();
     rig.exec.enqueue({ exitCode: 0 }); // 语法
     rig.exec.enqueue({ exitCode: 2 }); // live-run 失败
-    const r = (await rig.dispatch(frame("subscribe", { check: "exit 2" }))) as { subscribed: boolean };
+    const r = (await rig.dispatch(frame("subscribe", { check: "exit 2", opts: { sessionId: "01a19999-1111-7111-8111-111111111111" } }))) as { subscribed: boolean };
     expect(r.subscribed).toBe(false);
     // store 直查（query wire 不透 retired）——实体必须已 retired（孤儿根治口径）
     const ents = rig.store.queryEntities({}).filter((e) => e.type === "adhoc");
     expect(ents.length).toBeGreaterThanOrEqual(1);
     expect(ents.every((e) => e.retired === true)).toBe(true);
+  });
+});
+
+describe("#190 闸门——subscribe sessionId 形状执法（僵尸订阅创建时拦截）", () => {
+  const GOOD = "01a19999-1111-7111-8111-111111111111";
+  const cases: Array<[string, unknown]> = [
+    ["缺失（undefined）", undefined],
+    ["空串", ""],
+    ["占位字面量 current（agent 猜测形态，#189 实证 sub-0296）", "current"],
+    ["非字符串", 42],
+  ];
+  for (const [name, sid] of cases) {
+    it(`拒绝：${name}`, async () => {
+      const rig = makeRig();
+      const opts = sid === undefined ? {} : { sessionId: sid };
+      await expect(rig.dispatch(frame("subscribe", { check: "exit 0", opts }))).rejects.toThrow(
+        /opts\.sessionId 必填且须为本 session UUID/,
+      );
+      expect(rig.store.querySubscriptions({})).toHaveLength(0); // 无僵尸落库
+    });
+  }
+  it("合法 UUID 放行", async () => {
+    const rig = makeRig();
+    const r = (await rig.dispatch(frame("subscribe", { check: "exit 0", opts: { sessionId: GOOD, smoke: false } }))) as { subscribed: boolean };
+    expect(r.subscribed).toBe(true);
   });
 });

@@ -10,6 +10,7 @@
 docs/wiki/pi-events-daemon/
 ├── README.md        # 本文件：定位 + 索引
 ├── patterns.md      # 根因级模式条目（状态: open / absorbed-into-spec / closed）
+├── store-debugging.md # store.db 调试指针（路径/表结构/脏数据判读）
 ├── references.md    # 研究对象清单：每个对象读什么、证据在哪（file:line）
 └── logs.md          # effort 运行日志（每次一行）
 ```

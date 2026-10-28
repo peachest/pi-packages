@@ -153,7 +153,7 @@ const transcribeWake = (sessionFile: string, entry: { notificationId: string; ve
 describe("票 40 组 1：两段式 ack 双路径 e2e + extension→daemon 全链路", () => {
   it("accepted→verified：session 订阅→probe 翻转→wake 到达→transcript 点查收口（产品级 demo 链）", { timeout: 40_000 }, async () => {
     const rt = makeRuntime();
-    const SESSION = "s1";
+    const SESSION = "01a19999-1111-7111-8111-111111111111";
     const sessionFile = makeSessionFile(rt.dir, SESSION);
     const child = await bootDaemon(rt, JSON.stringify([{ sessionId: SESSION, sessionFile }]));
     const client = await connect(rt);
@@ -224,7 +224,7 @@ describe("票 40 组 1：两段式 ack 双路径 e2e + extension→daemon 全链
 
   it("B1 必测①：status 登记→自动发事件全链（US-13/25）：status op 写入 → Transitioned 事件 → fanOut → delivery 行", { timeout: 40_000 }, async () => {
     const rt = makeRuntime();
-    const SESSION = "s1";
+    const SESSION = "01a19999-1111-7111-8111-111111111111";
     const sessionFile = makeSessionFile(rt.dir, SESSION);
     const child = await bootDaemon(rt, JSON.stringify([{ sessionId: SESSION, sessionFile }]));
     const client = await connect(rt);
@@ -264,7 +264,7 @@ describe("票 40 组 1：两段式 ack 双路径 e2e + extension→daemon 全链
 
   it("parked→drain→verified：离线事件 parked→SESSION_START drain→wake→transcript 收口", { timeout: 40_000 }, async () => {
     const rt = makeRuntime();
-    const SESSION = "s1";
+    const SESSION = "01a19999-1111-7111-8111-111111111111";
     const sessionFile = makeSessionFile(rt.dir, SESSION);
     const child = await bootDaemon(rt, JSON.stringify([{ sessionId: SESSION, sessionFile }]));
     const client = await connect(rt);
@@ -310,12 +310,12 @@ describe("票 40 组 2：五条顺序约束端到端断言", () => {
     // --- update_hook 唤醒：publish 断言 → 事件提交回调级联（outbox→fanOut→delivery 同 tick 物化）→ wake 到达 ---
     const pushes: Array<{ method: string; params: unknown }> = [];
     client.onNotification((method, params) => pushes.push({ method, params }));
-    client.startSession("sA");
+    client.startSession("01a19999-3333-7333-8333-333333333333");
     (await client.request("status", { type: "fixture:order", key: "external/e1", state: "waiting" })) as unknown;
     (await client.request("subscribe", {
       entityRef: "fixture:order:external/e1",
       check: "exit 1", // 恒 waiting：探针不产生事件，翻转由 publish 驱动（agent 断言路径 US-17）
-      opts: { template: "watch", sessionId: "sA", on: "passed", schedule: { type: "interval", every: 60_000 } },
+      opts: { template: "watch", sessionId: "01a19999-3333-7333-8333-333333333333", on: "passed", schedule: { type: "interval", every: 60_000 } },
     })) as unknown;
 
     const t0 = Date.now();
@@ -325,12 +325,12 @@ describe("票 40 组 2：五条顺序约束端到端断言", () => {
     })) as unknown;
     // update_hook 提交回调级联：publish 响应返回时投递行已物化（onWrite→deliverScan→fanOut 同 tick），
     // 且未迁移（batch 窗 2s 未到——推送成功簿记 pending→accepted 归 flush 结算）
-    expect(rt.db.getDelivery("evt:fixture:order:external/e1#2", "sA")?.state).toBe("pending");
+    expect(rt.db.getDelivery("evt:fixture:order:external/e1#2", "01a19999-3333-7333-8333-333333333333")?.state).toBe("pending");
     await waitFor(() => pushes.some((p) => p.method === "wake"), "wake push");
     expect(Date.now() - t0).toBeLessThan(60_000); // 到达性断言（batch 窗 2s 正典节奏；update_hook 快路径归 A 层细分）
     expect(pushes.find((p) => p.method === "wake")).toMatchObject({
       method: "wake",
-      params: { sessionId: "sA", entries: [{ notificationId: "evt:fixture:order:external/e1#2", verdict: "passed" }] },
+      params: { sessionId: "01a19999-3333-7333-8333-333333333333", entries: [{ notificationId: "evt:fixture:order:external/e1#2", verdict: "passed" }] },
     });
 
     // --- Intent 串行：3 个并发 publish 经 L0 队列串行消费——eventSeq 单调、提交序=消费序 ---
@@ -410,14 +410,14 @@ describe("票 40 组 2：五条顺序约束端到端断言", () => {
     // 先建者：failureThreshold 3 定槽
     const sub1 = (await c1.request("subscribe", {
       ...subReq,
-      opts: { ...subReq.opts, sessionId: "sA", failureThreshold: 3 },
+      opts: { ...subReq.opts, sessionId: "01a19999-3333-7333-8333-333333333333", failureThreshold: 3 },
     })) as { subscribed: boolean; warnings?: string[] };
     expect(sub1.warnings ?? []).toEqual([]);
 
     // 后来者：failureThreshold 1 —— 被槽收编（先建者定），响应携带 first-creator-wins warning
     const sub2 = (await c1.request("subscribe", {
       ...subReq,
-      opts: { ...subReq.opts, sessionId: "sB", failureThreshold: 1 },
+      opts: { ...subReq.opts, sessionId: "01a19999-0001-7000-8000-000000000001", failureThreshold: 1 },
     })) as { subscribed: boolean; warnings?: string[] };
     expect(sub2.warnings?.join(" ")).toContain("first-creator-wins");
 
@@ -428,7 +428,7 @@ describe("票 40 组 2：五条顺序约束端到端断言", () => {
     const c2 = await connect(rt);
     const sub3 = (await c2.request("subscribe", {
       ...subReq,
-      opts: { ...subReq.opts, sessionId: "sC", failureThreshold: 9 },
+      opts: { ...subReq.opts, sessionId: "01a19999-0002-7000-8000-000000000002", failureThreshold: 9 },
     })) as { subscribed: boolean; warnings?: string[] };
     expect(sub3.warnings?.join(" ")).toContain("first-creator-wins");
 
@@ -471,7 +471,7 @@ describe("票 40 组 3：9 op 面收口（读侧 + cancel/drain/validate/templat
     const subEv = (await client.request("subscribe", {
       entityRef: "fixture:ev:external/1",
       check: "echo evidence-marker-e2e-fulltext",
-      opts: { template: "watch", sessionId: "s-ev" },
+      opts: { template: "watch", sessionId: "01a19999-0003-7000-8000-000000000003" },
     })) as { subscriptionId: string };
     expect(subEv.subscriptionId).toMatch(/^sub-/);
     await waitFor(() => rt.db.getEntity("fixture:ev", "external/1")?.state === "passed", "probe flip");
@@ -506,7 +506,7 @@ describe("票 40 组 3：9 op 面收口（读侧 + cancel/drain/validate/templat
     const sub = (await client.request("subscribe", {
       entityRef: "fixture:op:external/e1",
       check: "exit 1",
-      opts: { template: "watch", sessionId: "s5", schedule: { type: "interval", every: 60_000 } },
+      opts: { template: "watch", sessionId: "01a19999-0004-7000-8000-000000000004", schedule: { type: "interval", every: 60_000 } },
     })) as { subscriptionId: string };
     expect(await client.request("cancel", { subscriptionId: sub.subscriptionId })).toEqual({ cancelled: true });
     expect(await client.request("cancel", { subscriptionId: sub.subscriptionId })).toEqual({ cancelled: false });
