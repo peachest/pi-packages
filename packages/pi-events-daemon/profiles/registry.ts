@@ -339,6 +339,20 @@ export function staticLint(check: string | undefined): { ok: false; reason: stri
   if (!/exit\s+\d|exit\s+\$/.test(check)) {
     warnings.push("check 未显式声明 exit——末命令退出码即三态语义（0=passed / 2=failed / 其他=waiting），自然结束将被判 passed；建议末行显式 exit 或使用 wait/flip 形态");
   }
+  // glab api 缺 --hostname——checker cwd 非 git 仓，按 cwd 推断回落
+  // gitlab.com 致 401 永远 waiting
+  if (/glab\s+api/.test(check) && !/--hostname\s/.test(check)) {
+    warnings.push("glab api 未显式 --hostname——checker cwd 非 git 仓会回落 gitlab.com 致 401 永远 waiting；补 --hostname <实例 host>");
+  }
+  // pipeline 列表查询不锚定 id——未创建时 jq 输出 null 但退出码 0
+  // 假绿，once 订阅秒关后真失败无人知道
+  if (/pipelines/.test(check) && /[?&](ref|sha)=/.test(check)) {
+    warnings.push("pipeline 查询用 ?ref=/?sha= 列表形态——未创建时 jq 输出 null 但退出码 0 假绿；改锚定 /pipelines/<id>（.status 恒有值）");
+  }
+  // 裸 jq 取 .status/.state 无 case/if 映射——jq 恒 exit 0，查询成功≠条件满足
+  if (/jq\s+(-r\s+)?['"]?\.(status|state)/.test(check) && !/\bcase\b|\bif\b/.test(check)) {
+    warnings.push("check 以裸 jq 取 .status/.state 且无 case/if 三态映射——jq 恒 exit 0，查询成功≠条件满足（假绿）；用 case/if 做 status→退出码映射（0=passed/2=failed/1=waiting）");
+  }
   return { ok: true, warnings };
 }
 

@@ -247,13 +247,30 @@ export function createOpDispatch(deps: OpDispatchDeps): (frame: OpRequestFrame) 
           const isAdhocCheck = params.entityRef === undefined && params.url === undefined;
           if (!smokeSkipped && (smokeRequested || isAdhocCheck)) {
             smokeValidate = await validateReport(check);
-            if (smokeValidate.verdict !== "passed") {
-              // 票 129（scan-⑤）：smoke 失败时清理先行的 register——否则 state=null 非终态实体
+            // smoke 分层拒绝（wait-until 探针 t0 判 waiting 被全杀、31 次重试烧穿的事故教训）——
+            // waiting 是 wait-until 订阅的合法 t0 初始态，只拒确定性坏：语法错 / exit 126|127（命令
+            // 不存在或不可执行，重探永远同结果）/ once+failed（确定性永等不到 passed）。
+            // waiting/failed(非 once) 放行，回执携带完整报告与醒目警告供 agent 自查。
+            const detBroken =
+              smokeValidate.syntaxOk === false ||
+              /^exit (126|127)$/.test(smokeValidate.reason) ||
+              (opts.once === true && smokeValidate.verdict === "failed");
+            if (detBroken) {
+              // 票 129：smoke 拒绝时清理先行的 register——否则 state=null 非终态实体
               // 永久残留（ephemeral housekeeping 只清终态），每次失败订阅都累积孤儿
               if (params.entityRef === undefined && params.url === undefined) {
                 await submit({ kind: "unregister", ref } as never); // 票 129：MutationRequest.unregister 字段名 = ref（非 req 包裹）
               }
               return { subscribed: false, validate: smokeValidate };
+            }
+            if (smokeValidate.verdict !== "passed") {
+              smokeValidate = {
+                ...smokeValidate,
+                warnings: [
+                  ...smokeValidate.warnings,
+                  `smoke t0 判定 ${smokeValidate.verdict}（非 passed）已放行——wait-until 场景属正常初始态；若非预期请核对 check 语义（reason: ${smokeValidate.reason}）`,
+                ],
+              };
             }
           }
           delete opts.smoke;
@@ -262,14 +279,16 @@ export function createOpDispatch(deps: OpDispatchDeps): (frame: OpRequestFrame) 
           const lint = staticLint(check);
           const subWarnings = lint.ok ? lint.warnings : [];
           // 票 135（#128）：on 谓词封闭集校验——GitLab 词表（success/canceled）等永不命中的值
-          // 静默通过是确定性死订阅（peer 01a15884 事故）。ad-hoc 校验三态全集；警告不拒绝
-          // （waiting 合法语义，误伤面大）。
+          // 静默通过是确定性死订阅。闭集按目标 profile/template 的 states
+          // 取（自定义状态不再误报），无归属时回落三态全集；警告不拒绝（waiting 类合法语义，误伤面大）。
           if (opts.on !== undefined) {
             const onValues = Array.isArray(opts.on) ? opts.on : [opts.on];
-            const VALID = new Set(["passed", "failed", "waiting"]);
+            const def = profileId !== undefined ? registry.profiles().find((d) => d.id === profileId) : undefined;
+            const tpl = def?.templates.find((t) => t.name === templateName);
+            const VALID = new Set(tpl?.states ?? def?.states ?? ["passed", "failed", "waiting"]);
             const bad = onValues.filter((v) => !VALID.has(String(v)));
             if (bad.length > 0) {
-              subWarnings.push(`on 谓词含 daemon 三态外的值: ${bad.join(", ")}——可用 passed/failed/waiting（源系统词表如 success/canceled 永不命中）`);
+              subWarnings.push(`on 谓词含封闭集外的值: ${bad.join(", ")}——可用 [${[...VALID].join(", ")}]（源系统词表如 success/canceled 永不命中）`);
             }
           }
 
@@ -308,7 +327,7 @@ export function createOpDispatch(deps: OpDispatchDeps): (frame: OpRequestFrame) 
             entityRef: entityRefKeyOf(result.entityRef),
             state: result.state,
             ...(validate !== undefined ? { validate } : {}),
-            warnings: [...result.warnings, ...subWarnings], // 票 122：staticLint 警告并入（模板/ad-hoc 同源）
+            warnings: [...result.warnings, ...subWarnings, ...(smokeValidate?.warnings ?? []).filter((w) => !subWarnings.includes(w))], // 票 122：staticLint 警告并入，smoke 同源警告去重
           };
         })();
 

@@ -8,6 +8,7 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import * as daemon from "../index.ts";
+import { staticLint } from "../profiles/index.ts";
 
 // 组合根接线（eda-profiles-deps：profiles/ 目录含测试均只许经 kernel 类型面；store/protocol 经包根入口取）
 const { ProfileRegistry } = daemon.profiles;
@@ -367,5 +368,34 @@ describe("票 11 组 4：validate 三类错误 + templates 注册表清单（票
     const res = validateEntry(registry, { profile: "proto-profile", template: "proto-tpl", params: {} });
     expect(res).toMatchObject({ ok: false, error: "invalid-params" });
     expect((res as { reason: string }).reason).toContain("constructor");
+  });
+});
+
+describe("staticLint 三条守卫：glab --hostname / pipeline id 锚定 / 裸 jq 假绿", () => {
+  it("坑①：glab api 缺 --hostname → 警告；显式携带 → 无此警告", () => {
+    const bad = staticLint('st=$(glab api "projects/1/pipelines/9" | jq -r .status); exit 0');
+    const good = staticLint('st=$(glab api --hostname gitlab.blue.example "projects/1/pipelines/9" | jq -r .status); case "$st" in success) exit 0;; failed) exit 2;; *) exit 1;; esac');
+    expect(bad.ok && bad.warnings.some((w) => w.includes("--hostname"))).toBe(true);
+    expect(good.ok && good.warnings.some((w) => w.includes("--hostname"))).toBe(false);
+  });
+
+  it("坑②：pipeline 列表查询（?ref=/?sha=）→ 警告；锚定 /pipelines/<id> → 无此警告", () => {
+    const bad = staticLint('glab api --hostname gitlab.blue.example "projects/1/pipelines?ref=main" >/dev/null; exit 0');
+    const good = staticLint('glab api --hostname gitlab.blue.example "projects/1/pipelines/9" >/dev/null; exit 0');
+    expect(bad.ok && bad.warnings.some((w) => w.includes("列表形态"))).toBe(true);
+    expect(good.ok && good.warnings.some((w) => w.includes("列表形态"))).toBe(false);
+  });
+
+  it("坑③：裸 jq 取 .status 无 case/if → 警告；case 三态映射 → 无此警告", () => {
+    const bad = staticLint('glab api --hostname gitlab.blue.example "projects/1/pipelines/9" | jq -r .status');
+    const good = staticLint('st=$(glab api --hostname gitlab.blue.example "projects/1/pipelines/9" | jq -r .status); case "$st" in success) exit 0;; failed) exit 2;; *) exit 1;; esac');
+    expect(bad.ok && bad.warnings.some((w) => w.includes("假绿"))).toBe(true);
+    expect(good.ok && good.warnings.some((w) => w.includes("假绿"))).toBe(false);
+  });
+
+  it("正典范式 check（三态 case 映射）零守卫警告", () => {
+    const canonical = staticLint('st=$(glab api --hostname gitlab.blue.example "projects/1/pipelines/9" 2>/dev/null | jq -r .status); case "$st" in success) echo pipeline-success; exit 0;; failed|canceled) echo pipeline-$st; exit 2;; *) echo running-$st; exit 1;; esac');
+    expect(canonical.ok).toBe(true);
+    expect(canonical.warnings.filter((w) => w.includes("--hostname") || w.includes("列表形态") || w.includes("假绿"))).toEqual([]);
   });
 });

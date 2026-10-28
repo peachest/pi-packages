@@ -292,12 +292,12 @@ describe("票 40 评审 F6/F12 — validate 报告接真实静态语法校验（
     expect(rig.exec.calls).toHaveLength(1); // 只有语法检查，无 live-run
   });
 
-  it("subscribe smoke 失败响应 {subscribed:false, validate} 携全字段 ValidateReport", async () => {
+  it("subscribe smoke 拒绝（once+failed）响应 {subscribed:false, validate} 携全字段 ValidateReport", async () => {
     const rig = makeRig();
     rig.exec.enqueue({ exitCode: 0 }); // 语法检查通过
     rig.exec.enqueue({ exitCode: 2 }); // smoke live-run failed
     const r = (await rig.dispatch(
-      frame("subscribe", { check: "exit 2", opts: { sessionId: "01a19999-1111-7111-8111-111111111111", smoke: true } }),
+      frame("subscribe", { check: "exit 2", opts: { sessionId: "01a19999-1111-7111-8111-111111111111", smoke: true, once: true } }),
     )) as { subscribed: boolean; validate: Record<string, unknown> };
     expect(r.subscribed).toBe(false);
     expect(r.validate).toMatchObject({ syntaxOk: true, verdict: "failed", warnings: [] });
@@ -337,16 +337,41 @@ describe("票 44 — query wire 订阅行明细", () => {
   });
 });
 
-describe("票 119：ad-hoc check 默认 smoke——死订阅创建时拦截", () => {
-  it("check 形态不带 smoke 标志 → 默认跑 smoke；失败返回 {subscribed:false, validate} 不建订阅", async () => {
+describe("票 119：ad-hoc check 默认 smoke——死订阅创建时拦截（smoke 分层拒绝语义）", () => {
+  it("once+failed（确定性永等不到 passed）→ 拒绝建订阅", async () => {
     const rig = makeRig();
     rig.exec.enqueue({ exitCode: 0 }); // 语法检查
     rig.exec.enqueue({ exitCode: 2 }); // live-run 失败
-    const r = (await rig.dispatch(frame("subscribe", { check: "exit 2", opts: { sessionId: "01a19999-1111-7111-8111-111111111111" } }))) as { subscribed: boolean };
+    const r = (await rig.dispatch(frame("subscribe", { check: "exit 2", opts: { sessionId: "01a19999-1111-7111-8111-111111111111", once: true } }))) as { subscribed: boolean };
     expect(r.subscribed).toBe(false);
   });
 
-  it("check 形态 + smoke 通过 → 正常建订阅（默认链路不阻塞健康 check）", async () => {
+  it("exit 127（命令不存在，重探永远同结果）→ 拒绝建订阅", async () => {
+    const rig = makeRig();
+    rig.exec.enqueue({ exitCode: 0 }); // 语法检查
+    rig.exec.enqueue({ exitCode: 127 }); // live-run 命令不存在
+    const r = (await rig.dispatch(frame("subscribe", { check: "no-such-cmd --flag", opts: { sessionId: "01a19999-1111-7111-8111-111111111111" } }))) as { subscribed: boolean };
+    expect(r.subscribed).toBe(false);
+  });
+
+  it("waiting t0（wait-until 合法初始态）→ 放行建订阅 + 醒目警告", async () => {
+    const rig = makeRig();
+    rig.exec.enqueue({ exitCode: 0 }); // 语法检查
+    rig.exec.enqueue({ exitCode: 1, stdout: "waiting\n" }); // live-run t0 未就绪
+    const r = (await rig.dispatch(frame("subscribe", { check: "exit 1", opts: { sessionId: "01a19999-1111-7111-8111-111111111111" } }))) as { subscribed: boolean; warnings?: string[] };
+    expect(r.subscribed).toBe(true);
+    expect((r.warnings ?? []).some((w) => w.includes("已放行"))).toBe(true);
+  });
+
+  it("failed 非 once（flip 订阅边沿已在）→ 放行建订阅", async () => {
+    const rig = makeRig();
+    rig.exec.enqueue({ exitCode: 0 }); // 语法检查
+    rig.exec.enqueue({ exitCode: 2 }); // live-run failed
+    const r = (await rig.dispatch(frame("subscribe", { check: "exit 2", opts: { sessionId: "01a19999-1111-7111-8111-111111111111" } }))) as { subscribed: boolean };
+    expect(r.subscribed).toBe(true);
+  });
+
+  it("check 形态 + smoke passed → 正常建订阅（默认链路不阻塞健康 check）", async () => {
     const rig = makeRig();
     rig.exec.enqueue({ exitCode: 0 }); // 语法检查
     rig.exec.enqueue({ exitCode: 0, stdout: "ok" }); // live-run
@@ -389,12 +414,12 @@ describe("票 122：validate 双 seam 接线——profile 静态面复活（候�
   });
 });
 
-describe("票 129（scan-⑤）：smoke 失败清理先行 register——孤儿实体根治", () => {
-  it("ad-hoc smoke 失败 → {subscribed:false} 且实体被 unregister（query 无孤儿）", async () => {
+describe("票 129：smoke 失败清理先行 register——孤儿实体根治", () => {
+  it("ad-hoc smoke 拒绝（once+failed）→ {subscribed:false} 且实体被 unregister（query 无孤儿）", async () => {
     const rig = makeRig();
     rig.exec.enqueue({ exitCode: 0 }); // 语法
     rig.exec.enqueue({ exitCode: 2 }); // live-run 失败
-    const r = (await rig.dispatch(frame("subscribe", { check: "exit 2", opts: { sessionId: "01a19999-1111-7111-8111-111111111111" } }))) as { subscribed: boolean };
+    const r = (await rig.dispatch(frame("subscribe", { check: "exit 2", opts: { sessionId: "01a19999-1111-7111-8111-111111111111", once: true } }))) as { subscribed: boolean };
     expect(r.subscribed).toBe(false);
     // store 直查（query wire 不透 retired）——实体必须已 retired（孤儿根治口径）
     const ents = rig.store.queryEntities({}).filter((e) => e.type === "adhoc");

@@ -3,6 +3,15 @@
 终审（2026-10-18 challenge-audit，可信度 84/100、零假 finding、1B3C）收口后仍明确在账的事项。
 规则：只记**已裁定**的遗留——每项带来源与处置；未裁定的发现走 issue tracker，不入本账。
 
+## smoke 分层拒绝余量（2026-10-28，peer 01a17e66 wait-until 误杀事故后裁定）
+
+smoke 预检从「非 passed 全杀」收窄为分层拒绝（只拒语法错/exit 126|127/once+failed，
+waiting/failed 非 once 放行+警告）。已知余量：**401 类坏 checker（exit 1 永远 waiting）
+现在能过 smoke 建成订阅**——堵这个要给 checker 输出做语义分析（越界），裁定靠回执
+警告 + staticLint `--hostname` 守卫（票 A 坑①）+ once+failed 闸门兜底，不在 daemon 侧
+继续加码。同批：on 封闭集校验改按目标 profile states（自定义状态不再误报）；staticLint
+补票 A 坑①②③ 三条守卫。
+
 ## 既有遗留（终票 worker 报告，2026-10-16，五项）
 
 1. ~~**probe evidence 落盘链未接**~~ → **已收口（票 47/GitHub #112，2026-10-19）**：L1 回流处（loops
