@@ -1,0 +1,49 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Boundary gate (packages/README.md four rules). Root `tsc --noEmit` and
+      # root `npm test` are NOT gates: pre-existing red across several packages
+      # (earth-online-changelog, prototype-events-daemon, pi-project-manager
+      # suites) — unblock those before wiring them here.
+      - name: Dependency boundaries
+        run: npx depcruise packages
+
+      # Per-package vitest in each package's own cwd: suites are cwd-sensitive
+      # (bash-guards golden capture and P6 fixtures assume package cwd; the
+      # package vitest.config.ts carries testTimeout/fileParallelism the root
+      # run bypasses). Discovery is dynamic so new packages gate automatically;
+      # exclusions are pre-existing red unrelated to CI:
+      #   earth-online-changelog — failing engine suites
+      #   pi-wt-lite — failing guard suites (merge/remove direction)
+      - name: Package tests
+        run: |
+          set -uo pipefail
+          rc=0
+          for d in packages/*/; do
+            name=$(basename "$d")
+            case "$name" in earth-online-changelog|pi-wt-lite) continue;; esac
+            find "$d" -maxdepth 3 -name "*.test.*" -not -path "*/node_modules/*" | grep -q . || continue
+            echo "::group::vitest $name"
+            (cd "$d" && npx vitest run) || rc=$?
+            echo "::endgroup::"
+          done
+          exit $rc

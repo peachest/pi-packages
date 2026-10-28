@@ -35,9 +35,12 @@ mkrepo() {
 # t <want:0|2> <label> <fixture-dir> <transcript-slug> <command>
 t() {
   local want="$1" label="$2" dir="$3" slug="$4" cmd="$5"
-  python3 -c "import json,sys;print(json.dumps({'tool_input':{'command':sys.argv[1]},'transcript_path':'/home/hyx/.pi/agent/sessions/'+sys.argv[2]+'/x.jsonl'}))" "$cmd" "$slug" > /tmp/p6.json
+  # per-process temp: golden capture re-runs this fixture concurrently with
+  # guards.test.ts — a shared /tmp/p6.json races and tears golden verdicts
+  payload_json="/tmp/p6-$$.json"
+  python3 -c "import json,sys;print(json.dumps({'tool_input':{'command':sys.argv[1]},'transcript_path':'/home/hyx/.pi/agent/sessions/'+sys.argv[2]+'/x.jsonl'}))" "$cmd" "$slug" > "$payload_json"
   local out rc
-  out=$( (cd "$dir" && bash "$GUARD") < /tmp/p6.json 2>&1 ); rc=$?
+  out=$( (cd "$dir" && bash "$GUARD") < "$payload_json" 2>&1 ); rc=$?
   if [ "$rc" = "$want" ]; then PASS=$((PASS+1)); echo "PASS  $label"
   else FAIL=$((FAIL+1)); echo "FAIL  $label (want=$want got=$rc) :: ${out:0:110}"; fi
 }

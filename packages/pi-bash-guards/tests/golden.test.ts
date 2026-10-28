@@ -22,6 +22,8 @@ describe("bash-guards golden verdict archive (zero semantic drift)", () => {
 	afterAll(() => rmSync(work, { recursive: true, force: true }));
 
 	it("fresh capture matches the committed archive byte-for-byte", () => {
+		// explicit timeout: the package vitest.config.ts sets 300s, but root-level
+		// vitest runs bypass it — capture takes ~30s (fixture suites + git init).
 		work = mkdtempSync(join(tmpdir(), "pi-bash-guards-golden-"));
 		const fresh = join(work, "verdicts-fresh.jsonl");
 		execFileSync("bash", [join(PKG, "tests", "golden", "capture.sh"), GUARD, fresh], {
@@ -32,5 +34,5 @@ describe("bash-guards golden verdict archive (zero semantic drift)", () => {
 		const expected = readFileSync(GOLDEN, "utf8");
 		const actual = readFileSync(fresh, "utf8");
 		expect(actual, "golden verdict drift — diff tests/golden/verdicts.jsonl against a fresh capture").toBe(expected);
-	});
+	}, 300_000);
 });

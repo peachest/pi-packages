@@ -24,8 +24,8 @@ import { Redactor, MIN_REDACT_LENGTH } from "./lib/redact.ts";
 import { dialogOptions, SecretInput, type DialogResult } from "./lib/secret-input.ts";
 import { nameProblem, storePaths, type Store } from "./lib/store.ts";
 // 测试走入口边界（packages/README.md 四规则）：re-export lib 的被测符号
-export { loadStore, storePaths, type Store } from "./lib/store.ts";
-export { updateStore } from "./lib/backend.ts";
+export { loadStore, storePaths, withStoreLock, type Store } from "./lib/store.ts";
+export { createBackend, updateStore } from "./lib/backend.ts";
 // 注入规划模块公共面（#179）：规则测试直调走入口
 export { planInjection, hasInjectableRef, commandContext, IN_SINGLE, IN_HEREDOC, IN_SUBST, DATA_MASK } from "./lib/injection.ts";
 

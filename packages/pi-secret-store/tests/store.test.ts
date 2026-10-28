@@ -6,7 +6,7 @@
 import { readFile, stat, readdir, writeFile } from "node:fs/promises";
 import { afterEach, describe, expect, it } from "vitest";
 import { loadStore, storePaths, updateStore } from "../index.ts";
-import { withStoreLock } from "../lib/store.ts";
+import { withStoreLock } from "../index.ts";
 import { cleanupEnv, runExact, setupHarness, toolCtx } from "./helpers.ts";
 
 afterEach(cleanupEnv);

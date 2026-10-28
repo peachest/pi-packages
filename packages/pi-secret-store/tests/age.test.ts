@@ -10,9 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
-import { createBackend } from "../lib/backend.ts";
-import { updateStore } from "../index.ts";
-import { withStoreLock } from "../lib/store.ts";
+import { createBackend, updateStore, withStoreLock } from "../index.ts";
 import { assertAgeBackend, cleanupEnv, hasRealAge, runExact, runToolCall, setupHarness, toolCtx, toolResultEvent, type Harness } from "./helpers.ts";
 
 const run = promisify(execFile);

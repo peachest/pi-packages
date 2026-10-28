@@ -7,7 +7,7 @@ import { chmod, readFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createBackend } from "../lib/backend.ts";
+import { createBackend } from "../index.ts";
 import { assertAgeBackend, cleanupEnv, hasRealAge, setupHarness, toolCtx, type Harness } from "./helpers.ts";
 
 vi.mock("node:fs/promises", async (importOriginal) => {
