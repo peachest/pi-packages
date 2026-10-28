@@ -40,7 +40,8 @@
 -                "Stats → ctx_stats. Doctor → ctx_doctor. Upgrade → ctx_upgrade. Purge → ctx_purge.");
 +            // pi-context-mode-lite: hierarchy 锚点收敛到保留的四个工具（writing-for-agents
 +            // 规范：砍 identity 复述与 Hierarchy 重复行、负向 NOT covered 改正向指路）。
-+            parts.push("Large/multi-command output → ctx_batch_execute. One heavy command → ctx_execute. " +
++            parts.push("Filter first: pipe big listings (agent list, query dumps) through grep/jq/python at the call site — bare dumps flood context. " +
++                "Large/multi-command output → ctx_batch_execute. One heavy command → ctx_execute. " +
 +                "Knowledge recall → ctx_search; add docs to the index → ctx_index. " +
 +                "Web pages and single files → bash/curl/read.");
              // Pi-3 + Pi-4: Always build active_memory (not just post-compact),

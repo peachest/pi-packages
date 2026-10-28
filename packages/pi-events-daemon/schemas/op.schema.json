@@ -569,7 +569,7 @@
     },
     "query": {
       "type": "object",
-      "description": "读侧归一（吸收 states 查询 / listChildren / backlog / dead-letter 清单 / 订阅行明细票 44）：{entityRef? | scope? | session?} → {entities, deadLetters, subscriptions}。",
+      "description": "读侧归一（吸收 states 查询 / listChildren / backlog / dead-letter 清单 / 订阅行明细票 44）：{entityRef? | scope? | session?} → {entities, deadLetters, subscriptions}。\n\nFilter first：永远带过滤首发（查本会话订阅 → session；单实体 → entityRef；一类 → scope）——无过滤返回全库实体+订阅，几十 KB 刷屏。",
       "required": [
         "request",
         "response"
