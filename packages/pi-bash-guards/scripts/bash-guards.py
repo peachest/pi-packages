@@ -400,6 +400,78 @@ def _match_no_verify(ctx):
                 return {"sub": _m4.group(1)}
     return None
 
+def _match_p7(ctx):
+    # P7. `pkill -f <pattern>` whose pattern would match the pkill command
+    # itself (e.g. `pkill -f my_worker.py` — the pkill process's own cmdline
+    # contains the pattern; pkill excludes itself but any sibling shell/wrapper
+    # carrying the same literal in its cmdline dies, including the calling
+    # bash -c). 21 hits across 3 sessions before the [x] convention stuck.
+    # Block only when the pattern is a bare literal without a bracket-escape.
+    for seg in segments(ctx["cmd"]):
+        m = re.match(r"^pkill\s+-f\s+(\S+)", seg)
+        if not m:
+            continue
+        pat = m.group(1).strip("'\"")
+        if "[" in pat:  # already bracket-escaped: pkill -f '[m]y_worker'
+            continue
+        if pat and re.search(re.escape(pat), f"pkill -f {pat}"):
+            return {"pattern": pat}
+    return None
+
+def _match_p8(ctx):
+    # P8. Hand-written NESTED-quote ssh (17 hits / 41 days, two violations
+    # AFTER the rule was written). Single-quoted simple remote commands
+    # (`ssh host 'docker ps'`) are legitimate shell transport — the hell is
+    # quoting INSIDE the quoted payload (double-wrapping, escaped quotes,
+    # $(...) with its own quotes): the scp-first pattern (rsh.sh / local
+    # script + scp) is the sanctioned channel for those. Trigger: the remote
+    # command's quoted body itself contains quote characters.
+    for seg in segments(ctx["cmd"]):
+        m = re.match(r"^ssh\s+(?:-\S+\s+)*(\S+@\S+|\S+)\s+(.+)$", seg)
+        if not m:
+            continue
+        remote = m.group(2)
+        # strip the outer transport quotes (one layer), then look for more
+        body = remote.strip()
+        if len(body) >= 2 and body[0] == body[-1] and body[0] in "\"'":
+            body = body[1:-1]
+        if any(q in body for q in ("\"", "'")):
+            return {"host": m.group(1)}
+    return None
+
+def _match_p9(ctx):
+    # P9. `wt remove` on the worktree the session is currently sitting in:
+    # the session's bash/codemode all spawn ENOENT afterwards (2026-10-15,
+    # 10-21, 10-22, 10-27 — four incidents). wt refuses the worktree you are
+    # SITTING in, but only when it can see the cwd; the trap is `wt -C <path>
+    # remove` from elsewhere, or removing a path the session cd-ed into via a
+    # previous segment. Resolve each remove target against the tracked cwd.
+    for _seg, _cur in _cwd_walk(pairs(ctx["cmd"]), ctx["cwd"]):
+        m = re.match(r"^wt\s+(?:-C\s+(\S+)\s+)?remove\s+(.+)$", _seg)
+        if not m:
+            continue
+        targets = m.group(2).split()
+        base = os.path.expanduser(m.group(1)) if m.group(1) else _cur
+        for t in targets:
+            cand = os.path.normpath(os.path.expanduser(t))
+            if not os.path.isabs(cand):
+                # branch-name form: wt maps it to ~/projects/<repo>-<branch>;
+                # the session is exposed if its cwd's basename (or any
+                # ancestor under ~/projects) ends with -<branch> — that is
+                # the sibling path wt would remove.
+                import glob as _g
+                hits = _g.glob(os.path.expanduser(f"~/projects/*-{t}"))
+                exposed = any(_cur == h or _cur.startswith(h + os.sep) for h in hits)
+                tail = _cur.rsplit(os.sep, 1)[-1]
+                if not exposed and tail.endswith("-" + t):
+                    exposed = True
+                if exposed:
+                    return {"target": t, "cwd": _cur}
+                continue
+            if os.path.normpath(_cur) == cand or _cur.startswith(cand + os.sep):
+                return {"target": t, "cwd": _cur}
+    return None
+
 def _match_g1(ctx):
     # Hand-copying into the pi agent dirs (global: the agent install lives
     # outside any one project). Mining: 14 commands/11 sessions, all in
@@ -773,6 +845,12 @@ RULES = [
     {"id": "P6", "scope": "projects", "matcher": _match_p6, "message": "P6"},
     # KB. knowledge-base-first gate: cluster probing requires the vault read
     {"id": "KB", "scope": "projects", "matcher": _match_kb, "message": "KB"},
+    # P7. pkill -f self-match suicide (21 hits / 3 sessions)
+    {"id": "P7", "scope": "global", "matcher": _match_p7, "message": "P7"},
+    # P8. hand-written nested-quote ssh (17 hits / 41 days)
+    {"id": "P8", "scope": "global", "matcher": _match_p8, "message": "P8"},
+    # P9. wt remove on the session's own worktree (4 incidents)
+    {"id": "P9", "scope": "global", "matcher": _match_p9, "message": "P9"},
 ]
 
 # ═══ MESSAGES ═══
@@ -903,6 +981,22 @@ MESSAGES = {
     "no-verify": lambda p: MESSAGES["no-verify-commit"] if p["sub"] == "commit" else MESSAGES["no-verify-push"],
     "G1": lambda p: MESSAGES["G1-var"].format(dest=p["dest"]) if p["kind"] == "var" else MESSAGES["G1-dest"],
     "P6": lambda p: MESSAGES["P6-inline"].format(**p) if p["kind"] == "inline" else MESSAGES["P6-email"].format(**p),
+    "P7": "`pkill -f {pattern}` matches the pkill command's own cmdline — "
+          "any wrapper shell carrying the same literal dies with it "
+          "(21 hits across 3 sessions). Bracket-escape one char — "
+          "e.g. pattern `my_worker.py` becomes `'[m]y_worker.py'` — so "
+          "the literal no longer self-matches, or kill by pid.",
+    "P8": "hand-written nested-quote ssh is the quoting-hell family "
+          "(17 hits / 41 days, two violations even after the rule). "
+          "Write the payload as a local script, scp it over, execute — "
+          "in this repo that is `data/scripts/pipeline/rsh.sh <host> "
+          "<cmd>` (scp-first). Re-run via rsh.sh or write the script "
+          "file first.",
+    "P9": "`wt remove {target}` would delete the worktree this session "
+          "is sitting in (cwd={cwd}) — the session's bash/codemode all "
+          "die with ENOENT (4 incidents: 10-15/10-21/10-22/10-27). "
+          "`wt switch main` (or any surviving checkout) FIRST, verify "
+          "with `pwd`, then remove.",
     "KB": "KB gate: cluster/service probing in a session that has not read the "
           "diagnosis vault (doc-consumption audit 2026-10-16: diagnostic "
           "sessions routinely re-derived root causes already in ~/ops). Run "
