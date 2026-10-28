@@ -9,7 +9,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { loadOpSchema, type JsonSchema } from "./lib/schema.ts";
 import { buildToolDefs, type OpSender, type OpToolDef } from "./lib/tools.ts";
-import { createOpClient } from "./lib/client.ts";
+import { createOpClient, withDefaultSessionId } from "./lib/client.ts";
 import {
   declareAutoSubscriptions,
   deriveProjectKey,
@@ -69,7 +69,10 @@ export default function eventsDaemonExtension(pi: ExtensionAPI, deps: ExtensionD
       });
   const sender: OpSender = deps.sender ?? ((op, params) => {
     if (!client) throw new Error("op client 未初始化");
-    return client.request(op, params);
+    // 票 136 的 session id 此处还不可知（client 建立早于 session_start）——按 live sessionId
+    // 并入投递类 op 缺省（sub-0302 事故：agent 不传 opts.sessionId → daemon 存 session_id=""
+    // → dock 恒 0 subs / wake 编址落空）。
+    return client.request(op, withDefaultSessionId(op, params, sessionId));
   });
 
   // 票 46：footer 状态位（三态沿驱动）。op 副作用刷新——成功/业务错误 = daemon 活着；

@@ -39,6 +39,39 @@ describe("票 34：pi install 结构面——包 manifest 指向的工厂注册 
   });
 });
 
+describe("#189：subscribe 缺省 sessionId 并入（live sessionId 在 session_start 后才可知）", () => {
+  it("agent 不传 opts.sessionId 时，daemon 收到的 subscribe 帧带本 session id（sub-0302 事故回归）", async () => {
+    const daemon: TestDaemon = startTestDaemon();
+    try {
+      const handlers: Record<string, Array<(event: unknown, ctx: unknown) => void>> = {};
+      const tools: Array<{ name: string; execute: (id: string, params: unknown) => Promise<unknown> }> = [];
+      const pi = {
+        registerTool: (tool: { name: string; execute: (id: string, params: unknown) => Promise<unknown> }) => tools.push(tool),
+        on: (event: string, handler: (event: unknown, ctx: unknown) => void) => {
+          (handlers[event] ??= []).push(handler);
+        },
+        registerCommand: () => {},
+        registerShortcut: () => {},
+      } as unknown as Parameters<typeof eventsDaemonExtension>[0];
+      // 不注入 sender——走真实 createOpClient 路径（票 136 的缺省并入在 client 层不可达）
+      eventsDaemonExtension(pi, { opSchema: loadOpSchema(), socketPath: daemon.socketPath, launcher: async () => {} });
+
+      const ctx = {
+        cwd: tmpdir(),
+        ui: { notify: () => {}, setStatus: () => {} },
+        sessionManager: { getSessionId: () => "s1" },
+      };
+      handlers.session_start[0]({ reason: "new" }, ctx);
+      const subscribe = tools.find((t) => t.name === "subscribe");
+      expect(subscribe).toBeDefined();
+      await subscribe!.execute("t1", { entityRef: "fixture:external/x", opts: { once: true } });
+      expect(daemon.subscribeFrames[0]?.opts?.sessionId).toBe("s1");
+    } finally {
+      await daemon.close();
+    }
+  });
+});
+
 describe("评审 H：session_start fork——检查前退位旧 wake handle（父连接不活到子会话）", () => {
   it("spawn 建连可达 → fork 事件退位父 handle → 父会话推送零注入", async () => {
     const daemon: TestDaemon = startTestDaemon();
