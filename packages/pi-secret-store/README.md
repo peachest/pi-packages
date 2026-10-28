@@ -19,6 +19,36 @@ Pi 扩展：持久化凭证存储，双层语义——
 - **age 安装/检查**：从 [age releases](https://github.com/FiloSottile/age/releases) 下载并将 `age` 与 `age-keygen` 放入 `~/.local/bin`（或系统包管理器安装），验证：`~/.local/bin/age --version`。扩展解析顺序：`PI_SECRET_STORE_AGE_BIN` 环境变量（定向，不回退）→ `PATH` → `~/.local/bin/age`。
 - **不静默降级**：age 二进制缺失 / 解密失败 / 错钥 / 损坏密文 → 显式报错（含安装指引与文件路径），凭证功能停用、密文不销毁；降级 plain 必须显式配置。
 
+## 只读 CLI：`pi-secret-store get`（#191）
+
+扩展之外的第二读取出口，进程形态：`pi-secret-store get NAME`——供 mcp.json 等 env 注入场景经
+pi-mcp-adapter 的 `!command` 挂钩消费（`resolveCommandSecret`：spawnSync 取 stdout.trim() 为凭据值，
+命令失败 throw → MCP server 启动失败）。
+
+- **bin 形态**：`package.json` 的 `bin` 字段指向 `dist/cli.js`（`npm run build:cli` 编译，产物 gitignored；
+  pi npm 区 node link 后上 PATH）。编译产物独立运行，不依赖 pi-coding-agent。
+- **只读**：复用扩展同一后端解密链（age 缺省/plain），写面保持 `secret_ensure` 扩展工具独占（CLI 无 set/remove）。
+- **协议契约**：凭据值走 stdout 单行（尾随换行无害，上游会 trim）；一切诊断走 stderr；fail-closed——
+  名称不存在 / 后端不可用 / 解密失败 → stderr 明确报错 + 非零退出，绝不输出空串（上游会拿空值当凭据用）。
+- 退出码：用法错误（缺参数/未知子命令）= 2；运行期失败 = 1；成功 = 0。
+
+mcp.json 集成示例（token-factory MCP server，凭据不再明文落 mcp.json；名先经 `secret_ensure` 录入）：
+
+```json
+{
+  "mcpServers": {
+    "token-factory": {
+      "command": "…",
+      "args": ["…"],
+      "env": {
+        "TF_USERNAME": "!pi-secret-store get TF_USERNAME",
+        "TF_PASSWORD": "!pi-secret-store get TF_PASSWORD"
+      }
+    }
+  }
+}
+```
+
 ## 威胁模型与已知边界
 
 **防护目标**：明文不进 session log 与上下文——session log 落盘的是 mutate 前原始 command（已实跑验证），mutate 后含明文的 command 文本仅存在于单次执行进程内；存储 0600、agent 只见存在性/指纹、输出经 Redactor。非同机对手模型——不防御已获本机执行权的攻击者。已知窄缝：若 bash 工具未来在报错时回显完整命令，注入前缀可能进 tool_result（当前不回显，理论路径）。
@@ -35,6 +65,7 @@ Pi 扩展：持久化凭证存储，双层语义——
 ## 结构
 
 - `index.ts` — 唯一入口，default export 工厂（2 钩子注入/脱敏 + session_start 重载 + 3 工具 + 1 命令）
+- `cli.ts` — 只读 CLI 出口（#191）：`pi-secret-store get NAME`，复用后端解密链，编译为 `dist/cli.js`（bin）
 - `lib/backend.ts` — 存储后端接口化（#173）：age/plain 实现、遗留明文迁移+shred、conf 选择、updateStore 锁协议
 - `lib/store.ts` — plain 存储原语：0600/唯一 tmp+rename/损坏 JSON 容错/跨进程锁
 - `lib/credentials.ts` — P1 TOKEN_TABLE 20 族 + 白名单 + 报错文案

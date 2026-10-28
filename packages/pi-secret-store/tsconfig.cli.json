@@ -1,0 +1,16 @@
+{
+	"extends": "../../tsconfig.base.json",
+	"compilerOptions": {
+		// CLI 编译腿（#191）：.ts 相对导入改写为 .js 落到 dist/，产物即 package.json bin 指向的可执行入口。
+		// 与根 typecheck 腿（noEmit 全扫）互不影响。
+		"noEmit": false,
+		"rewriteRelativeImportExtensions": true,
+		"outDir": "dist",
+		"declaration": false,
+		"declarationMap": false,
+		"sourceMap": false,
+		"incremental": false
+	},
+	"include": ["cli.ts"],
+	"exclude": ["node_modules", "dist", "tests"]
+}

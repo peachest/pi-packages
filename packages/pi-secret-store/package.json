@@ -27,12 +27,16 @@
 		"typebox": "^1.4.2",
 		"vitest": "^3.0.0"
 	},
+	"bin": {
+		"pi-secret-store": "./dist/cli.js"
+	},
 	"pi": {
 		"extensions": [
 			"./index.ts"
 		]
 	},
 	"scripts": {
+		"build:cli": "tsc -p tsconfig.cli.json",
 		"test": "vitest run"
 	}
 }
