@@ -455,7 +455,7 @@ describe("planInjection：数据位拦截（r3 #1/r7 #2 直调，引号字符串
 		expect(plan.block).toContain("A_TOKEN");
 		expect(plan.block).toContain("数据语义");
 		expect(plan.block).toContain("$A_TOKEN");
-		expect(plan.block).toContain("secret_env");
+		expect(plan.block).toContain("secret_query");
 		expect(plan.text).toBeUndefined(); // 不改写
 	});
 

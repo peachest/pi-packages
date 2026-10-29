@@ -1,5 +1,5 @@
 /**
- * 工具与命令单测（走入口）：secret_query 三态（精确/模糊/无命中）+ secret_env 全量名单 +
+ * 工具与命令单测（走入口）：secret_query 三态（精确/模糊/无命中）+ 留空全量名单（原 secret_env 职责，#193）+
  * /secret-store 命令（list/forget）+ secret_ensure 非 TUI throw。全程断言返回不含 value 明文。
  */
 import { readFile } from "node:fs/promises";
@@ -63,10 +63,10 @@ describe("secret_query：三态", () => {
 	});
 });
 
-describe("secret_env：全量名单（无参）", () => {
+describe("secret_query 留空全量名单（原 secret_env 职责并入，#193）", () => {
 	it("非空存储 → 全部凭证的变量名+指纹+更新时间，不含 value 字段与明文", async () => {
 		const h = await setupHarness(SEED);
-		const out = await runExact(h, "secret_env", {});
+		const out = await runExact(h, "secret_query", { name: "" });
 		const text = JSON.stringify(out);
 		expect(out.content[0].text).toContain("HARBOR_PASSWORD");
 		expect(out.content[0].text).toContain("GITBLUE_TOKEN");
@@ -78,14 +78,20 @@ describe("secret_env：全量名单（无参）", () => {
 
 	it("空存储 → 空清单提示", async () => {
 		const h = await setupHarness();
-		const out = await runExact(h, "secret_env", {});
+		const out = await runExact(h, "secret_query", { name: "" });
 		expect(out.content[0].text).toContain("空");
+	});
+
+	it("参数省略（{}）与留空等价——schema Optional 后无 validation 摩擦", async () => {
+		const h = await setupHarness(SEED);
+		const out = await runExact(h, "secret_query", {});
+		expect(out.content[0].text).toContain("HARBOR_PASSWORD");
 	});
 
 	it("description 写明不含值 + $NAME 引用（P1 互指文案）", async () => {
 		const h = await setupHarness(SEED);
-		const desc = h.tools.get("secret_env").description;
-		expect(desc).toContain("$NAME");
+		const desc = h.tools.get("secret_query").description;
+		expect(desc).toContain("$变量名");
 		expect(desc.toLowerCase()).toMatch(/不含|never/);
 	});
 });
@@ -151,7 +157,7 @@ describe("secret_ensure", () => {
 
 	it("三个工具都已注册 + /secret-store 命令", async () => {
 		const h = await setupHarness();
-		expect([...h.tools.keys()].sort()).toEqual(["secret_ensure", "secret_env", "secret_query"]);
+		expect([...h.tools.keys()].sort()).toEqual(["secret_ensure", "secret_query"]);
 		expect(h.commands.has("secret-store")).toBe(true);
 	});
 });

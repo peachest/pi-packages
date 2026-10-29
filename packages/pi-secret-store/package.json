@@ -2,7 +2,7 @@
 	"name": "pi-secret-store",
 	"version": "0.1.0",
 	"private": true,
-	"description": "Pi extension: 持久化凭证存储（供给正道 secret_ensure/secret_query/secret_env）+ 泄漏执法（P1 凭证检测）+ bash env 注入 + 双层脱敏",
+	"description": "Pi extension: 持久化凭证存储（供给正道 secret_ensure/secret_query）+ 泄漏执法（P1 凭证检测）+ bash env 注入 + 双层脱敏",
 	"keywords": [
 		"pi-package",
 		"pi",

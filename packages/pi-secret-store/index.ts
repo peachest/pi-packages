@@ -1,6 +1,6 @@
 /**
  * pi-secret-store：双层语义扩展——供给正道（secret_ensure 掩码录入 / secret_query 存在性查询 /
- * secret_env 变量名清单）+ 泄漏执法（P1 凭证检测，迁自 bash-guards.sh P1 段）。
+ * 凭证供给与发现（secret_ensure 录入 / secret_query 精确+模糊+全量发现）+ 泄漏执法（P1 凭证检测，迁自 bash-guards.sh P1 段）。
  * 外加 bash 选择性注入（解析命令 $NAME/${NAME} 引用，只 export 被引用且已存的变量；per-凭证
  * allowedPrefix 首词限定，#171）与 tool_result/context 双层脱敏。
  * 注入规划为深模块（#179）：命令文本分析（引用集/展开式/单引号/wrapper 词法/回填/上下文位）收在
@@ -212,7 +212,7 @@ export default function secretStore(pi: ExtensionAPI) {
 			"查询持久化凭证：给 name 精确命中返回存在性详情（指纹+更新时间，永不含明文）；未命中则按子序列模糊匹配返回候选名单；name 留空返回全部清单。如需在 bash 中使用已存在的凭证，直接引用 $变量名（与凭证名一致），无需本工具返回值。",
 		promptSnippet: "需要密码/API key/登录凭证/token 时先查这里再考虑问用户（existence only, never the value）；bash 用法：命令文本含 $NAME 字面量即自动注入，脚本消费时显式传参 NAME=$NAME python3 x.py",
 		parameters: Type.Object({
-			name: Type.String({ description: "凭证名/环境变量名，如 HARBOR_PASSWORD、GITBLUE_TOKEN；留空列出全部" }),
+			name: Type.Optional(Type.String({ description: "凭证名/环境变量名，如 HARBOR_PASSWORD、GITBLUE_TOKEN；留空/缺省列出全部" })),
 		}),
 		async execute(_id, params) {
 			const store = await (await getBackend()).load();
@@ -231,24 +231,6 @@ export default function secretStore(pi: ExtensionAPI) {
 			}
 			const list = hits.map((n) => `${n} — ${store[n].fingerprint} (${store[n].updatedAt})${prefixTag(store[n])}`).join("\n");
 			return say(`匹配到 ${hits.length} 个凭证（仅名称+指纹+更新时间，不含值；bash 中引用 $NAME 勿写明文）：\n${list}`);
-		},
-	});
-
-	pi.registerTool({
-		name: "secret_env",
-		label: "Secret Env",
-		description:
-			"列出全部已存凭证的变量名清单（名称+指纹+更新时间，不含值）。使用时在 bash 中直接引用 $NAME，勿写明文——明文写入命令文本会被凭证检测拦截。",
-		promptSnippet: "需要凭证时先列这里有哪些已存凭证再决定问用户；列出后 bash 中直接 $NAME 引用（names only, never the values），脚本消费时显式传参 NAME=$NAME python3 x.py",
-		parameters: Type.Object({}),
-		async execute() {
-			const store = await (await getBackend()).load();
-			const entries = Object.entries(store);
-			if (entries.length === 0) {
-				return say("存储为空。缺失的凭证可调用 secret_ensure 请用户录入。");
-			}
-			const list = entries.map(([n, e]) => `${n} — ${e.fingerprint} (${e.updatedAt})`).join("\n");
-			return say(`已存 ${entries.length} 个凭证（变量名清单，不含值；bash 中引用 $NAME 勿写明文）：\n${list}`);
 		},
 	});
 

@@ -343,7 +343,7 @@ export const planInjection = (cmd: string, store: Store, backfillIndex: Record<s
 	const filled = backfill(cmd, backfillIndex);
 	if (filled.dataHits.length > 0)
 		return {
-			block: `secret-store: 已存凭证明文出现在引号字符串、heredoc 或命令替换数据位置（凭证：${filled.dataHits.join("、")}）。该位置属数据语义（JSON/heredoc/命令替换等），自动回填会篡改命令数据，已拦截不改写。请改用 ${filled.dataHits.map((n) => `$${n}`).join("、")} 形式引用（bash 展开为值），或调用 secret_env 核对凭证名后调整命令结构。`,
+			block: `secret-store: 已存凭证明文出现在引号字符串、heredoc 或命令替换数据位置（凭证：${filled.dataHits.join("、")}）。该位置属数据语义（JSON/heredoc/命令替换等），自动回填会篡改命令数据，已拦截不改写。请改用 ${filled.dataHits.map((n) => `$${n}`).join("、")} 形式引用（bash 展开为值），或调用 secret_query 核对凭证名后调整命令结构。`,
 		};
 	const rewritten = filled.text !== cmd ? filled.text : undefined;
 	const text = rewritten ?? cmd;
