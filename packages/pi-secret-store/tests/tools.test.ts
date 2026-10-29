@@ -190,6 +190,18 @@ describe("allowedPrefix 呈现（#171）", () => {
 	});
 });
 
+describe("secret_query 未命中三路指引（#194，浪点 2：HF 盲猜实证后缺下一步决策面）", () => {
+	it("未命中文案含三条路径：近似名直引 / secret_ensure 录入 / 公开替代路径", async () => {
+		const h = await setupHarness(SEED);
+		const out = await runExact(h, "secret_query", { name: "HF" });
+		const text = out.content[0].text;
+		expect(text).toContain("不存在");
+		expect(text).toContain("近似名");
+		expect(text).toContain("secret_ensure");
+		expect(text).toContain("公开替代路径");
+	});
+});
+
 describe("secret_ensure：录入前校验", () => {
 	it("非法名（shell 元字符/连字符/数字开头/空格/空串）→ 错误文案，prompt 前拒绝不弹窗（[5]）", async () => {
 		const h = await setupHarness();

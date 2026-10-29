@@ -227,7 +227,7 @@ export default function secretStore(pi: ExtensionAPI) {
 			const hits = query === "" ? Object.keys(store) : Object.keys(store).filter((n) => isSubsequence(q, n.toLowerCase()));
 			if (hits.length === 0) {
 				const known = Object.keys(store).join(", ") || "（空）";
-				return say(`凭证 ${query || "（未指定）"} 不存在（含模糊匹配）。已存储的凭证名：${known}。缺失时可调用 secret_ensure 请用户录入。`);
+				return say(`凭证 ${query || "（未指定）"} 不存在（含模糊匹配）。已存储的凭证名：${known}。下一步按场景选择：①库里已有近似名 → 直接引用其 $NAME；②确属缺失 → 调用 secret_ensure 请用户录入（值非明文过手）；③目标系统有公开替代路径（如匿名可拉取的公开仓库）→ 直接走替代路径，不必为低敏场景强录凭证。`);
 			}
 			const list = hits.map((n) => `${n} — ${store[n].fingerprint} (${store[n].updatedAt})${prefixTag(store[n])}`).join("\n");
 			return say(`匹配到 ${hits.length} 个凭证（仅名称+指纹+更新时间，不含值；bash 中引用 $NAME 勿写明文）：\n${list}`);
