@@ -23,7 +23,7 @@ export const storePaths = (agentDir: string) => ({
 	storePathAge: join(agentDir, "secret-store.json.age"), // age 后端正典（#173）：密文
 	keyPath: join(agentDir, "secret-store.key"), // age 身份密钥（0600，与密文分离）
 	confPath: join(agentDir, "secret-store.conf"), // 后端选择配置（缺省 age）
-	legacyEnvFile: join(agentDir, "secret-store.env"), // v1 遗留 env 文件，session_start 退役删除（rolling-review-r1 #3）
+	legacyEnvFile: join(agentDir, "secret-store.env"), // v1 遗留 env 文件，session_start 退役删除
 });
 
 /** 合法凭证名 = bash 变量名（[5]）：env 行的赋值目标，放宽即命令注入/语法错误。 */
@@ -40,7 +40,7 @@ export function nameProblem(name: string): string | undefined {
 }
 
 /** [5]/[7]/[13] 条目形状校验：名字合法、value 是字符串、不含 NUL、达到脱敏阈值（Redactor 短于 4 字符会静默忽略）、
- *  allowedPrefix（若给出）是字符串数组且元素非空串/无首尾空白（#171；r2 #1：空串元素 startsWith 恒真 = 完全取消限定）。
+ *  allowedPrefix（若给出）是字符串数组且元素非空串/无首尾空白（#171；空串元素 startsWith 恒真 = 完全取消限定）。
  *  读（手改 JSON）与写共用本入口，两路都拦。 */
 function entryProblem(name: string, entry: unknown): string | undefined {
 	const nameErr = nameProblem(name);
@@ -82,7 +82,7 @@ export async function loadStore(storePath: string, onWarning?: (msg: string) => 
 }
 
 /** 已读文本 → Store（age 后端解密产物共用同一解析/校验路径，#173）。
- *  review-high #2：strict（迁移路径专用）= 结构/条目级 problem 即抛错而非跳过——migrateLegacy 随后 shred 原明文，
+ *  strict（迁移路径专用）= 结构/条目级 problem 即抛错而非跳过——migrateLegacy 随后 shred 原明文，
  *  宽松跳过会变成"静默丢弃+销毁原件"（不可恢复）；strict 抛错使原文件保留。读路径（loadStore/age 解密装载）
  *  维持宽松跳过（现网行为）。 */
 export function parseStoreText(raw: string, storePath: string, onWarning?: (msg: string) => void, strict = false): Store {
@@ -111,7 +111,7 @@ export function parseStoreText(raw: string, storePath: string, onWarning?: (msg:
 			onWarning?.(`secret-store: 忽略条目 ${name}：${problem}`);
 		} else {
 			const e = entry as StoreEntry;
-			// r3 #5：显式构造新条目对象（allowedPrefix schema 迁移补全，#171），不共享解析中间对象引用
+			// 显式构造新条目对象（allowedPrefix schema 迁移补全，#171），不共享解析中间对象引用
 			out[name] = { ...e, allowedPrefix: e.allowedPrefix ?? [] };
 		}
 	}
@@ -140,7 +140,7 @@ async function acquireLock(lockPath: string, deadline: number): Promise<FileHand
 	}
 }
 
-/** 同一异步链内的锁重入跟踪（r7 #1）：updateStore 持锁后调 backend.load，其首次使用/迁移分支会再进
+/** 同一异步链内的锁重入跟踪：updateStore 持锁后调 backend.load，其首次使用/迁移分支会再进
  *  withStoreLock——同一锁文件自取会自旋到超时。ALS 只沿 await 链传播：并发 session 的兄弟调用各自
  *  取锁，互斥语义不变。 */
 const heldLock = new AsyncLocalStorage<string>();
@@ -148,7 +148,7 @@ const heldLock = new AsyncLocalStorage<string>();
 /** [5] 跨进程互斥锁原语：updateStore 读-改-写共用。 */
 export async function withStoreLock<T>(storePath: string, fn: () => Promise<T>): Promise<T> {
 	const lockPath = `${storePath}.lock`;
-	if (heldLock.getStore() === lockPath) return fn(); // 同链重入直通（r7 #1）
+	if (heldLock.getStore() === lockPath) return fn(); // 同链重入直通
 	return heldLock.run(lockPath, async () => {
 		const fd = await acquireLock(lockPath, Date.now() + LOCK_TIMEOUT_MS);
 		try {

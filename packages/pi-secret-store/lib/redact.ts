@@ -13,9 +13,9 @@ export class Redactor {
 	private values = new Set<string>();
 	/** 值变体 → 凭证名（#172 回填反查）：与 values 同套变体注册；同值多名取最长名（值唯一性由 store 保证，防御性处理）。 */
 	private names = new Map<string, string>();
-	/** JSON 转义变体集（r4 #5）：与原始值形态区分——裸位命中不回填（字面 \n 等非原值形态，替换会篡改字面数据）。 */
+	/** JSON 转义变体集：与原始值形态区分——裸位命中不回填（字面 \n 等非原值形态，替换会篡改字面数据）。 */
 	private escapedVariants = new Set<string>();
-	/** 已注册值的单遍交替正则缓存（r3 #4）：热路径不再逐次排序+转义+join+编译，add/clear 时脏标记失效。 */
+	/** 已注册值的单遍交替正则缓存：热路径不再逐次排序+转义+join+编译，add/clear 时脏标记失效。 */
 	private alternationCache: RegExp | null = null;
 
 	add(secret: string, name?: string): void {
@@ -62,7 +62,7 @@ export class Redactor {
 		if (prev === undefined || name.length > prev.length) this.names.set(variant, name);
 	}
 
-	/** 已注册值的单遍交替正则（长短同序：整值优先于单行，#124）；redactText 用，编译缓存（r3 #4）。 */
+	/** 已注册值的单遍交替正则（长短同序：整值优先于单行，#124）；redactText 用，编译缓存。 */
 	private alternation(): RegExp {
 		if (this.alternationCache === null) {
 			this.alternationCache = new RegExp(
