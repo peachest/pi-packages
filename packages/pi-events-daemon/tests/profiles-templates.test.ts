@@ -27,9 +27,9 @@ const loadBuiltin = () => {
 };
 
 describe("组 1：内置三模板资产——schema 合法 + 数据完整（checker 声明/参数模板/文档段）", () => {
-  it("gitlab-pipeline / k8s-pod / fs-watermark 全部通过 Profile schema 校验并载入", () => {
+  it("gitlab-pipeline / k8s-pod / k8s-job / fs-watermark 全部通过 Profile schema 校验并载入", () => {
     const reg = loadBuiltin();
-    expect(reg.profiles().map((p) => p.id).sort()).toEqual(["fs-watermark", "gitlab-pipeline", "k8s-pod"]);
+    expect(reg.profiles().map((p) => p.id).sort()).toEqual(["fs-watermark", "gitlab-pipeline", "k8s-job", "k8s-pod"]);
   });
 
   it("每模板自包含：check 非空（checker 声明）/ params 非空（参数模板）/ usage 非空（文档段）", () => {
@@ -133,5 +133,59 @@ describe("票 138（移植）：URL-encode × 三态 case 合流——bb43876 �
     expect(ci.check).toContain("success) echo pipeline-success; exit 0");
     expect(ci.check).toContain("failed|canceled) echo pipeline-$st; exit 2");
     expect(ci.check).toContain("jq -rn --arg p '{project}'");
+  });
+});
+
+describe("R1（E0 战役 #R1）：k8s-job 终态三态模板", () => {
+  const runSh = async (check: string): Promise<number> => {
+    const { execFile } = await import("node:child_process");
+    return new Promise((resolve, reject) =>
+      execFile("/bin/bash", ["-c", check], { timeout: 5000 }, (err, _out, _err) => {
+        if (err && typeof (err as { code?: number }).code === "number") resolve((err as { code: number }).code);
+        else if (err) reject(err);
+        else resolve(0);
+      }),
+    );
+  };
+
+  const checkWith = (fakeJobStatus: string) => {
+    // 载入真实模板取 job-terminal check，把 kubectl 调用替换为回显 fixture 的伪命令（真 bash 执行验证三态映射）
+    const reg = loadBuiltin();
+    const tpl = reg.profiles().find((p) => p.id === "k8s-job")!.templates.find((t) => t.name === "job-terminal")!;
+    // 把整个 kubectl 管段（含 -o jsonpath…）替换为 cat fixture，仅保留三态映射链验证
+    return tpl.check.replace(
+      /kubectl get job \{name\} -n \{namespace\} -o jsonpath='[^']*' 2>\/dev\/null/g,
+      `printf '%s\\n' ${JSON.stringify(fakeJobStatus.trim()).slice(1, -1)} 2>/dev/null`,
+    );
+  };
+
+  it("Complete=True → exit 0（passed）", async () => {
+    expect(await runSh(checkWith("Complete=True\n"))).toBe(0);
+  });
+
+  it("Failed=True → exit 2（failed）", async () => {
+    expect(await runSh(checkWith("Failed=True\n"))).toBe(2);
+  });
+
+  it("Running（无终态 condition）→ exit 1（waiting，无通知）", async () => {
+    expect(await runSh(checkWith("Progressing=True\n"))).toBe(1);
+  });
+
+  it("job 不存在（kubectl 报错输出空）→ exit 1（waiting）", async () => {
+    expect(await runSh(checkWith("/dev/null"))).toBe(1);
+  });
+
+  it("kubeconfig 显式路由模板：参数经 shellQuote 代入（路径含空格安全）", () => {
+    const reg = loadBuiltin();
+    const inst = daemon.profiles.instantiateProfile(reg.profiles(), "k8s-job", "job-terminal-kubeconfig", {
+      name: "train-job-1",
+      namespace: "speculative-training",
+      kubeconfig: "/root/my kube/config 93.yaml",
+    });
+    expect(inst.ok).toBe(true);
+    if (!inst.ok) return;
+    expect(inst.check).toContain("'/root/my kube/config 93.yaml'");
+    expect(inst.check).toContain("'train-job-1'");
+    expect(inst.entityRef).toEqual({ type: "k8s:job", key: "external/speculative-training/train-job-1" });
   });
 });

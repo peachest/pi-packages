@@ -1,0 +1,61 @@
+{
+  "id": "k8s-job",
+  "entityType": "k8s:job",
+  "version": 1,
+  "states": ["passed", "failed", "waiting"],
+  "transitions": [
+    { "from": "waiting", "to": "passed", "description": "Job Complete（condition type=Complete status=True）" },
+    { "from": "waiting", "to": "failed", "description": "Job Failed（condition type=Failed status=True）" },
+    { "from": "passed", "to": "failed", "description": "状态翻转（重跑/重建）" },
+    { "from": "failed", "to": "passed", "description": "状态恢复（重跑成功）" },
+    { "from": "passed", "to": "passed", "description": "自转换（contentIdentity 变化，ADR 0003）" },
+    { "from": "failed", "to": "failed", "description": "自转换（contentIdentity 变化）" },
+    { "from": "waiting", "to": "waiting", "description": "Job 仍在运行/挂起（Pending/Running），继续等待" }
+  ],
+  "keyGenerator": {
+    "kind": "fields",
+    "fields": ["namespace", "name"]
+  },
+  "schedule": {
+    "type": "interval",
+    "every": "30s"
+  },
+  "onTransition": [],
+  "payloadSchema": {
+    "type": "object",
+    "required": ["name", "namespace"],
+    "properties": {
+      "name": { "type": "string", "description": "Job 名" },
+      "namespace": { "type": "string", "description": "k8s 命名空间" }
+    }
+  },
+  "templates": [
+    {
+      "name": "job-terminal",
+      "check": "conds=$(kubectl get job {name} -n {namespace} -o jsonpath='{range .status.conditions[*]}{.type}={.status}{\"\\n\"}{end}' 2>/dev/null); echo \"$conds\" | grep -q '^Complete=True$' && exit 0; echo \"$conds\" | grep -q '^Failed=True$' && exit 2; exit 1",
+      "states": ["passed", "failed", "waiting"],
+      "params": {
+        "name": "Job 名",
+        "namespace": "k8s 命名空间"
+      },
+      "usage": "k8s Job 终态三态判定：Complete=True→passed（exit 0）/ Failed=True→failed（exit 2）/ 其余（Pending/Running/无 conditions）→waiting（exit 1，无通知）。注意：kubectl 本身失败（集群不可达/RBAC 拒绝）也表现为永久 waiting——排查先手动跑同命令确认连通。kubeconfig 由环境面解决：daemon 本机多集群时用 KUBECONFIG env 或 kubectl context（opts.env 经 envAllowlist；跨节点场景见 R3 host 计划）。监控运行中任务时订阅侧传 smoke:false（Job Running 态 exit 1 会被 smoke 门拒）；Failed condition 需 backoffLimit:0 才即时出现（默认 6 会在 backoff 重试里拖着）。"
+    },
+    {
+      "name": "job-terminal-kubeconfig",
+      "check": "conds=$(kubectl --kubeconfig {kubeconfig} get job {name} -n {namespace} -o jsonpath='{range .status.conditions[*]}{.type}={.status}{\"\\n\"}{end}' 2>/dev/null); echo \"$conds\" | grep -q '^Complete=True$' && exit 0; echo \"$conds\" | grep -q '^Failed=True$' && exit 2; exit 1",
+      "states": ["passed", "failed", "waiting"],
+      "params": {
+        "name": "Job 名",
+        "namespace": "k8s 命名空间",
+        "kubeconfig": "kubeconfig 文件绝对路径（daemon 本机可达；多集群显式路由）"
+      },
+      "usage": "同 job-terminal，多集群显式 kubeconfig 路由：参数经 shellQuote 代入（路径含空格安全）。"
+    }
+  ],
+  "stateMigrations": {},
+  "sideEffectPatterns": [
+    "kubectl delete",
+    "kubectl apply",
+    "kubectl scale"
+  ]
+}
