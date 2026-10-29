@@ -256,8 +256,8 @@ export default function secretStore(pi: ExtensionAPI) {
 		name: "secret_ensure",
 		label: "Secret Ensure",
 		description:
-			"确保某凭证已持久化：已存在则直接返回存在性；缺失则弹出掩码对话框让用户输入（agent 提供 label 与获取步骤指引），输入后持久化并可在 bash 中以 $NAME 引用。用户按 Tab 可反问 agent。全程 agent 与 session log 均无明文。",
-		promptSnippet: "缺凭证时先 ensure 录入再继续任务，不要明文问用户要密码（masked dialog，session log 无明文）",
+			"确保某凭证已持久化：缺失则弹出掩码对话框让用户输入（agent 提供 label 与获取步骤指引），输入后持久化并可在 bash 中以 $NAME 引用。已存在且未传 update 时直接返回存在性（防无意覆盖）；update:true 且已存在时弹窗录入新值替换旧值（名字不变，指纹刷新，dialog 明示替换语义，用户输入即确认）。用户按 Tab 可反问 agent。全程 agent 与 session log 均无明文。",
+		promptSnippet: "缺凭证时先 ensure 录入再继续任务，不要明文问用户要密码（masked dialog，session log 无明文）；凭证失效需换值时传 update:true 重录（名字不变）",
 		promptGuidelines: [
 			"用户语言写 label 与 instructions：精确到页面/菜单/字段，让用户无需追问即可输入。",
 			"工具返回 question 时先回答用户的问题，再重新调用。",
@@ -266,6 +266,7 @@ export default function secretStore(pi: ExtensionAPI) {
 			name: Type.String({ description: "凭证名/环境变量名，如 HARBOR_PASSWORD" }),
 			label: Type.String({ description: "给用户看的录入项说明，用户语言" }),
 			instructions: Type.Array(Type.String(), { description: "获取该凭证的步骤（去哪、点什么、复制什么），用户语言" }),
+			update: Type.Optional(Type.Boolean({ description: "凭证已存在时替换其值（名字不变，dialog 明示替换语义）；缺省 false=已存在即返回存在性不动" })),
 		}),
 		async execute(_id, params, signal, onUpdate, ctx) {
 			// [5] prompt 前校验名：名会原样进入 source 的 shell 赋值与 UI 文案，放宽即命令注入；保留名可劫持 shell 行为（#126）
@@ -273,22 +274,23 @@ export default function secretStore(pi: ExtensionAPI) {
 			if (nameErr) return say(`非法凭证名 "${params.name}"：${nameErr}，未保存。`);
 			const store = await (await getBackend()).load();
 			const e = Object.hasOwn(store, params.name) ? store[params.name] : undefined;
-			if (e) return say(`凭证 ${params.name} 已存在（指纹 ${e.fingerprint}，更新于 ${e.updatedAt}），未重复录入。bash 中引用 $${params.name}。`);
+			if (e && !params.update) return say(`凭证 ${params.name} 已存在（指纹 ${e.fingerprint}，更新于 ${e.updatedAt}），未重复录入。需替换值时带 update:true 重调。bash 中引用 $${params.name}。`);
 			if (ctx.mode !== "tui") throw new Error("secret_ensure 需要交互式 TUI 弹窗录入；非交互环境下请用户手动写入或改在 TUI 中运行。");
 
-			onUpdate?.(say("等待用户在掩码对话框中输入凭证..."));
+			const updating = Boolean(params.update && e); // dialog 快照：弹窗期间存在性可能变（[12] 锁内 merge 兜底），替换/新建文案以进弹窗前为准
+			onUpdate?.(say(updating ? "等待用户在掩码对话框中输入新值（将替换旧值）..." : "等待用户在掩码对话框中输入凭证..."));
 			const choice = await ctx.ui.custom<DialogResult | null>(
 				(tui, theme, _kb, done) => {
 					const input = new SecretInput(
 						{
 							title: "Secret Store",
-							label: `${params.label}（将保存为 ${params.name}）`,
+							label: updating && e ? `${params.label}（将替换 ${params.name} 旧值，旧指纹 ${e.fingerprint}）` : `${params.label}（将保存为 ${params.name}）`,
 							steps: params.instructions,
 							rows: [
 								["保存到", "pi 凭证存储（0600，缺省 age 密文+独立身份密钥），bash 中可用 $NAME"],
 								["明文边界", "agent 与 session log 不会出现明文"],
 							],
-							footer: "Enter 确认保存 · Tab 反问 agent · Esc 取消",
+							footer: updating ? "Enter 确认替换 · Tab 反问 agent · Esc 取消" : "Enter 确认保存 · Tab 反问 agent · Esc 取消",
 							check: valueProblem,
 						},
 						theme,
@@ -319,7 +321,9 @@ export default function secretStore(pi: ExtensionAPI) {
 				(msg) => ctx.ui.notify(msg, "warning"), // review-high #5：persist 分支 keygen chmod 失败告警直达 UI
 			);
 			redactor.add(value, params.name);
-			return say(`凭证 ${params.name} 已保存（指纹 ${fingerprintOf(value)}）。此后 bash 中直接引用 $${params.name}；明文不可见、不可读。`);
+			return say(updating
+				? `凭证 ${params.name} 已替换（新指纹 ${fingerprintOf(value)}，旧值已覆盖）。bash 中引用 $${params.name} 不变；明文不可见、不可读。`
+				: `凭证 ${params.name} 已保存（指纹 ${fingerprintOf(value)}）。此后 bash 中直接引用 $${params.name}；明文不可见、不可读。`);
 		},
 	});
 

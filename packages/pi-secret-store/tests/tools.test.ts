@@ -117,10 +117,31 @@ describe("/secret-store 命令", () => {
 });
 
 describe("secret_ensure", () => {
-	it("已存在 → 直接返回存在性，不弹窗", async () => {
+	it("已存在 → 直接返回存在性，不弹窗（缺省防无意覆盖）", async () => {
 		const h = await setupHarness(SEED);
 		const out = await runExact(h, "secret_ensure", { name: "HARBOR_PASSWORD", label: "x", instructions: ["y"] });
 		expect(out.content[0].text).toContain("已存在");
+		expect(out.content[0].text).toContain("update:true"); // 引导升级路径可见
+	});
+
+	it("已存在 + update:true 非 TUI → throw 引导（更新同样走用户输入，agent 不经手明文）", async () => {
+		const h = await setupHarness(SEED);
+		await expect(runExact(h, "secret_ensure", { name: "HARBOR_PASSWORD", label: "x", instructions: ["y"], update: true }, { mode: "print", hasUI: false })).rejects.toThrow(/TUI/);
+	});
+
+	it("已存在 + update:true TUI → dialog 替换语义 + 新值覆盖旧值（名字不变，指纹刷新）", async () => {
+		const h = await setupHarness(SEED);
+		const ctx = toolCtx(h) as any; // harness UI 类型只声明 notify，测试需要 stub custom 弹窗
+		ctx.ui.custom = async (_factory: any) => ({ kind: "value", value: "brand-new-value" });
+		const out = await runExact(h, "secret_ensure", { name: "HARBOR_PASSWORD", label: "x", instructions: ["y"], update: true }, ctx);
+		const text = out.content[0].text;
+		expect(text).toContain("已替换");
+		expect(text).not.toContain("未重复录入");
+		// 落盘断言：值真的换了、名字没多没少
+		const store = JSON.parse(await (await import("node:fs/promises")).readFile(h.storePath, "utf8"));
+		expect(store.secrets.HARBOR_PASSWORD.value).toBe("brand-new-value");
+		expect(store.secrets.HARBOR_PASSWORD.fingerprint).not.toBe("fp1234567890");
+		expect(Object.keys(store.secrets).sort()).toEqual(Object.keys(SEED).sort());
 	});
 
 	it("非 TUI + 缺失 → throw 引导（#125 拍板：不静默跳过）", async () => {
