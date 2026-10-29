@@ -8,7 +8,7 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import * as daemon from "../index.ts";
-import { staticLint } from "../profiles/index.ts";
+import { staticLint } from "../profiles.ts";
 
 // 组合根接线（eda-profiles-deps：profiles/ 目录含测试均只许经 kernel 类型面；store/protocol 经包根入口取）
 const { ProfileRegistry } = daemon.profiles;
