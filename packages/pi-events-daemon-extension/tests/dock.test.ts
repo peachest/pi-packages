@@ -124,6 +124,9 @@ describe("票 45：wake 旁路钩子（真 socket，票 44 沿广播通道）", 
       });
       await waitFor(() => wake.isConnected(), "wake connected");
       expect(connectChanges[0]).toBe(true);
+      // isConnected() 只证客户端侧：startSession 是 fire-and-forget 写，服务端
+      // connections.set 异步落地——不等待注册就广播，慢 runner 上沿会发给不在册的连接（CI 红实证）
+      await waitFor(() => daemon.sessionStarted.includes("s1"), "server registered session");
 
       daemon.handle.broadcastWake("transitioned", { kind: "transitioned", entityRef: "x:external/e", from: null, to: "up", eventSeq: 1 });
       await waitFor(() => edges.length === 1, "edge received");
