@@ -34,6 +34,9 @@ jobs:
       # exclusions are pre-existing red unrelated to CI:
       #   earth-online-changelog — failing engine suites
       #   pi-wt-lite — failing guard suites (merge/remove direction)
+      # Two packages predate the vitest convention and run natively:
+      #   modernize/pi-extension — node:test suite (vitest errors "No test suite found")
+      #   pi-agent-renew — self-running assertion script (process.exit at end)
       - name: Package tests
         run: |
           set -uo pipefail
@@ -42,8 +45,12 @@ jobs:
             name=$(basename "$d")
             case "$name" in earth-online-changelog|pi-wt-lite) continue;; esac
             find "$d" -maxdepth 3 -name "*.test.*" -not -path "*/node_modules/*" | grep -q . || continue
-            echo "::group::vitest $name"
-            (cd "$d" && npx vitest run) || rc=$?
+            echo "::group::test $name"
+            case "$name" in
+              modernize)      (cd "$d/pi-extension" && node --test test/extension.test.js) || rc=$? ;;
+              pi-agent-renew) (cd "$d" && node --experimental-transform-types renew.test.ts) || rc=$? ;;
+              *)              (cd "$d" && npx vitest run) || rc=$? ;;
+            esac
             echo "::endgroup::"
           done
           exit $rc

@@ -151,9 +151,11 @@ describe("票 39 组 1：kill -9 → 重启 → run_ledger 全部槽归零重探
     // boot1：首探 → waiting→passed 事件 #1 → fanOut（无活跃 session → parked）
     const c1 = await bootChild(s);
     await waitFor(() => firingsCount(s.firings) >= 1, "boot1 probe");
-    await waitFor(() => s.db.outboxUnconsumed(0).length === 1, "event #1");
+    // fanOut 建投递行与 outbox 入库不同段：outbox 可见 ≠ delivery 行已写（干净 CI runner 慢机器竞态，
+    // run 40696036948 实证）——直接 await 断言目标态，再断 outbox 形态
+    await waitFor(() => s.db.getDelivery(EVENT_ID_1, SESSION)?.state === "parked", "delivery #1 parked");
+    expect(s.db.outboxUnconsumed(0).length).toBe(1);
     expect(s.db.outboxUnconsumed(0).map((r) => r.notificationId)).toEqual([EVENT_ID_1]);
-    expect(s.db.getDelivery(EVENT_ID_1, SESSION)?.state).toBe("parked");
 
     // kill -9（崩溃矩阵 X4/X5 载体）：无优雅路径，残留 pidfile/socket 由重启侧回收
     const death = exitOf(c1);
