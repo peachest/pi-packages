@@ -27,29 +27,31 @@ jobs:
       - name: Dependency boundaries
         run: npx depcruise packages
 
-      # Per-package vitest in each package's own cwd: suites are cwd-sensitive
+      # Per-package runner in each package's own cwd: suites are cwd-sensitive
       # (bash-guards golden capture and P6 fixtures assume package cwd; the
       # package vitest.config.ts carries testTimeout/fileParallelism the root
-      # run bypasses). Discovery is dynamic so new packages gate automatically;
-      # exclusions are pre-existing red unrelated to CI:
-      #   earth-online-changelog — failing engine suites
-      #   pi-wt-lite — failing guard suites (merge/remove direction)
-      # Two packages predate the vitest convention and run natively:
-      #   modernize/pi-extension — node:test suite (vitest errors "No test suite found")
+      # run bypasses). Discovery is dynamic so new packages gate automatically.
+      # Packages outside the vitest convention run natively (canonical run
+      # commands live in each test file's header comment):
+      #   modernize/pi-extension — node:test suite
       #   pi-agent-renew — self-running assertion script (process.exit at end)
+      #   earth-online-changelog — node:test suites under src/ (need transform-types)
+      #   pi-wt-lite — self-running .mjs scripts using node:module register stubs
+      #     (vitest's module runner ignores the register hook and hits real peer deps)
       - name: Package tests
         run: |
           set -uo pipefail
           rc=0
           for d in packages/*/; do
             name=$(basename "$d")
-            case "$name" in earth-online-changelog|pi-wt-lite) continue;; esac
             find "$d" -maxdepth 3 -name "*.test.*" -not -path "*/node_modules/*" | grep -q . || continue
             echo "::group::test $name"
             case "$name" in
-              modernize)      (cd "$d/pi-extension" && node --test test/extension.test.js) || rc=$? ;;
-              pi-agent-renew) (cd "$d" && node --experimental-transform-types renew.test.ts) || rc=$? ;;
-              *)              (cd "$d" && npx vitest run) || rc=$? ;;
+              modernize)              (cd "$d/pi-extension" && node --test test/extension.test.js) || rc=$? ;;
+              pi-agent-renew)         (cd "$d" && node --experimental-transform-types renew.test.ts) || rc=$? ;;
+              earth-online-changelog) (cd "$d" && node --experimental-transform-types --test "src/**/*.test.ts") || rc=$? ;;
+              pi-wt-lite)             (cd "$d" && for t in tests/*.test.mjs; do node "$t" || exit 1; done) || rc=$? ;;
+              *)                      (cd "$d" && npx vitest run) || rc=$? ;;
             esac
             echo "::endgroup::"
           done
