@@ -439,6 +439,27 @@ def _match_p8(ctx):
             return {"host": m.group(1)}
     return None
 
+def _match_home_doc(ctx):
+    # HOME-DOC. /home/hyx/ inside a heredoc body (mining 2026-10-22 HAMi-WebUI
+    # CVE retro: 5 hits, all `python3 - <<EOF ... open('/home/hyx/...')`).
+    # The real home is /mnt/disk1/hyx (HOME + passwd dual-proof); /home/hyx
+    # does not exist, so every literal there is a mis-推 that costs one
+    # round-trip. write-home-guard covers Write/Edit targets; command-position
+    # paths fail on their own; this closes the heredoc blind spot. Only the
+    # heredoc BODY is scanned (to the terminator line) — command-position
+    # mentions in docs quoting the guard itself are unaffected, and ~/ or
+    # /mnt/disk1/hyx/ spellings are allowed.
+    body_re = re.compile(r"<<(-?)\s*['\"]?(\w+)['\"]?\s*$", re.MULTILINE)
+    text = ctx["cmd"]
+    for m in body_re.finditer(text):
+        terminator = m.group(2)
+        start = m.end()
+        end = text.find("\n" + terminator, start)
+        body = text[start:end if end != -1 else len(text)]
+        if re.search(r"/home/hyx/", body):
+            return {}
+    return None
+
 def _match_p9(ctx):
     # P9. `wt remove` on the worktree the session is currently sitting in:
     # the session's bash/codemode all spawn ENOENT afterwards (2026-10-15,
@@ -851,6 +872,9 @@ RULES = [
     {"id": "P8", "scope": "global", "matcher": _match_p8, "message": "P8"},
     # P9. wt remove on the session's own worktree (4 incidents)
     {"id": "P9", "scope": "global", "matcher": _match_p9, "message": "P9"},
+    # HOME-DOC. /home/hyx/ literal inside a heredoc body (CVE retro 2026-10-22:
+    # 5 python-heredoc hits; write-home-guard only sees Write/Edit targets)
+    {"id": "HOME-DOC", "scope": "global", "matcher": _match_home_doc, "message": "HOME-DOC"},
 ]
 
 # ═══ MESSAGES ═══
@@ -997,6 +1021,12 @@ MESSAGES = {
           "die with ENOENT (4 incidents: 10-15/10-21/10-22/10-27). "
           "`wt switch main` (or any surviving checkout) FIRST, verify "
           "with `pwd`, then remove.",
+    "HOME-DOC": "heredoc body contains the literal /home/hyx/ — this machine's "
+          "real home is /mnt/disk1/hyx (HOME + passwd dual-proof); /home/hyx "
+          "does not exist and every reference there fails (retro 2026-10-22: "
+          "5 python-heredoc hits in one session). Re-run with ~ or the "
+          "absolute path /mnt/disk1/hyx/... — e.g. "
+          "open('/mnt/disk1/hyx/tmp/x.json').",
     "KB": "KB gate: cluster/service probing in a session that has not read the "
           "diagnosis vault (doc-consumption audit 2026-10-16: diagnostic "
           "sessions routinely re-derived root causes already in ~/ops). Run "

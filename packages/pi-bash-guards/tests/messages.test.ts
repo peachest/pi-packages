@@ -72,7 +72,7 @@ print(json.dumps([{ "id": r["id"], "scope": r["scope"], "hasMatcher": callable(r
 			{ encoding: "utf8", env: PYENV },
 		);
 		const rules: Array<{ id: string; scope: string; hasMatcher: boolean; msg: boolean }> = JSON.parse(out);
-		expect(rules).toHaveLength(18); // 12 + KB (#166) + R5 (2026-10-26) + sleep-chain (2026-10-27) + P7/P8/P9 (2026-10-28 lessons audit)
+		expect(rules).toHaveLength(19); // 12 + KB (#166) + R5 (2026-10-26) + sleep-chain (2026-10-27) + P7/P8/P9 (2026-10-28 lessons audit) + HOME-DOC (2026-10-30 heredoc blind spot)
 		for (const r of rules) {
 			expect(r.scope === "global" || r.scope === "projects", `${r.id} scope`).toBe(true);
 			expect(r.hasMatcher, `${r.id} matcher`).toBe(true);
