@@ -22,7 +22,7 @@ A complete example:
     "description": "Ask the user structured questions whenever requirements are ambiguous.",
     "promptSnippet": "Ask me before guessing on anything ambiguous",
     "promptGuidelines": [
-      "Batch every clarifying question into one ask_user call.",
+      "Batch every clarifying question into one ask_user_question call.",
       "Put your recommended option first and suffix it with (Recommended)."
     ]
   }
@@ -93,13 +93,13 @@ footer entirely, since no shortcut can fire.
 ### `guidance.description`, `guidance.promptSnippet` and `guidance.promptGuidelines`
 
 `guidance.description` replaces the entire built-in description Pi registers for the
-`ask_user` tool — the text the model reads when deciding how to use it. There is
+`ask_user_question` tool — the text the model reads when deciding how to use it. There is
 no merging: a valid value wins wholesale. It is used only when it is a non-empty string;
 anything else falls back to the built-in default. Like the other guidance fields it is read
 once, when the extension registers the tool, so changes take effect on the next Pi restart.
 
 These replace the text Pi puts in the system prompt about when to reach for
-`ask_user`. Use them to make the model ask more or less often, or to enforce a
+`ask_user_question`. Use them to make the model ask more or less often, or to enforce a
 house style for options.
 
 `promptSnippet` is used only when it is a non-empty string. `promptGuidelines` is used

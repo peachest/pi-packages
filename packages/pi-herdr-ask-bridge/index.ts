@@ -1,11 +1,11 @@
 /**
  * Herdr Ask-Bridge — pi extension
  *
- * Problem: when the agent calls `ask_user`, the Herdr pane icon stays
+ * Problem: when the agent calls `ask_user_question`, the Herdr pane icon stays
  * "working" — indistinguishable from a normal agent turn. The user gets no
  * visual cue that the agent is blocked waiting for human input.
  *
- * Root cause: `ask_user` (from pi-ask-question, vendored from rpiv-ask-user-question)
+ * Root cause: `ask_user_question` (from pi-ask-question, vendored from rpiv-ask-user-question)
  * already emits `rpiv:ask-user:blocked` ({ active: true/false }) around the
  * questionnaire. But Herdr's pi integration (herdr-agent-state.ts) listens for
  * `herdr:blocked` — the event pi-subagents and pi-guardrails emit. Nobody

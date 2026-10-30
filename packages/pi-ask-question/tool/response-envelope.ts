@@ -93,7 +93,7 @@ export function buildUnansweredSegment(indexes: readonly number[], params: Quest
  */
 export function buildRephraseInstruction(a: QuestionAnswer): string {
 	const reason = a.reason && a.reason.length > 0 ? `（原因：${a.reason}）` : "";
-	return `用户对问题 "${a.question}" 不满意${reason}。请在下一轮更新 context 进度（已重问 ${a.rephraseCount ?? 1} 次）后用 ask_user 重新问这一题，展开术语并补全选项；其余已答答案保持有效。不得跳过该决策。`;
+	return `用户对问题 "${a.question}" 不满意${reason}。请在下一轮更新 context 进度（已重问 ${a.rephraseCount ?? 1} 次）后用 ask_user_question 重新问这一题，展开术语并补全选项；其余已答答案保持有效。不得跳过该决策。`;
 }
 
 /**

@@ -18,7 +18,7 @@
   "hint.expand_line": "{key} to expand · Esc to cancel",
   "hint.cancel": "Esc to cancel",
 
-  "widget_line": "❓ ask_user waiting for answers ({answered}/{total} answered) · {key} to reopen",
+  "widget_line": "❓ ask_user_question waiting for answers ({answered}/{total} answered) · {key} to reopen",
 
   "review.heading": "Review your answers",
   "review.ready": "Ready to submit your answers?",

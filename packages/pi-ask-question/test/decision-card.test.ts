@@ -56,14 +56,14 @@ const ANSWERED = {
 
 describe("transcript decision card (ticket #134)", () => {
 	describe("buildCallSummaryLine — one-line renderCall summary", () => {
-		it("`ask_user · <first header>（n 题）`", () => {
-			expect(buildCallSummaryLine(PARAMS, theme)).toBe("ask_user · 数据库（2 题）");
+		it("`ask_user_question · <first header>（n 题）`", () => {
+			expect(buildCallSummaryLine(PARAMS, theme)).toBe("ask_user_question · 数据库（2 题）");
 		});
 
 		it("degrades to the bare tool name on missing/malformed args", () => {
-			expect(buildCallSummaryLine(undefined, theme)).toBe("ask_user");
-			expect(buildCallSummaryLine({ questions: "not-an-array" }, theme)).toBe("ask_user");
-			expect(buildCallSummaryLine({ questions: [] }, theme)).toBe("ask_user");
+			expect(buildCallSummaryLine(undefined, theme)).toBe("ask_user_question");
+			expect(buildCallSummaryLine({ questions: "not-an-array" }, theme)).toBe("ask_user_question");
+			expect(buildCallSummaryLine({ questions: [] }, theme)).toBe("ask_user_question");
 		});
 	});
 
@@ -261,9 +261,9 @@ describe("transcript decision card (ticket #134)", () => {
 describe("persistent collapse widget (ticket #134)", () => {
 	// Test env has no @juicesharp/rpiv-i18n, so `t` degrades to the canonical-English
 	// fallback — the same mode every other t()-based assertion in this suite runs in.
-	it("copy (en fallback): `❓ ask_user waiting for answers (n/m answered) · <key> to reopen`", () => {
+	it("copy (en fallback): `❓ ask_user_question waiting for answers (n/m answered) · <key> to reopen`", () => {
 		expect(buildWidgetLine(1, 2, "Ctrl+]")).toBe(
-			"❓ ask_user waiting for answers (1/2 answered) · Ctrl+] to reopen",
+			"❓ ask_user_question waiting for answers (1/2 answered) · Ctrl+] to reopen",
 		);
 	});
 
@@ -276,8 +276,8 @@ describe("persistent collapse widget (ticket #134)", () => {
 		}
 	});
 
-	it("widget registers under the stable key `ask_user`", () => {
-		expect(ASK_USER_WIDGET_KEY).toBe("ask_user");
+	it("widget registers under the stable key `ask_user_question`", () => {
+		expect(ASK_USER_WIDGET_KEY).toBe("ask_user_question");
 	});
 });
 

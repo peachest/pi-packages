@@ -84,7 +84,7 @@ async function runRpcPath(pi: ExtensionAPI, ui: DialogUI, typed: QuestionParams,
 }
 
 /** Canonical tool name — single source of truth shared with the reconcile module. */
-export const ASK_USER_QUESTION_TOOL_NAME = "ask_user";
+export const ASK_USER_QUESTION_TOOL_NAME = "ask_user_question";
 
 /**
  * Envelope builder with submit-time `/skill:` injection: every envelope-producing

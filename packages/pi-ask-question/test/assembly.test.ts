@@ -10,7 +10,7 @@
  *    pi handle (order and arity);
  * 3. exported event names keep the rpiv-compatible channel strings
  *    (pi-herdr-ask-bridge listens on them verbatim);
- * 4. reconcile only touches `ask_user` in the active tool set.
+ * 4. reconcile only touches `ask_user_question` in the active tool set.
  */
 import { describe, expect, it, vi } from "vitest";
 
@@ -59,16 +59,16 @@ describe("assembly (index.ts entry contract)", () => {
 		expect(events.ASK_USER_BLOCKED_EVENT).toBe("rpiv:ask-user:blocked");
 	});
 
-	it("reconcile scopes its mutations to the ask_user tool only", async () => {
+	it("reconcile scopes its mutations to the ask_user_question tool only", async () => {
 		const { reconcileAskUserQuestionTool } = await import("../reconcile.ts");
 		const setActive = vi.fn();
 		const pi = {
-			getActiveTools: () => ["read", "ask_user", "bash"],
+			getActiveTools: () => ["read", "ask_user_question", "bash"],
 			setActiveTools: setActive,
 		} as never;
 		reconcileAskUserQuestionTool(pi, { hasUI: false } as never);
 		const arg = setActive.mock.calls[0]?.[0] as string[];
-		expect(arg).toEqual(["read", "bash"]); // ask_user stripped, others untouched
+		expect(arg).toEqual(["read", "bash"]); // ask_user_question stripped, others untouched
 		// hasUI → restore path
 		setActive.mockClear();
 		reconcileAskUserQuestionTool(pi, { hasUI: true } as never);

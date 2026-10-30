@@ -1,6 +1,6 @@
 # pi-ask-question
 
-结构化提问对话框扩展：agent 通过 `ask_user` 工具向用户提问，TUI 呈现带上下文回忆面板的问题卡片，用户可选选项、多选、输入自定义文本，或要求重问。Vendor 自 `@juicesharp/rpiv-ask-user-question` 2.13.9 后改造（spec #127，2026-10-26 合入 main）。
+结构化提问对话框扩展：agent 通过 `ask_user_question` 工具向用户提问，TUI 呈现带上下文回忆面板的问题卡片，用户可选选项、多选、输入自定义文本，或要求重问。Vendor 自 `@juicesharp/rpiv-ask-user-question` 2.13.9 后改造（spec #127，2026-10-26 合入 main）。
 
 ## Domain
 
@@ -17,7 +17,7 @@
 - **reasonByTab** — rephrase 原因的独立 per-tab 槽（不复用 rpiv 的 notesByTab），原因与 notes 共存互不覆盖，envelope 各自成段。原因可选永不强制（2026-10-21 用户裁定）。
 - **merge semantics（多选合并）** — kind:"multi" 的答案同时携带勾选 labels（`selected`）与自定义文本（`answer`），两者叠加不替换。TUI 三处显式化：输入行 label "与以上勾选项同时生效"、输入行下实时合成回显、Submit 页两行预览。
 - **decision card（决策卡）** — submit 后 transcript 里的工具渲染：context + 每问 header→答案，与 envelope segment 同 formatter 同源；默认折叠 5 行可展开。
-- **collapse widget** — ctrl+] 隐藏对话框期间的 persistent widget（id `ask_user`），显示待答进度；reopen/submit/两种 cancel 四出口清除。
+- **collapse widget** — ctrl+] 隐藏对话框期间的 persistent widget（id `ask_user_question`），显示待答进度；reopen/submit/两种 cancel 四出口清除。
 - **recall panel（回忆面板）** — TUI 首屏头部：context 三句 + recent 锚点常驻，用户不翻聊天历史即可重建决策上下文。
 
 ## Decisions

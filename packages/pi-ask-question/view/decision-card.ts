@@ -12,12 +12,12 @@ export const CARD_PREVIEW_LINES = 5;
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 
 /**
- * One-line `renderCall` summary: `ask_user · <first header>（n 题）`. `args` is
+ * One-line `renderCall` summary: `ask_user_question · <first header>（n 题）`. `args` is
  * whatever pi recorded for the call (defensively read — replayed or malformed
  * transcripts must degrade to the bare tool name, never throw).
  */
 export function buildCallSummaryLine(args: unknown, theme: Theme): string {
-	const title = theme.fg("toolTitle", theme.bold("ask_user"));
+	const title = theme.fg("toolTitle", theme.bold("ask_user_question"));
 	const questions = isRecord(args) && Array.isArray(args.questions) ? args.questions : [];
 	if (questions.length === 0) return title;
 	const first = questions[0];
@@ -65,7 +65,7 @@ function cardBodyLines(details: QuestionnaireResult, params: unknown, theme: The
 }
 
 /**
- * Transcript decision card for a settled ask_user result. Cancelled results (decline,
+ * Transcript decision card for a settled ask_user_question result. Cancelled results (decline,
  * rephrase cap, UI errors) stay a single envelope line — no card. Answered results
  * render the structured body; collapsed (`expanded: false`) trims to
  * `CARD_PREVIEW_LINES` plus a `… +N 行` hint. Degrades to the single envelope line

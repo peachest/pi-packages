@@ -184,13 +184,13 @@ describe("rephrase state layer (ticket #131)", () => {
 		expect(text).toContain('"Which database?"="Postgres"');
 		expect(text).toContain('"Which language?"="↻ 要求重问（原因：术语太简写）"');
 		expect(text).toContain(
-			'用户对问题 "Which language?" 不满意（原因：术语太简写）。请在下一轮更新 context 进度（已重问 2 次）后用 ask_user 重新问这一题，展开术语并补全选项；其余已答答案保持有效。不得跳过该决策。',
+			'用户对问题 "Which language?" 不满意（原因：术语太简写）。请在下一轮更新 context 进度（已重问 2 次）后用 ask_user_question 重新问这一题，展开术语并补全选项；其余已答答案保持有效。不得跳过该决策。',
 		);
 		expect(text).not.toBe(DECLINE_MESSAGE);
 
 		// reason-less pin + count fallback
 		expect(buildRephraseInstruction({ questionIndex: 0, question: "Q?", kind: "rephrase", answer: null })).toBe(
-			'用户对问题 "Q?" 不满意。请在下一轮更新 context 进度（已重问 1 次）后用 ask_user 重新问这一题，展开术语并补全选项；其余已答答案保持有效。不得跳过该决策。',
+			'用户对问题 "Q?" 不满意。请在下一轮更新 context 进度（已重问 1 次）后用 ask_user_question 重新问这一题，展开术语并补全选项；其余已答答案保持有效。不得跳过该决策。',
 		);
 
 		// rephrase-only submit is still an answered envelope (never a decline)

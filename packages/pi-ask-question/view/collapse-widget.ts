@@ -5,7 +5,7 @@ import { KEY_PLACEHOLDER } from "./dialog-copy.ts";
 import { t } from "../state/i18n-bridge.ts";
 
 /** Stable widget key — the four lifecycle exits clear exactly this key. */
-export const ASK_USER_WIDGET_KEY = "ask_user";
+export const ASK_USER_WIDGET_KEY = "ask_user_question";
 
 const ANSWERED_PLACEHOLDER = "{answered}";
 const TOTAL_PLACEHOLDER = "{total}";
@@ -16,11 +16,11 @@ const TOTAL_PLACEHOLDER = "{total}";
  * call site replaces them after lookup (same template idiom as the hint keys).
  */
 const WIDGET_LINE_TEMPLATE =
-	`❓ ask_user waiting for answers (${ANSWERED_PLACEHOLDER}/${TOTAL_PLACEHOLDER} answered) · ${KEY_PLACEHOLDER} to reopen`;
+	`❓ ask_user_question waiting for answers (${ANSWERED_PLACEHOLDER}/${TOTAL_PLACEHOLDER} answered) · ${KEY_PLACEHOLDER} to reopen`;
 
 /**
  * Persistent-widget copy while the questionnaire dialog is collapsed:
- * `❓ ask_user waiting for answers (n/m answered) · <key> to reopen`. `answered`/`total`
+ * `❓ ask_user_question waiting for answers (n/m answered) · <key> to reopen`. `answered`/`total`
  * are read live from the session at render time, so the widget never needs re-setting on
  * answer changes. `t` stays inside the function so live locale updates propagate.
  */
